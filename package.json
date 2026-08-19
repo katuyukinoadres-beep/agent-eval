@@ -1,0 +1,20 @@
+{
+  "name": "agent-eval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first scoring engine for AI agent environments",
+  "bin": { "agent-eval": "./dist/cli.js" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": { "node": ">=20" },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
