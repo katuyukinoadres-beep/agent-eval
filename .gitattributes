@@ -1,0 +1,3 @@
+# Spec documents under docs/spec/ are the byte-exact source of truth.
+# Disable EOL conversion so checksums survive checkout on any platform.
+docs/spec/** -text
