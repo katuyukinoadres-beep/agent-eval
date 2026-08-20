@@ -23,6 +23,9 @@ export const RULE_IDS = [
   'V-9',
   'V-10',
   'V-11',
+  'V-13',
+  'V-14',
+  'V-15',
 ] as const
 
 export type RuleId = (typeof RULE_IDS)[number]
@@ -52,7 +55,24 @@ export const RULE_REASONS: Readonly<Record<RuleId, string>> = {
   'V-9': 'main and sub line counts do not sum to linesRead — the shape a non-recursive glob leaves behind',
   'V-10': 'an axis line tally does not close against linesRead — rows were dropped without being reported',
   'V-11': 'activeDaysMethod names a source outside the known set, or is not a union of observed sources',
+  'V-13': 'the record rate divides by a number the payload does not otherwise state — externalLog.activeDays and recordRate.denominator must be the same figure',
+  'V-14': 'more human-turn days than evidence days, which cannot happen: a day with a human turn left a transcript, so it is already an evidence day',
+  'V-15': 'windowSource and cleanupPeriodDays contradict each other — a window claimed to come from a setting must say which value it read',
 }
+
+/**
+ * The spec names two different quantities `activeDays` in the same environment:
+ * 17 under `window` (days carrying a human turn, the scope every axis
+ * denominator is taken over) and 18 under `externalLog` (days carrying evidence
+ * of any kind, the record rate's denominator).
+ *
+ * Both are correct and they answer different questions. The hazard is that a
+ * receiver reading `activeDays` without noting its parent object is off by 5.9%
+ * with nothing to signal it — the same shape as the four measured incidents that
+ * put this validator here. V-13 and V-14 tie each value to something else in the
+ * payload so a swap cannot pass unnoticed.
+ */
+export const WINDOW_DAYS_METHOD = 'human-turn-days'
 
 /** The scanManifest fields §2 marks as required. Any one missing rejects the payload. */
 export const REQUIRED_MANIFEST_FIELDS = [

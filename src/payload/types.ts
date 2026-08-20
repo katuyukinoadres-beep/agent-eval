@@ -59,11 +59,41 @@ export function projectId(s: string): ProjectId {
 
 export type Scope = 'main' | 'sub' | 'all'
 export type WindowUnit = 'activeDays' | 'calendarDays'
-export type WindowSource = 'setting' | 'observed'
 export type Availability = 'available' | 'not_applicable' | 'parse_failed'
 
 /**
- * How activeDays was arrived at.
+ * Where windowDays came from.
+ *
+ * The two spec documents disagree on the second value: the payload spec §2 says
+ * `"setting" | "observed"`, the axes spec says `"setting" | "measured"` in both
+ * places it names them. They mean the same thing, which is exactly why the
+ * disagreement is dangerous — a receiver comparing the strings finds no match
+ * and silently drops one side rather than erroring.
+ *
+ * The payload spec governs the payload, so `observed` is what ships. Recorded
+ * here rather than resolved quietly, because if the receiver was built from the
+ * axes document this is a one-line change and nobody would otherwise know to
+ * make it. Asked as part of AB-87.
+ */
+export type WindowSource = 'setting' | 'observed'
+
+/**
+ * How the window's activeDays was counted.
+ *
+ * Its own type, and a single-member one, because the spec uses the name
+ * `activeDays` for two different quantities in the same environment:
+ * `window.activeDays` is 17 (days carrying a human turn) and
+ * `externalLog.activeDays` is 18 (days carrying evidence of any kind). A
+ * receiver that reads "activeDays" without noting which object it came from is
+ * off by 5.9% and has no way to tell.
+ *
+ * Keeping the two methods in separate types means neither value can be built
+ * carrying the other's label.
+ */
+export type WindowDaysMethod = 'human-turn-days'
+
+/**
+ * How the evidence-day denominator was arrived at.
  *
  * A closed union because the denominator it produces decides the record rate,
  * and `max(git, jsonl)` returned 107.1% on this machine — the numerator counted
@@ -114,8 +144,16 @@ export interface Window {
   /** null where the key is absent — it does not exist in this machine's settings. */
   readonly cleanupPeriodDays: number | null
   readonly calendarSpanDays: number
+  /**
+   * Days carrying at least one human turn — the window's own definition, and
+   * the scope every axis denominator is taken over.
+   *
+   * NOT the record rate's denominator. That one is `externalLog.activeDays`,
+   * which is larger: a day can leave a commit or a log row without anyone
+   * speaking. Measured here: 17 against 18.
+   */
   readonly activeDays: number
-  readonly activeDaysMethod: ActiveDaysMethod
+  readonly activeDaysMethod: WindowDaysMethod
   readonly contiguousDays: number
   /**
    * How many days inside the span have no activity, not which ones.
@@ -131,6 +169,17 @@ export interface ExternalLog {
   readonly exists: boolean
   readonly rows: number
   readonly recordedDays: number
+  /**
+   * Days carrying evidence of work from any source — the record rate's
+   * denominator, and a different number from `window.activeDays`.
+   *
+   * Carried explicitly rather than left implicit inside `recordRate` so the two
+   * can be checked against each other (V-13). The spec's own sample states it
+   * twice, and a denominator that only exists inside a fraction is a denominator
+   * nothing can cross-check.
+   */
+  readonly activeDays: number
+  readonly activeDaysMethod: ActiveDaysMethod
   /** Of days with evidence of work, the share that reached the external log. */
   readonly recordRate: Metric
   /** Of calendar days, the share with any record. Answers work frequency, not coverage. */

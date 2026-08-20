@@ -190,11 +190,16 @@ describe('V-10 — an axis tally that drops rows', () => {
 })
 
 describe('V-11 — activeDays over sources we cannot reason about', () => {
+  // These target externalLog, not window. The union methods describe the
+  // evidence-day denominator, and the window's own count is human-turn days
+  // under a fixed label. Pointing these fixtures at window would still refuse
+  // them — for the wrong reason, since anything that is not `human-turn-days`
+  // fails there — and a test that cannot fail for its stated reason is not
+  // testing what it says.
+  const ext = (p: Mutable): Mutable => obj(obj(p, 'scanManifest'), 'externalLog')
+
   it('refuses max(), which returned 107.1% here', () => {
-    expectRefused(
-      broken((p) => { obj(obj(p, 'scanManifest'), 'window')['activeDaysMethod'] = 'max(git, jsonl)' }),
-      'V-11',
-    )
+    expectRefused(broken((p) => { ext(p)['activeDaysMethod'] = 'max(git, jsonl)' }), 'V-11')
   })
 
   it('refuses a union naming a source outside the known set', () => {
@@ -202,12 +207,93 @@ describe('V-11 — activeDays over sources we cannot reason about', () => {
     // machines. Folding it in inflates the denominator, which lowers the record
     // rate and makes V-5 pass more easily — the failure points the wrong way.
     expectRefused(
+      broken((p) => { ext(p)['activeDaysMethod'] = 'union-of-observed(git, jsonl, historyJsonl)' }),
+      'V-11',
+    )
+  })
+
+  it('names externalLog, not window, when a union method is wrong', () => {
+    // Pins which field was judged. Without it the two halves of V-11 are
+    // indistinguishable in the output.
+    const v = validate(broken((p) => { ext(p)['activeDaysMethod'] = 'max(git, jsonl)' }))
+    expect(v.violations.filter((x) => x.rule === 'V-11').map((x) => x.path)).toEqual([
+      'scanManifest.externalLog.activeDaysMethod',
+    ])
+  })
+
+  it('refuses a window carrying a union method — that label belongs to externalLog', () => {
+    // The swap this exists for: the value 18 with a union label, sitting under
+    // window where 17 belongs. Both numbers are real and both labels are real,
+    // so nothing but the pairing gives it away.
+    expectRefused(
       broken((p) => {
         obj(obj(p, 'scanManifest'), 'window')['activeDaysMethod'] =
-          'union-of-observed(git, jsonl, historyJsonl)'
+          'union-of-observed(git, jsonl, externalLog)'
       }),
       'V-11',
     )
+  })
+})
+
+describe('V-13 — a record rate dividing by an unstated number', () => {
+  it('refuses a denominator that disagrees with the stated evidence days', () => {
+    // 15/18 beside an activeDays of 14 is a rate nothing in the payload
+    // supports. Whichever is wrong, the pair cannot both be right, and a
+    // denominator living only inside a fraction has nothing to disagree with.
+    expectRefused(
+      broken((p) => { obj(obj(obj(p, 'scanManifest'), 'externalLog'), 'recordRate')['denominator'] = 14 }),
+      'V-13',
+    )
+  })
+
+  it('leaves recordRateCalendar alone, which legitimately divides by something else', () => {
+    // 15/125 against 18 evidence days is correct: the CSV outlives the raw logs,
+    // so its calendar span is far longer than the transcript span.
+    expect(validate(BASE_PAYLOAD).violations.map((v) => v.rule)).not.toContain('V-13')
+  })
+})
+
+describe('V-14 — more human-turn days than evidence days', () => {
+  it('refuses the swap, which is otherwise two real numbers in two real fields', () => {
+    // A day carrying a human turn left the transcript that turn was read from,
+    // so it is already a jsonl day and already inside the union. 18 > 17 is
+    // structurally impossible rather than merely unlikely.
+    expectRefused(
+      broken((p) => { obj(obj(p, 'scanManifest'), 'window')['activeDays'] = 18 + 1 }),
+      'V-14',
+    )
+  })
+
+  it('accepts them being equal, which happens when every day carried a turn', () => {
+    const v = validate(broken((p) => { obj(obj(p, 'scanManifest'), 'window')['activeDays'] = 18 }))
+    expect(v.violations.map((x) => x.rule)).not.toContain('V-14')
+  })
+})
+
+describe('V-15 — a window whose source contradicts what it read', () => {
+  it('refuses "setting" with no period recorded', () => {
+    // What base itself claimed before this stage: a window sourced from a
+    // setting, beside a null saying no setting was found.
+    expectRefused(
+      broken((p) => { obj(obj(p, 'scanManifest'), 'window')['windowSource'] = 'setting' }),
+      'V-15',
+    )
+  })
+
+  it('refuses "observed" beside a period it apparently did read', () => {
+    expectRefused(
+      broken((p) => { obj(obj(p, 'scanManifest'), 'window')['cleanupPeriodDays'] = 14 }),
+      'V-15',
+    )
+  })
+
+  it('accepts "setting" once the period is there', () => {
+    const v = validate(broken((p) => {
+      const w = obj(obj(p, 'scanManifest'), 'window')
+      w['windowSource'] = 'setting'
+      w['cleanupPeriodDays'] = 14
+    }))
+    expect(v.violations.map((x) => x.rule)).not.toContain('V-15')
   })
 })
 
@@ -216,6 +302,7 @@ describe('the rule set is honest about what it does not check', () => {
     // Guards against a rule id existing with nothing exercising it.
     const covered = new Set<RuleId>([
       'V-1', 'V-2', 'V-3', 'V-4', 'V-5', 'V-6', 'V-7', 'V-9', 'V-10', 'V-11',
+      'V-13', 'V-14', 'V-15',
     ])
     expect([...RULE_IDS].filter((r) => !covered.has(r))).toEqual([])
   })
