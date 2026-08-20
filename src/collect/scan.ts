@@ -14,6 +14,7 @@
 
 import { readFileSync } from 'node:fs'
 import type { FileEntry, Inventory } from './walk.js'
+import { notHumanBecause } from './humanTurn.js'
 
 /**
  * Every jsonl key this reducer is allowed to look at.
@@ -71,7 +72,21 @@ export interface ScanCounts {
   /** Rows carrying an `origin` object at all — the denominator of coverage. */
   readonly userRows: number
   readonly originBearingUserRows: number
+  /**
+   * Human turns per P1 of the v1 axes document.
+   *
+   * Not `origin.kind === 'human'`. That reading gives 250 here against P1's 413
+   * — 1.65x low — because the key is absent from 96.8% of user rows. v1 states
+   * outright that a missing key must not be read as "not human".
+   */
   readonly humanTurns: number
+  /**
+   * Rows carrying `origin.kind === 'human'`, kept as the supporting signal v1
+   * says it is. The gap against humanTurns is how much origin coverage costs.
+   */
+  readonly originHumanRows: number
+  /** Why user rows were excluded from P1, so a filter that ate 90% says so. */
+  readonly notHumanCounts: Readonly<Record<string, number>>
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -149,6 +164,7 @@ interface Mut {
   userRows: number
   originBearingUserRows: number
   humanTurns: number
+  originHumanRows: number
   denialRows: number
   denialUserRejected: number
   stopHookSummaryRows: number
@@ -176,6 +192,7 @@ function reduceLine(
   dates: DateSets,
   edits: EditTally,
   proj: MutProjectTally,
+  notHuman: Map<string, number>,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -234,11 +251,16 @@ function reduceLine(
     const origin = row['origin']
     if (isObj(origin)) {
       m.originBearingUserRows += 1
-      if (origin['kind'] === 'human') {
-        m.humanTurns += 1
-        proj.humanRows += 1
-        if (day !== null) dates.humanTurn.add(day)
-      }
+      // Supporting signal only. v1: a missing key does not mean not human.
+      if (origin['kind'] === 'human') m.originHumanRows += 1
+    }
+    const why = notHumanBecause(row, kind === 'sub')
+    if (why === null) {
+      m.humanTurns += 1
+      proj.humanRows += 1
+      if (day !== null) dates.humanTurn.add(day)
+    } else {
+      notHuman.set(why, (notHuman.get(why) ?? 0) + 1)
     }
   }
 
@@ -304,7 +326,7 @@ export function scan(
   const m: Mut = {
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
-    attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0,
+    attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
     denialRows: 0, denialUserRejected: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
@@ -315,6 +337,7 @@ export function scan(
   const dates: DateSets = { all: new Set(), userRow: new Set(), humanTurn: new Set() }
   const edits: EditTally = new Map()
   const perProject = new Map<string, MutProjectTally>()
+  const notHuman = new Map<string, number>()
 
   for (const file of inv.files) {
     let proj = perProject.get(file.project)
@@ -332,7 +355,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman)
     }
   }
 
@@ -354,6 +377,8 @@ export function scan(
     userRows: m.userRows,
     originBearingUserRows: m.originBearingUserRows,
     humanTurns: m.humanTurns,
+    originHumanRows: m.originHumanRows,
+    notHumanCounts: Object.fromEntries([...notHuman.entries()].sort()),
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
     editedFilesDistinct: edits.size,

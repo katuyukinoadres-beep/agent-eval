@@ -136,13 +136,27 @@ describe('the counts behind the eleven metrics', () => {
     expect(c.attributionSkillDistinct).toBe(2)
   })
 
-  it('counts human turns and the coverage that qualifies them', () => {
+  it('counts human turns by P1, not by whether origin happens to be there', () => {
     const c = counts()
-    expect(c.humanTurns).toBe(1)
+    // Four of the five user rows are people: the one carrying origin, the one
+    // carrying none, and the two denials. The fifth sits under subagents.
+    //
+    // Counting `origin.kind === 'human'` instead gives 1. On the real machine
+    // that difference is 250 against 413 — 1.65x — because the key is absent
+    // from 96.8% of user rows. v1 states outright that a missing key must not
+    // be read as "not human", and this assertion is what stops the shortcut
+    // coming back.
+    expect(c.humanTurns).toBe(4)
+    expect(c.originHumanRows).toBe(1)
     expect(c.originBearingUserRows).toBe(1)
-    // Five user rows, only one carrying origin. Reporting humanTurns without
-    // this denominator is how a count reads low without saying so.
     expect(c.userRows).toBe(5)
+  })
+
+  it('says why it excluded the rows it excluded', () => {
+    // A filter that removes most of its input and reports only the survivors is
+    // indistinguishable from a broken one. 3,959 of 4,379 user rows on the real
+    // machine are tool results.
+    expect(counts().notHumanCounts['subagent']).toBe(1)
   })
 
   it('separates a person refusing from a rule refusing', () => {
