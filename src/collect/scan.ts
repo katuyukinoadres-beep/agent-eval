@@ -158,6 +158,8 @@ export interface ScanCounts {
   readonly errorRepeats: RepeatRate
   /** Axis 2's numerator terms, before weighting. */
   readonly wasted: WastedCounts
+  /** Rows carrying a tool_use or tool_result block — axis 2's evidence lines. */
+  readonly toolActivityRows: number
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -239,6 +241,7 @@ interface Mut {
   denialRows: number
   denialUserRejected: number
   taskBundles: number
+  toolActivityRows: number
   rootBundles: number
   orphanBundles: number
   environmentNoiseRows: number
@@ -466,6 +469,10 @@ function reduceLine(
 
   const content = message['content']
   if (!Array.isArray(content)) return
+  // Counted once per row, not per block: lineStates has to sum to linesRead.
+  if (content.some((b) => isObj(b) && (b['type'] === 'tool_use' || b['type'] === 'tool_result'))) {
+    m.toolActivityRows += 1
+  }
   for (const block of content) {
     if (!isObj(block)) continue
     if (block['type'] === 'tool_result') {
@@ -536,7 +543,7 @@ export function scan(
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, taskBundles: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    denialRows: 0, denialUserRejected: 0, taskBundles: 0, toolActivityRows: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -604,6 +611,7 @@ export function scan(
     originHumanRows: m.originHumanRows,
     notHumanCounts: Object.fromEntries([...notHuman.entries()].sort()),
     taskBundles: m.taskBundles,
+    toolActivityRows: m.toolActivityRows,
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,
     environmentNoiseRows: m.environmentNoiseRows,

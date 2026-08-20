@@ -636,3 +636,48 @@ hook 起因の失敗は分子・分母とも除外する規則だが、このマ
 ### 反復の判定は束スコープ
 
 同じ Grep でも、別の依頼の中でなら別の調査。グローバルに数えると **1回目を2回目として課金**する。
+
+---
+
+## 2026-08-20 — S9c: 軸2をペイロードに載せた
+
+```json
+"wastedMotion": {
+  "availability": "available",
+  "lineStates": { "available": 17136, "not_applicable": 15346, "parse_failed": 0 },
+  "score": 57.1,
+  "confidenceInterval": null,
+  "belowMinDenominator": true,
+  "unavailableReasons": [],
+  "detail": {
+    "wastedTotal": 495.6, "bundleCount": 431,
+    "wastedPerBundle": 1.1499, "repeatRate": 0.5139,
+    "failures": 323, "writeRepeats": 143,
+    "investigationRepeats": 350, "hookOriginatedExcluded": 0
+  }
+}
+```
+
+`lineStates` 合計 = 32,482 = `linesRead`（V-10 成立）。
+
+### 可用性は「クラスタ数」ではなかった
+
+こちらは全軸を「クラスタ 11 < 最小 20 だから not_applicable」で埋めていた。**v1 の軸2の条件は「フィルタ後の tool_use が50未満で not_applicable」**で、このマシンは 8,502 なので **available**。
+
+最小分母（クラスタ20 / 分母200 / 分子5）がゲートするのは **Δ を「改善／悪化」と呼んでよいか**であって、率が存在するかではない。混同した結果、**8,502 回ツールを呼んだ環境を「測るものが無い」と報告していた**。
+
+分けた:
+
+| フィールド | 意味 |
+|---|---|
+| `availability` | 軸ごとの条件（軸2は tool_use ≥ 50） |
+| `belowMinDenominator` | 最小分母3条件。Δ と CI をゲート |
+| `confidenceInterval` | 最小分母を割っているので `null` |
+
+### W を numerator/denominator という名前で載せない
+
+軸2の率は「タスク束あたりの空振り手数」で、**設計上 1 を超える**（実測 1.15）。
+
+`numerator` / `denominator` という名前で載せると **V-5（分子 > 分母を拒否）に引っかかる**。かといって例外扱いにすると、**107.1% が通り抜けた穴をルールに開ける**ことになる。
+
+`detail` に `wastedTotal` / `bundleCount` / `wastedPerBundle` という名前で持たせた。再計算はできて、比率でないものを比率の名前で呼ばない。

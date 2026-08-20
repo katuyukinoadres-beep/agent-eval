@@ -44,6 +44,25 @@ const counts = {
   userRowDates: ['2026-08-16'],
   humanTurnDates: ['2026-08-16'],
   perProject: { p1: { lines: 1_000, subLines: 400, humanRows: 15 } },
+  notHumanCounts: {},
+  taskBundles: 40,
+  rootBundles: 0,
+  orphanBundles: 0,
+  environmentNoiseRows: 0,
+  editedPaths: {},
+  lastMention: () => null,
+  referenceTokens: 0,
+  toolActivityRows: 200,
+  errorRepeats: { errors: 10, distinctSignatures: 5, rIn: 0.5, byFamily: { timeout: 10 } },
+  wasted: {
+    failures: 10,
+    hookOriginated: 0,
+    writeRepeats: 4,
+    investigationRepeats: 10,
+    timedOut: 0,
+    largeOutput: 0,
+    callsPerBundle: { b1: 5, b2: 7 },
+  },
 }
 
 const inputs: AssembleInputs = {
@@ -130,23 +149,46 @@ describe('a denominator of zero is an absence, not a one', () => {
 })
 
 describe('no axis carries a score', () => {
-  it('leaves every score null, because the formula is not settled', () => {
+  it('leaves every score null except the one axis that is built', () => {
     const { payload } = assemble(inputs)
     for (const key of AXIS_KEYS) {
+      if (key === 'wastedMotion') continue
       expect(payload.axes[key].score, key).toBeNull()
       expect(payload.axes[key].metric, key).toBeNull()
     }
   })
 
-  it('says why, and separates a small environment from an unbuilt axis', () => {
-    // Two clusters against a minimum of 20 is measured. `definition-pending` is
-    // not about this environment at all — it is about taskBundles, SA and P1
-    // living only in a document this repository does not have.
+  it('scores axis 2 on its own condition, not on the cluster minimum', () => {
+    // v1 makes axis 2 unavailable below 50 filtered tool calls. The cluster
+    // minimum is a different question — whether a change between windows may be
+    // called an improvement — and conflating them reported a machine with 8,502
+    // tool calls as having nothing to measure.
     const { payload } = assemble(inputs)
-    expect(payload.axes.wastedMotion.unavailableReasons).toContain('too-few-clusters')
-    expect(payload.axes.wastedMotion.unavailableReasons).toContain('definition-pending')
-    // coverageGate needs no unsettled definition, so it carries only the
-    // measured reason.
+    const axis = payload.axes.wastedMotion
+    expect(axis.availability).toBe('available')
+    expect(axis.score).not.toBeNull()
+    // Still below the minimum at 2 clusters, so no comparison and no interval.
+    expect(axis.belowMinDenominator).toBe(true)
+    expect(axis.confidenceInterval).toBeNull()
+  })
+
+  it('carries the parts the score came from, under names that are not a rate', () => {
+    // Wasted moves per bundle exceeds 1 by design. Naming the pair
+    // numerator/denominator would trip V-5, and exempting it would put a hole
+    // in the rule the 107.1% walked through.
+    const detail = assemble(inputs).payload.axes.wastedMotion.detail
+    expect(detail).not.toBeNull()
+    expect(Object.keys(detail ?? {})).toContain('wastedPerBundle')
+    expect(Object.keys(detail ?? {})).not.toContain('numerator')
+    expect(Object.keys(detail ?? {})).not.toContain('denominator')
+  })
+
+  it('says why an unbuilt axis has nothing, and separates the two reasons', () => {
+    // `too-few-clusters` is measured. `definition-pending` is not about this
+    // environment at all — it is about a formula the repository does not have.
+    const { payload } = assemble(inputs)
+    expect(payload.axes.artifactUptake.unavailableReasons).toContain('too-few-clusters')
+    expect(payload.axes.artifactUptake.unavailableReasons).toContain('definition-pending')
     expect(payload.axes.coverageGate.unavailableReasons).toEqual(['too-few-clusters'])
   })
 
