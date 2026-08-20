@@ -154,6 +154,21 @@ export interface Window {
    */
   readonly activeDays: number
   readonly activeDaysMethod: WindowDaysMethod
+  /**
+   * Days carrying a user row of any kind — the ceiling on `activeDays` under
+   * this scan, and the figure that says how much of it origin coverage decided.
+   *
+   * Measured here: 5 human-turn days against 9 days with user rows, because
+   * `origin` is present on 3.11% of user rows. The four missing days are July,
+   * where every user row predates the field.
+   *
+   * The spec gates the environment on `activeDays < 5`. This machine measures
+   * exactly 5, so one day either way decides whether anything is scored at all —
+   * and which side it falls on is set by which tool versions wrote the log, not
+   * by how much work happened. Sending both numbers lets that be seen instead of
+   * inferred.
+   */
+  readonly userRowDays: number
   readonly contiguousDays: number
   /**
    * How many days inside the span have no activity, not which ones.

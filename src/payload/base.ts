@@ -111,6 +111,10 @@ export const BASE_PAYLOAD = {
       // externalLog below and is the record rate's denominator.
       activeDays: 17,
       activeDaysMethod: 'human-turn-days',
+      // Between 17 and 18: a user spoke on every day that carried a user row in
+      // the sample this fixture keeps the components of. On the machine as it
+      // stands today the two are 5 and 9, because origin coverage is 3.11%.
+      userRowDays: 18,
       contiguousDays: 11,
       gapCount: 2,
     },
