@@ -1,0 +1,290 @@
+/**
+ * The submission payload.
+ *
+ * Two rules shape every declaration here.
+ *
+ * A payload leaf is never free text. Conversation bodies, code, file paths and
+ * hashes of any of them must not leave the machine, and the spec asks the client
+ * to make that structurally impossible rather than to check for it on receipt.
+ * So leaves are numbers, closed unions, or one of the few branded strings below
+ * whose constructors validate their shape. Nothing here accepts a bare `string`.
+ *
+ * A number never travels without its denominator. See ./metric.ts.
+ */
+
+import type { Count, Metric } from './metric.js'
+
+// ── branded leaves ────────────────────────────────────────────────────────────
+// The handful of leaves that genuinely have to be strings. Each is built through
+// a constructor that rejects the wrong shape, so an arbitrary string cannot be
+// assigned to one by accident.
+
+declare const brand: unique symbol
+
+export type Iso8601 = string & { readonly [brand]: 'Iso8601' }
+export type Uuid = string & { readonly [brand]: 'Uuid' }
+export type ProjectId = string & { readonly [brand]: 'ProjectId' }
+
+export class PayloadError extends Error {}
+
+const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const PROJECT_ID = /^sha256:[0-9a-f]{64}$/
+
+export function iso8601(s: string): Iso8601 {
+  if (!ISO8601.test(s)) throw new PayloadError(`not an ISO-8601 instant: ${s}`)
+  return s as Iso8601
+}
+
+export function uuid(s: string): Uuid {
+  if (!UUID.test(s)) throw new PayloadError(`not a UUID v4: ${s}`)
+  return s as Uuid
+}
+
+/**
+ * A project identifier that cannot be turned back into a path.
+ *
+ * The spec's own §5 example carries `"name": "C--Windows-System32"`, which is a
+ * cwd with the separators swapped. Sending that ships the home directory, the OS
+ * username and the absolute path of every project on the machine — against §1's
+ * own list of what must never leave. Only the hash has a type here; there is no
+ * field a raw path could occupy.
+ */
+export function projectId(s: string): ProjectId {
+  if (!PROJECT_ID.test(s)) throw new PayloadError(`not a sha256 project id: ${s}`)
+  return s as ProjectId
+}
+
+// ── closed unions ─────────────────────────────────────────────────────────────
+
+export type Scope = 'main' | 'sub' | 'all'
+export type WindowUnit = 'activeDays' | 'calendarDays'
+export type WindowSource = 'setting' | 'observed'
+export type Availability = 'available' | 'not_applicable' | 'parse_failed'
+
+/**
+ * How activeDays was arrived at.
+ *
+ * A closed union because the denominator it produces decides the record rate,
+ * and `max(git, jsonl)` returned 107.1% on this machine — the numerator counted
+ * days that survived only in the external log, which the raw transcripts had
+ * already been pruned of. Union of observed sources keeps the numerator a subset
+ * of the denominator, so the ratio cannot exceed 1 by construction.
+ *
+ * It is still only a lower bound on real working days: a day that left neither a
+ * commit nor a log is invisible in principle. Recording the method means a later
+ * definition change can be stratified rather than silently mixed in.
+ */
+export type ActiveDaysMethod =
+  | 'union-of-observed(git, jsonl, externalLog)'
+  | 'union-of-observed(jsonl, externalLog)'
+  | 'union-of-observed(jsonl)'
+
+export const AXIS_KEYS = [
+  // first wave — scored
+  'firstPassLanding',
+  'wastedMotion',
+  'selfVerification',
+  'artifactUptake',
+  'environmentMetabolism',
+  'recurrencePrevention',
+  // second wave — computed but not displayed in the first release
+  'pendingDecisions',
+  'userRejected',
+  'askUserQuestionCustomRate',
+  // not scored
+  'coverageGate',
+  'safetyCheck',
+] as const
+
+export type AxisKey = (typeof AXIS_KEYS)[number]
+
+// ── scanManifest ──────────────────────────────────────────────────────────────
+
+/** One walked glob and how many files it actually matched. */
+export interface WalkedRoot {
+  readonly glob: string
+  readonly matchCount: number
+}
+
+export interface Window {
+  readonly unit: WindowUnit
+  readonly windowDays: number
+  readonly windowSource: WindowSource
+  /** null where the key is absent — it does not exist in this machine's settings. */
+  readonly cleanupPeriodDays: number | null
+  readonly calendarSpanDays: number
+  readonly activeDays: number
+  readonly activeDaysMethod: ActiveDaysMethod
+  readonly contiguousDays: number
+  /**
+   * How many days inside the span have no activity, not which ones.
+   *
+   * The dated list the spec sketches lines up against a public contribution
+   * graph well enough to identify whose machine this is, and the population
+   * analysis it would support is not worth that.
+   */
+  readonly gapCount: number
+}
+
+export interface ExternalLog {
+  readonly exists: boolean
+  readonly rows: number
+  readonly recordedDays: number
+  /** Of days with evidence of work, the share that reached the external log. */
+  readonly recordRate: Metric
+  /** Of calendar days, the share with any record. Answers work frequency, not coverage. */
+  readonly recordRateCalendar: Metric
+}
+
+export interface ScanManifest {
+  readonly parserVersion: '1'
+  readonly scope: Scope
+  /** Every glob actually walked, with its own match count. */
+  readonly rootsWalked: readonly WalkedRoot[]
+  readonly recursive: true
+  readonly filesRead: number
+  readonly linesRead: number
+  readonly linesParseFailed: number
+  readonly bytesRead: number
+  readonly mainFiles: number
+  readonly mainLines: number
+  readonly subFiles: number
+  readonly subLines: number
+  /** Detects the non-recursive glob that started all this. */
+  readonly subLineRatio: number
+  readonly toolVersions: Readonly<Record<string, number>>
+  readonly toolVersionDistinct: number
+  /** Share of user rows carrying `origin`; low values mean human counts undercount. */
+  readonly originFieldCoverage: Metric
+  readonly window: Window
+  readonly externalLog: ExternalLog
+  readonly measuredAt: Iso8601
+}
+
+// ── metrics ───────────────────────────────────────────────────────────────────
+
+/**
+ * The eleven required metrics of spec §3.1. Seven are rates; four are marked
+ * with an em dash in the denominator column and are counts.
+ *
+ * `booleanDerived` rides on the type rather than in a list inside the validator.
+ * W-6 warns when a boolean-derived numerator is zero over a large denominator,
+ * and a hand-maintained list of which metrics those are drifts — the moment
+ * `toolError` fell off it, a 0/27,775 would pass unremarked, which is the shape
+ * of the incident W-6 exists for.
+ */
+export interface BooleanDerived {
+  readonly booleanDerived: true
+}
+
+/**
+ * Permission entries by class, never the entries themselves.
+ *
+ * A permission line routinely contains a script path, and those are on §1's
+ * never-send list. Counting them by what they permit keeps the signal — an
+ * allowlist of 263 entries containing `Bash(python:*)` delegates more than one
+ * of 51 that contains no interpreter at all — without shipping the strings.
+ */
+export interface PermissionCounts {
+  readonly allow: Count
+  readonly deny: Count
+  readonly ask: Count
+  /** Arbitrary code execution: `Bash(python:*)`, `Bash(*)`, `Bash(sh:*)` and kin. */
+  readonly unrestrictedExec: Count
+  /** Prefix wildcard bounded to one CLI: `Bash(git push*)`. */
+  readonly cliWildcard: Count
+  /** Pinned to a named script: `node scripts/foo.mjs:*`. */
+  readonly scriptPathFixed: Count
+}
+
+/**
+ * Raw token counts, never a total.
+ *
+ * Summing them is what the existing leaderboards do, and 94.7-97.0% of the sum
+ * is cache reads on both measured machines — a number that grows with
+ * conversation length and says nothing about quality. Kept split so the receiver
+ * can compare like for like.
+ */
+export interface TokenCounts {
+  readonly input: Count
+  readonly output: Count
+  readonly cacheRead: Count
+  readonly cacheCreation: Count
+}
+
+export interface Metrics {
+  readonly toolError: Metric & BooleanDerived
+  readonly toolErrorAlt: Metric & BooleanDerived
+  readonly skillFired: Metric
+  readonly skillRows: Count
+  readonly mcpUsed: Metric
+  readonly humanTurns: Count
+  readonly denialUserRejected: Metric & BooleanDerived
+  readonly permissions: PermissionCounts
+  readonly editPaths: Metric
+  readonly tokens: TokenCounts
+  readonly hookPushback: Metric & BooleanDerived
+}
+
+// ── axes ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Availability decided per line, then summed.
+ *
+ * Not per environment: one machine's logs here span twelve tool versions
+ * (2.1.112 through 2.1.234) and `origin` only appears from 2.1.220, so a
+ * per-environment verdict lets the newer rows paper over what the older ones
+ * never carried.
+ */
+export interface LineStates {
+  readonly available: number
+  readonly not_applicable: number
+  readonly parse_failed: number
+}
+
+export interface Axis {
+  readonly availability: Availability
+  readonly lineStates: LineStates
+  /** Absent while the rate-to-score formula for this axis is still unresolved. */
+  readonly score: number | null
+  readonly confidenceInterval: readonly [number, number] | null
+  readonly belowMinDenominator: boolean
+}
+
+export type Axes = Readonly<Record<AxisKey, Axis>>
+
+// ── environment ───────────────────────────────────────────────────────────────
+
+export interface ProjectSummary {
+  readonly id: ProjectId
+  readonly files: number
+  readonly lines: number
+  readonly bytes: number
+  readonly humanRows: number
+  readonly subLineRatio: number
+}
+
+export interface Environment {
+  readonly os: string
+  readonly shell: string
+  readonly agentTools: readonly string[]
+  readonly projectCount: number
+  /** Every project on the machine. Partial submissions are refused, so no threshold is needed. */
+  readonly projects: readonly ProjectSummary[]
+  readonly topProjectByteShare: number
+  readonly skillsDefined: number
+  readonly hooksDefined: number
+}
+
+// ── the payload ───────────────────────────────────────────────────────────────
+
+export interface Payload {
+  readonly schemaVersion: '1.0'
+  readonly runTimestamp: Iso8601
+  readonly submissionId: Uuid
+  readonly scanManifest: ScanManifest
+  readonly metrics: Metrics
+  readonly axes: Axes
+  readonly environment: Environment
+}
