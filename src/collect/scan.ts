@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs'
 import type { FileEntry, Inventory } from './walk.js'
 import { notHumanBecause } from './humanTurn.js'
 import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.js'
+import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
 
 /**
  * Every jsonl key this reducer is allowed to look at.
@@ -36,6 +37,16 @@ export const READ_KEYS = [
   'attributionMcpServer',
   'toolDenialKind',
   'hookErrors',
+  // P5 — the conversation tree. Reading order instead puts 4.19% of rows in
+  // the wrong bundle.
+  'uuid',
+  'parentUuid',
+  // P3 — a bad connection is not low quality work.
+  'isApiErrorMessage',
+  // P6 — where a write landed and how large it was. Only `filePath`,
+  // `structuredPatch[].newLines` and `file.numLines` are touched inside it; see
+  // FORBIDDEN_SUBFIELDS.
+  'toolUseResult',
 ] as const
 
 export type ReadKey = (typeof READ_KEYS)[number]
@@ -46,6 +57,8 @@ export type ReadKey = (typeof READ_KEYS)[number]
  *   isSidechain               false on every main-transcript row on both
  *                             machines; position in the tree decides instead
  *   toolUseResult.interrupted 9,995 occurrences across two machines, 0 true
+ *                             (the parent object is read for P6; only this
+ *                             field within it is off limits)
  *   preventedContinuation     all false on both machines even on the rows where
  *                             a hook did push a response back — the event is in
  *                             hookErrors, which is in the allowlist above
@@ -53,7 +66,30 @@ export type ReadKey = (typeof READ_KEYS)[number]
  * None of the three errors when read. Each returns a well-formed zero, which is
  * why a denylist that is only a comment does not hold.
  */
-export const FORBIDDEN_KEYS = ['isSidechain', 'toolUseResult', 'preventedContinuation'] as const
+export const FORBIDDEN_KEYS = ['isSidechain', 'toolUseResult.interrupted', 'preventedContinuation'] as const
+
+/**
+ * Fields inside `toolUseResult` that carry file or console content.
+ *
+ * `toolUseResult` was banned outright until P6 needed the size of a write. The
+ * ban was the right instinct and the wrong shape: the object also holds
+ * `originalFile`, `newString`, `oldString`, `content`, `stdout` and `stderr`,
+ * which are the file and the terminal. 180 of the 355 edited paths on this
+ * machine sit outside the working tree, so their contents are somebody's
+ * business and not this tool's.
+ *
+ * Named individually rather than covered by a rule about the parent, because a
+ * ban on the parent is what sent P6 looking for line counts somewhere worse.
+ */
+export const FORBIDDEN_SUBFIELDS = [
+  'lines',
+  'originalFile',
+  'newString',
+  'oldString',
+  'content',
+  'stdout',
+  'stderr',
+] as const
 
 export interface ScanCounts {
   readonly linesRead: number
@@ -101,6 +137,12 @@ export interface ScanCounts {
   readonly orphanBundles: number
   /** P3 rows dropped from every numerator and denominator: 15 here. */
   readonly environmentNoiseRows: number
+  /**
+   * P6 — per edited path: when it was last written, how many lines, in which
+   * bundle. The censoring and existence checks that turn these into settled
+   * artifacts happen later; nothing here touches the filesystem.
+   */
+  readonly editedPaths: Readonly<Record<string, PathTally>>
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -212,6 +254,7 @@ function reduceLine(
   proj: MutProjectTally,
   notHuman: Map<string, number>,
   bundles: BundleTracker,
+  paths: Map<string, MutPathTally>,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -304,7 +347,12 @@ function reduceLine(
   // P5 — every row joins a bundle, so a later stage can group by it. Only main
   // transcripts carry the chain; a subagent file is work inside one bundle, not
   // a sequence of requests.
-  if (kind === 'main') bundles.assign(rowUuid, rowParent, human)
+  const bundle = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : null
+
+  // P6 — a write's landing place and size, from the result rather than the
+  // call: the call says where, the result says how much.
+  const write = readWrite(row['toolUseResult'])
+  if (write !== null) recordWrite(paths, write, typeof ts === 'string' ? ts : null, bundle)
 
   if (row['subtype'] === 'stop_hook_summary') {
     m.stopHookSummaryRows += 1
@@ -380,6 +428,7 @@ export function scan(
   const edits: EditTally = new Map()
   const perProject = new Map<string, MutProjectTally>()
   const notHuman = new Map<string, number>()
+  const paths = new Map<string, MutPathTally>()
   let bundleSeq = 0
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
 
@@ -400,7 +449,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths)
     }
     m.taskBundles += bundles.opened()
     m.rootBundles += bundles.roots()
@@ -431,6 +480,7 @@ export function scan(
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,
     environmentNoiseRows: m.environmentNoiseRows,
+    editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
     editedFilesDistinct: edits.size,

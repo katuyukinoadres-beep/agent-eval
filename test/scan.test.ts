@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { FORBIDDEN_KEYS, READ_KEYS, scan } from '@/collect/scan.js'
+import { FORBIDDEN_KEYS, FORBIDDEN_SUBFIELDS, READ_KEYS, scan } from '@/collect/scan.js'
 import { walkProjects } from '@/collect/walk.js'
 
 /**
@@ -14,6 +15,8 @@ import { walkProjects } from '@/collect/walk.js'
  * number, which is the only way to tell the two implementations apart — on a
  * real machine the field and the position agree.
  */
+
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 let root = ''
 const projects = (): string => join(root, 'projects')
@@ -207,12 +210,76 @@ describe('the forbidden fields', () => {
     expect(FORBIDDEN_KEYS.filter((k) => allowed.has(k))).toEqual([])
   })
 
-  it('names all three', () => {
+  it('names all three, and names the one inside toolUseResult precisely', () => {
+    // The parent object was banned outright until P6 needed the size of a
+    // write. The instinct was right and the shape was wrong — a ban on the
+    // parent is what sends a later stage looking for line counts somewhere
+    // worse. Only `interrupted` is dead; `filePath` and
+    // `structuredPatch[].newLines` are what P6 reads.
     expect([...FORBIDDEN_KEYS].sort()).toEqual([
       'isSidechain',
       'preventedContinuation',
-      'toolUseResult',
+      'toolUseResult.interrupted',
     ])
+  })
+
+  it('names the content-bearing fields inside toolUseResult', () => {
+    // 180 of 355 edited paths here sit outside the working tree. Their contents
+    // are somebody's business and not this tool's.
+    expect([...FORBIDDEN_SUBFIELDS].sort()).toEqual([
+      'content',
+      'lines',
+      'newString',
+      'oldString',
+      'originalFile',
+      'stderr',
+      'stdout',
+    ])
+  })
+
+  it('reads no jsonl key outside the allowlist', () => {
+    // Until this existed the allowlist was a comment. `uuid`, `parentUuid` and
+    // `isApiErrorMessage` were all being read while absent from it, and nothing
+    // said so.
+    const sources = ['scan.ts', 'humanTurn.ts', 'bundle.ts'].map((f) =>
+      readFileSync(join(HERE, '..', 'src', 'collect', f), 'utf8'),
+    )
+    const allowed = new Set<string>(READ_KEYS)
+    const read = new Set<string>()
+    for (const src of sources) {
+      for (const m of src.matchAll(/\brow\['([A-Za-z]+)'\]/g)) {
+        const key = m[1]
+        if (key !== undefined) read.add(key)
+      }
+    }
+    expect([...read].filter((k) => !allowed.has(k)).sort()).toEqual([])
+    // And the allowlist must not drift the other way into fields nobody reads.
+    expect(read.size).toBeGreaterThan(10)
+  })
+
+  it('touches no forbidden subfield of toolUseResult', () => {
+    // Checked against artifact.ts, which is the only file that opens the
+    // object. scan.ts legitimately reads `message.content`, so a check spanning
+    // it would have to allow `content` and would then allow the dangerous one.
+    // Funnelling every read through one module is what makes the check exact.
+    const src = readFileSync(join(HERE, '..', 'src', 'collect', 'artifact.ts'), 'utf8')
+    for (const field of FORBIDDEN_SUBFIELDS) {
+      expect(src.includes(`['${field}']`), `artifact.ts must not read ${field}`).toBe(false)
+    }
+  })
+
+  it('opens toolUseResult in exactly one module', () => {
+    // The guarantee above is only worth as much as this. A second reader
+    // elsewhere would be unchecked.
+    const dir = join(HERE, '..', 'src', 'collect')
+    const readers = ['scan.ts', 'humanTurn.ts', 'bundle.ts', 'walk.ts'].filter((f) =>
+      readFileSync(join(dir, f), 'utf8').includes("toolUseResult']"),
+    )
+    // scan.ts passes the object straight to readWrite without indexing into it.
+    for (const f of readers) {
+      const src = readFileSync(join(dir, f), 'utf8')
+      expect(src.includes("readWrite(row['toolUseResult'])"), `${f} must delegate`).toBe(true)
+    }
   })
 
   it('do not change a single count when their values are inverted', () => {

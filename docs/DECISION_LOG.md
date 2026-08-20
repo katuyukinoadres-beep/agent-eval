@@ -441,3 +441,47 @@ environmentNoiseRows =  12
 ### orphan の陽性対照
 
 実データで 0 を主張する以上、**orphan が到達可能であること**をテストで示した。到達不能なら、0 はカウンタが一度も増えないことしか証明しない。
+
+---
+
+## 2026-08-20 — S6b-c: P6 収集側 と、許可リストを強制に変えた
+
+### 許可リストが「コメント」だった
+
+`READ_KEYS` は「この reducer が見てよい jsonl キー」の allowlist として書かれていたが、**誰も強制していなかった**。P5/P3 の実装で `uuid` / `parentUuid` / `isApiErrorMessage` を読み始めたのに、3つとも allowlist に無いまま通っていた。
+
+ソースを走査して `row['X']` の X が全て `READ_KEYS` にあることを検査するテストを追加。**強制されない allowlist は allowlist ではない。**
+
+### `toolUseResult` の全面禁止は形が誤っていた
+
+禁止の理由は `toolUseResult.interrupted` が死んでいる（2環境で 9,995 件・true 0）ことだった。しかし親オブジェクトごと禁じると、P6 が必要とする行数を**もっと悪い場所に探しに行かせる**。
+
+- `FORBIDDEN_KEYS` を `toolUseResult` → **`toolUseResult.interrupted`** に絞った
+- 代わりに `FORBIDDEN_SUBFIELDS`（`lines` / `originalFile` / `newString` / `oldString` / `content` / `stdout` / `stderr`）を明示
+- **`toolUseResult` を開くのは `artifact.ts` 1ファイルだけ**にし、そこだけを検査対象にした
+
+1ファイルに閉じ込めたのは検査を正確にするため。`scan.ts` は `message.content` を正当に読むので、両方を対象にすると `content` を許可せざるを得ず、危険な方も通ってしまう。「開くのが1ファイルであること」自体もテストしている。
+
+### `newLines` は本文を読まずに取れる
+
+`structuredPatch[].newLines` は**ログが既に計算済みの整数フィールド**。`lines`（差分本文）を一切開かずに取れる。create の場合は `file.numLines`。
+
+### 実機（Python 独立測定と一致）
+
+```
+distinct な編集パス = 356   （Python 355、セッション進行分）
+newLines 既知       = 225
+newLines 不明       = 131
+存在する            = 304
+存在しない          =  52
+束が付いている      = 356   （全件）
+newLines 中央値     =  91   最大 2,326
+```
+
+### 「サイズ不明」を 0 にしない
+
+131 パスは結果にサイズ情報が無い。**0 にすると空ファイルと区別がつかない。** v1 の重み `clip(1 + log10(newLines/50), 0.5, 3.0)` はどちらでも下限 0.5 に落ちるので、区別は数値の外（`newLinesKnown`）に置いた。何件が「サイズ不足」ではなく「データ不足」で下限に落ちたかが読める。
+
+### 未実装（次）
+
+SA の判定本体 — 右打ち切り（最終3日より前）/ 存在確認 / uptake / 重み / 束内クラスタリング。
