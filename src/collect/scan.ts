@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs'
 import type { FileEntry, Inventory } from './walk.js'
 import { notHumanBecause } from './humanTurn.js'
+import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.js'
 
 /**
  * Every jsonl key this reducer is allowed to look at.
@@ -87,6 +88,19 @@ export interface ScanCounts {
   readonly originHumanRows: number
   /** Why user rows were excluded from P1, so a filter that ate 90% says so. */
   readonly notHumanCounts: Readonly<Record<string, number>>
+  /**
+   * P5 task bundles — one human turn to the next, along the parentUuid chain.
+   *
+   * The denominator of axis 2, and part of axis 4's. v1 moved it off total tool
+   * calls because with that denominator the cheapest way to raise a score was to
+   * fire hundreds of calls that could not fail.
+   */
+  readonly taskBundles: number
+  /** Bundles begun by a row whose parent was not in the file. Zero here. */
+  readonly rootBundles: number
+  readonly orphanBundles: number
+  /** P3 rows dropped from every numerator and denominator: 15 here. */
+  readonly environmentNoiseRows: number
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -167,6 +181,10 @@ interface Mut {
   originHumanRows: number
   denialRows: number
   denialUserRejected: number
+  taskBundles: number
+  rootBundles: number
+  orphanBundles: number
+  environmentNoiseRows: number
   stopHookSummaryRows: number
   hookErrorsNonEmpty: number
   input: number
@@ -193,6 +211,7 @@ function reduceLine(
   edits: EditTally,
   proj: MutProjectTally,
   notHuman: Map<string, number>,
+  bundles: BundleTracker,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -217,6 +236,22 @@ function reduceLine(
   }
   if (!isObj(row)) {
     m.linesParseFailed += 1
+    return
+  }
+
+  const rowUuid = typeof row['uuid'] === 'string' ? (row['uuid'] as string) : null
+  const rowParent = typeof row['parentUuid'] === 'string' ? (row['parentUuid'] as string) : null
+
+  // P3 — a bad connection is not low quality work. Dropped from every
+  // numerator and denominator, and counted so the drop is visible.
+  //
+  // Still placed in a bundle first. P3 says to exclude these rows from the
+  // counts, not to remove them from the conversation tree: dropping them from
+  // the chain orphans their children, which showed up as 7 orphan bundles
+  // against a measured zero unresolvable parents.
+  if (isEnvironmentNoise(row)) {
+    m.environmentNoiseRows += 1
+    if (kind === 'main') bundles.assign(rowUuid, rowParent, false)
     return
   }
 
@@ -245,6 +280,7 @@ function reduceLine(
     if (denial === 'user-rejected') m.denialUserRejected += 1
   }
 
+  let human = false
   if (row['type'] === 'user') {
     m.userRows += 1
     if (day !== null) dates.userRow.add(day)
@@ -256,6 +292,7 @@ function reduceLine(
     }
     const why = notHumanBecause(row, kind === 'sub')
     if (why === null) {
+      human = true
       m.humanTurns += 1
       proj.humanRows += 1
       if (day !== null) dates.humanTurn.add(day)
@@ -263,6 +300,11 @@ function reduceLine(
       notHuman.set(why, (notHuman.get(why) ?? 0) + 1)
     }
   }
+
+  // P5 — every row joins a bundle, so a later stage can group by it. Only main
+  // transcripts carry the chain; a subagent file is work inside one bundle, not
+  // a sequence of requests.
+  if (kind === 'main') bundles.assign(rowUuid, rowParent, human)
 
   if (row['subtype'] === 'stop_hook_summary') {
     m.stopHookSummaryRows += 1
@@ -327,7 +369,7 @@ export function scan(
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    denialRows: 0, denialUserRejected: 0, taskBundles: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -338,6 +380,8 @@ export function scan(
   const edits: EditTally = new Map()
   const perProject = new Map<string, MutProjectTally>()
   const notHuman = new Map<string, number>()
+  let bundleSeq = 0
+  const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
 
   for (const file of inv.files) {
     let proj = perProject.get(file.project)
@@ -345,6 +389,7 @@ export function scan(
       proj = { lines: 0, subLines: 0, humanRows: 0 }
       perProject.set(file.project, proj)
     }
+    const bundles = bundleTracker(nextBundleId)
     m.bytesRead += file.bytes
     let text = ''
     try {
@@ -355,8 +400,11 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles)
     }
+    m.taskBundles += bundles.opened()
+    m.rootBundles += bundles.roots()
+    m.orphanBundles += bundles.orphans()
   }
 
   let repeated = 0
@@ -379,6 +427,10 @@ export function scan(
     humanTurns: m.humanTurns,
     originHumanRows: m.originHumanRows,
     notHumanCounts: Object.fromEntries([...notHuman.entries()].sort()),
+    taskBundles: m.taskBundles,
+    rootBundles: m.rootBundles,
+    orphanBundles: m.orphanBundles,
+    environmentNoiseRows: m.environmentNoiseRows,
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
     editedFilesDistinct: edits.size,
