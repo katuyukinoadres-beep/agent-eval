@@ -32,6 +32,12 @@ export const DENOMINATOR_MEANINGS = [
   '権限拒否のうち人間が止めた割合',
   '🚨 手戻りではなくファイル集中度。打ち消し判定は別途',
   'ガードレールが実際に応答を差し戻した割合。🚨 `preventedContinuation` は使わない（2環境とも全 false）',
+  // §2 — the manifest carries three rates of its own, and they are the two
+  // detectors for incidents #3 and #4. Their meanings are as load-bearing as
+  // the metric ones, so they live in the same closed union.
+  'origin フィールドが付いている user 行の割合。低いほど human 判定が過小になる',
+  '作業した証拠のある日のうち、外部ログに入っている割合',
+  '暦日のうち記録がある日の割合（作業頻度を答える別指標）',
 ] as const
 
 export type DenominatorMeaning = (typeof DENOMINATOR_MEANINGS)[number]
@@ -83,6 +89,13 @@ export const SOURCE_FIELDS = [
   'system.subtype=stop_hook_summary',
   'permissions',
   'path:subagents/',
+  // Date sources behind the manifest's own rates. Named separately because
+  // which of them went into activeDays is what decides whether the record rate
+  // can exceed 1 — it reached 107.1% here when the denominator was max() of two
+  // of them and the numerator came from the third.
+  'externalLog.dates',
+  'git.commitDates',
+  'jsonl.timestamps',
 ] as const
 
 export type SourceField = (typeof SOURCE_FIELDS)[number]
