@@ -14,9 +14,10 @@
 
 import { readFileSync } from 'node:fs'
 import type { FileEntry, Inventory } from './walk.js'
-import { notHumanBecause } from './humanTurn.js'
+import { notHumanBecause, userText } from './humanTurn.js'
 import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.js'
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
+import { referenceIndex, type ReferenceIndex } from './reference.js'
 
 /**
  * Every jsonl key this reducer is allowed to look at.
@@ -143,6 +144,10 @@ export interface ScanCounts {
    * artifacts happen later; nothing here touches the filesystem.
    */
   readonly editedPaths: Readonly<Record<string, PathTally>>
+  /** Latest mention of any path-shaped token, for P6's uptake condition (a). */
+  readonly lastMention: (path: string) => string | null
+  /** Distinct path-shaped tokens seen, so an empty index reads as empty. */
+  readonly referenceTokens: number
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -255,6 +260,7 @@ function reduceLine(
   notHuman: Map<string, number>,
   bundles: BundleTracker,
   paths: Map<string, MutPathTally>,
+  refs: ReferenceIndex,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -354,6 +360,11 @@ function reduceLine(
   const write = readWrite(row['toolUseResult'])
   if (write !== null) recordWrite(paths, write, typeof ts === 'string' ? ts : null, bundle)
 
+  // P6 uptake (a) — a path mentioned after it was written was used. Human text
+  // and tool arguments both count; a person naming a file and a command taking
+  // it as an argument are the same signal.
+  if (human) refs.note(userText(row), typeof ts === 'string' ? ts : null)
+
   if (row['subtype'] === 'stop_hook_summary') {
     m.stopHookSummaryRows += 1
     const errs = row['hookErrors']
@@ -429,6 +440,7 @@ export function scan(
   const perProject = new Map<string, MutProjectTally>()
   const notHuman = new Map<string, number>()
   const paths = new Map<string, MutPathTally>()
+  const refs = referenceIndex()
   let bundleSeq = 0
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
 
@@ -449,7 +461,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths, refs)
     }
     m.taskBundles += bundles.opened()
     m.rootBundles += bundles.roots()
@@ -481,6 +493,8 @@ export function scan(
     orphanBundles: m.orphanBundles,
     environmentNoiseRows: m.environmentNoiseRows,
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
+    lastMention: refs.lastMention,
+    referenceTokens: refs.size(),
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
     editedFilesDistinct: edits.size,
