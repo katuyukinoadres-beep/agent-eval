@@ -88,3 +88,34 @@ export const VALID_AVAILABILITY = ['available', 'not_applicable', 'parse_failed'
 export const KNOWN_DAY_SOURCES = ['git', 'jsonl', 'externalLog'] as const
 
 export const ACTIVE_DAYS_METHOD = /^union-of-observed\(([a-zA-Z, ]+)\)$/
+
+// ── warnings ──────────────────────────────────────────────────────────────────
+// A warning accepts the payload and marks it, so the receiver can exclude it
+// from a statistic without losing the submission. Everything here describes a
+// reading that is probably wrong rather than certainly malformed.
+
+export const FLAG_IDS = ['W-1', 'W-2', 'W-3', 'W-5', 'W-6', 'W-7'] as const
+
+export type FlagId = (typeof FLAG_IDS)[number]
+
+/**
+ * W-4 (record rate below a sparse/dense threshold) is not implemented. The
+ * threshold is undefined in the spec and n=2 is not enough to set one — the same
+ * reasoning that removed the submission-unit threshold. The rate ships as-is.
+ */
+export const FLAGS_NOT_IMPLEMENTED = ['W-4'] as const
+
+export const FLAG_REASONS: Readonly<Record<FlagId, string>> = {
+  'W-1': 'origin coverage under 10% — human counts read low, and how low depends on which versions wrote the log',
+  'W-2': 'the sub-line share is at an impossible edge for this scope, which is what a mis-levelled glob looks like',
+  'W-3': 'more than five tool versions in one log — check that availability was judged per line, not per environment',
+  'W-5': 'over 1% of lines failed to parse',
+  'W-6': 'a boolean-derived numerator is zero over a large denominator — indistinguishable from a field that never fires',
+  'W-7': 'a rate with a zero denominator, which passes V-4 and sits under W-6 threshold',
+}
+
+export const ORIGIN_COVERAGE_FLOOR = 0.1
+export const TOOL_VERSION_CEILING = 5
+export const PARSE_FAILURE_CEILING = 0.01
+/** W-6 only means something once the denominator is large enough for zero to be surprising. */
+export const BOOLEAN_ZERO_DENOMINATOR_FLOOR = 100

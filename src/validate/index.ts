@@ -8,10 +8,16 @@
 
 import {
   ACTIVE_DAYS_METHOD,
+  BOOLEAN_ZERO_DENOMINATOR_FLOOR,
+  FLAG_REASONS,
   KNOWN_DAY_SOURCES,
+  ORIGIN_COVERAGE_FLOOR,
+  PARSE_FAILURE_CEILING,
   REQUIRED_MANIFEST_FIELDS,
   RULE_REASONS,
+  TOOL_VERSION_CEILING,
   VALID_AVAILABILITY,
+  type FlagId,
   type RuleId,
 } from './rules.js'
 
@@ -21,9 +27,21 @@ export interface Violation {
   readonly detail: string
 }
 
+export interface Flag {
+  readonly flag: FlagId
+  readonly path: string
+  readonly detail: string
+}
+
 export interface Verdict {
   readonly ok: boolean
   readonly violations: readonly Violation[]
+  /**
+   * Accepted but marked. A flagged payload still enters the population; the
+   * receiver decides whether to leave it out of a given statistic. Refusing
+   * these would lose submissions over readings that are merely suspect.
+   */
+  readonly flags: readonly Flag[]
   /** 422 when anything was refused. The payload does not enter the population. */
   readonly status: 200 | 422
 }
@@ -47,14 +65,22 @@ function walk(value: unknown, path: string, visit: (v: unknown, path: string) =>
 
 export function validate(payload: unknown): Verdict {
   const out: Violation[] = []
+  const flags: Flag[] = []
   const add = (rule: RuleId, path: string, detail: string): void => {
     out.push({ rule, path, detail })
+  }
+  const flag = (id: FlagId, path: string, detail: string): void => {
+    flags.push({ flag: id, path, detail })
   }
 
   if (!isObj(payload)) {
     add('V-1', '', `payload is ${payload === null ? 'null' : typeof payload}, not an object`)
-    return { ok: false, violations: out, status: 422 }
+    return { ok: false, violations: out, flags, status: 422 }
   }
+
+  // Read once, before the manifest block, because W-2 evaluates the sub-line
+  // share per project as well as in aggregate.
+  const env = payload['environment']
 
   // ── V-1 / V-2: the manifest ────────────────────────────────────────────────
   const manifest = payload['scanManifest']
@@ -95,6 +121,63 @@ export function validate(payload: unknown): Verdict {
         }
       }
     }
+
+    // ── W-1: origin coverage ─────────────────────────────────────────────────
+    const cov = manifest['originFieldCoverage']
+    if (isObj(cov) && isNum(cov['numerator']) && isNum(cov['denominator']) && cov['denominator'] > 0) {
+      const ratio = cov['numerator'] / cov['denominator']
+      if (ratio < ORIGIN_COVERAGE_FLOOR) {
+        flag('W-1', 'scanManifest.originFieldCoverage', `${(ratio * 100).toFixed(1)}% — ${FLAG_REASONS['W-1']}`)
+      }
+    }
+
+    // ── W-3: version spread ──────────────────────────────────────────────────
+    const distinct = manifest['toolVersionDistinct']
+    if (isNum(distinct) && distinct > TOOL_VERSION_CEILING) {
+      flag('W-3', 'scanManifest.toolVersionDistinct', `${distinct} versions — ${FLAG_REASONS['W-3']}`)
+    }
+
+    // ── W-5: parse failures ──────────────────────────────────────────────────
+    const failed = manifest['linesParseFailed']
+    const read = manifest['linesRead']
+    if (isNum(failed) && isNum(read) && read > 0 && failed / read > PARSE_FAILURE_CEILING) {
+      flag('W-5', 'scanManifest.linesParseFailed', `${failed}/${read} — ${FLAG_REASONS['W-5']}`)
+    }
+
+    // ── W-2: a sub-line share sitting at an edge it cannot legitimately reach ──
+    //
+    // Both edges, not just zero. A glob levelled one directory too deep matches
+    // no main files at all, which pins the ratio at 1 and leaves a rule that
+    // only watches for 0 silent.
+    //
+    // And per project, not only in aggregate. On this machine four of five
+    // projects hold no lines while one holds them all; an aggregate ratio of
+    // 0.42 looks healthy while four projects were missed entirely. The failure
+    // this whole rule exists to catch is a partial miss.
+    const scope = manifest['scope']
+    const edgeIsImpossible = (ratio: number): boolean =>
+      (scope === 'all' && (ratio === 0 || ratio === 1)) ||
+      (scope === 'sub' && ratio === 0) ||
+      (scope === 'main' && ratio === 1)
+
+    const ratio = manifest['subLineRatio']
+    if (isNum(ratio) && isNum(read) && read > 0 && edgeIsImpossible(ratio)) {
+      flag('W-2', 'scanManifest.subLineRatio', `${ratio} under scope "${String(scope)}" — ${FLAG_REASONS['W-2']}`)
+    }
+
+    if (isObj(env) && Array.isArray(env['projects'])) {
+      for (const [i, p] of (env['projects'] as unknown[]).entries()) {
+        if (!isObj(p)) continue
+        const lines = p['lines']
+        const r = p['subLineRatio']
+        // Skip a project with no lines: 0/0 is not an edge, it is an absence,
+        // and there are four of them here.
+        if (!isNum(lines) || lines === 0 || !isNum(r)) continue
+        if (edgeIsImpossible(r)) {
+          flag('W-2', `environment.projects[${i}].subLineRatio`, `${r} under scope "${String(scope)}" — ${FLAG_REASONS['W-2']}`)
+        }
+      }
+    }
   }
 
   // ── V-3 / V-4 / V-5: every rate, wherever it sits ──────────────────────────
@@ -110,6 +193,18 @@ export function validate(payload: unknown): Verdict {
         const d = v['denominator']
         if (isNum(n) && isNum(d) && n > d) {
           add('V-5', path, `${n} / ${d} exceeds 1`)
+        }
+        // W-7. A zero denominator is not malformed — V-4 sees both parts
+        // present, and W-6 only looks above a hundred — so it ships as a hole.
+        // The spec's own glob for skillFired matches nothing on this machine.
+        if (isNum(d) && d === 0) {
+          flag('W-7', path, FLAG_REASONS['W-7'])
+        }
+        // W-6. Rides on booleanDerived from the type rather than a list here,
+        // because a list drifts and the metric that falls off it is the one
+        // that then reports a silent zero.
+        if (v['booleanDerived'] === true && isNum(n) && isNum(d) && n === 0 && d > BOOLEAN_ZERO_DENOMINATOR_FLOOR) {
+          flag('W-6', path, `0 / ${d} — ${FLAG_REASONS['W-6']}`)
         }
         if (!('denominatorMeaning' in v) && !('meaning' in v)) {
           add('V-3', path, RULE_REASONS['V-3'])
@@ -137,7 +232,6 @@ export function validate(payload: unknown): Verdict {
   })
 
   // ── V-6: the project list is the whole machine ─────────────────────────────
-  const env = payload['environment']
   if (isObj(env)) {
     const projects = env['projects']
     const count = env['projectCount']
@@ -171,5 +265,10 @@ export function validate(payload: unknown): Verdict {
     }
   }
 
-  return { ok: out.length === 0, violations: out, status: out.length === 0 ? 200 : 422 }
+  return {
+    ok: out.length === 0,
+    violations: out,
+    flags,
+    status: out.length === 0 ? 200 : 422,
+  }
 }
