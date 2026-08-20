@@ -32,7 +32,7 @@ v1 との関係
 |---|---|---|---|
 | C-01 | P1 の人間発話切り出しに `isSidechain != true` を条件として置いた | 条件を捨て、「そのレコードのファイルパスが `projects/*/*/subagents/**` に属さないこと」に置換 | `isSidechain` はメイン jsonl では常に false（Niko main 76,467行 全 false）、subagents 配下では常に true（27,872行）。main では恒真で無意味、sub では人間発話が全消しになる。Leon の「全行 false」は非再帰 glob のバグと本人が認めた |
 | C-02 | サブエージェント配下は「実測45個」で、join したかは軸0の任意項目 | `subagents/` サブツリーの走査を全軸で必須にし、`rootsWalked` と「サブ配下の行数比」を軸0の必須項目に昇格 | 実測はディレクトリ9・jsonl 368〜408本で、行数では全104,577行中 27,965行＝26.7%。v1 の「45個」から桁が変わっている。main のみ走査すると軸1の深度が最大3割落ちる |
-| C-03 | `cleanupPeriodDays` を `~/.claude.json` から読む前提 | enterprise / user / project / local の4スコープを merge した `settings*.json` を含めて探し、無ければ jsonl の最古 timestamp を使う2段構え。出所（setting / measured）を scanManifest に必ず載せる | Niko 環境でも `~/.claude.json` は None を返し、実体は `~/.claude/settings.json` の 14 だった。Leon 環境にはキー自体が存在せず、それでも最古ログは42日前 |
+| C-03 | `cleanupPeriodDays` を `~/.claude.json` から読む前提 | enterprise / user / project / local の4スコープを merge した `settings*.json` を含めて探し、無ければ jsonl の最古 timestamp を使う2段構え。出所（setting / observed）を scanManifest に必ず載せる | Niko 環境でも `~/.claude.json` は None を返し、実体は `~/.claude/settings.json` の 14 だった。Leon 環境にはキー自体が存在せず、それでも最古ログは42日前 |
 | C-04 | 窓は暦日（実効窓日数14日） | 窓は稼働日で切る。「人間発話が1件以上ある日」を稼働日と数え、直近10稼働日を1窓とする | 日次行数に 07-31〜08-02（3日）と 08-08（1日）の完全な穴がある。最古 2026-07-28／最新 2026-08-19 で暦日スパン22日だが、連続稼働は 08-09〜08-19 の11日しかなく、設定値14とも一致しない |
 | C-05 | 各軸のスコアと率（W、I、V、R など）が第一級の出力 | 率を第一級の出力から降格し、分子と分母を生カウントで提出する。率は画面表示のみ | is_error 率は走査範囲で1.26倍（main 2.70% ↔ sub 3.40%）、分母定義で2.08倍（tool_result 総数 27,775 を分母に 2.94% ↔ is_error キー保持 13,374 を分母に 6.10%）動く。率だけ送ると他環境と比較できない |
 | C-06 | scanManifest という概念が無い | 全軸の提出ペイロードに scanManifest を必須化（§4に完全構造） | 上と同じ。加えて Leon と Niko で jsonl 1,494本/625MB 対 156本/64.1MB の約10倍差があり、層別なしの percentile は情報を持たない |
@@ -148,11 +148,14 @@ v1 との関係
 ```
 windowDays      = 10（稼働日）
 windowSource    = "setting"  if cleanupPeriodDays が4スコープ merge で見つかった
-                = "measured" otherwise
+                = "observed" otherwise
                 実測: Niko = setting / 14（~/.claude/settings.json）
-                      Leon = measured / 最古42日前（キー自体が無い）
+                      Leon = observed / 最古42日前（キー自体が無い）
 calendarSpanDays = 最新 timestamp − 最古 timestamp   # 実測 22（2026-07-28〜2026-08-19）
 activeDays       = 人間発話が1件以上ある日の数        # 実測 17
+activeDaysMethod = "human-turn-days"                  # 🚨 window 側は必ずこの値。
+                   externalLog.activeDaysMethod（union-of-observed）とは別の量で、
+                   同一環境で 17 と 18 に分かれる。名前だけで読まず親オブジェクトごと読む
 contiguousDays   = 連続稼働の最長                     # 実測 11（08-09〜08-19）
 filesRead / bytesRead / linesRead / linesParseFailed
 subLineRatio     = サブ配下の行数 / 全行数            # 実測 27,965 / 104,577 = 0.267
@@ -327,7 +330,7 @@ selfRepaired / humanRescued / unresolved   # 3分割。減点は unresolved の�
 
 # 条件(ii) の過去窓
 windowDays   = 10（稼働日）
-windowSource = "setting" | "measured"   # Niko: setting/14、Leon: measured/42
+windowSource = "setting" | "observed"   # Niko: setting/14、Leon: observed/42
 ```
 
 C_contract（E7・実測71件 = Edit 37 / Read 28 / Write 5）は、この軸の分子（検証欠落の証拠）として使う。軸2の分子からは除外し、分母には残す。
@@ -337,7 +340,7 @@ TodoWrite 未使用の固定 -5点は据え置く。ただし Leon 側の TodoWr
 三値の判定
 - 編集区間25未満 → not_applicable
 - 条件(ii) は初回窓 not_applicable（条件を外して計算し、外した旨を行単位で明示）
-- `windowSource == "measured"` の環境では、その旨を三値と別に注記する（判定基準が環境で変わっていることを隠さない）
+- `windowSource == "observed"` の環境では、その旨を三値と別に注記する（判定基準が環境で変わっていることを隠さない）
 
 初回計測時の扱い
 初回のみ条件(ii) を外す。2回目以降から本判定。
@@ -685,6 +688,7 @@ activeDays = |union(git のコミット日, jsonl の日付, 外部ログの日�
     "unit": "activeDays",
     "windowDays": 10,
     "windowSource": "setting",
+    "activeDaysMethod": "human-turn-days",
     "cleanupPeriodDays": 14,
     "cleanupPeriodDaysFoundAt": "~/.claude/settings.json",
     "calendarSpanDays": 22,

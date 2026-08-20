@@ -86,7 +86,7 @@
     "cleanupPeriodDaysFoundAt": "~/.claude/settings.json",  // null 可
     "calendarSpanDays": 22,
     "activeDays": 17,
-    "activeDaysMethod": "union-of-observed(git, jsonl, externalLog)",  // 必須
+    "activeDaysMethod": "human-turn-days",  // 必須。🚨 window 側は常にこれ
     "contiguousDays": 11,
     "gapDays": ["2026-07-31", "2026-08-01"]
   },
@@ -95,6 +95,8 @@
     "exists": true,                  // 必須
     "rows": 42,
     "recordedDays": 15,
+    "activeDays": 18,               // 必須。recordRate.denominator と一致（V-13）
+    "activeDaysMethod": "union-of-observed(git, jsonl, externalLog)",  // 必須
     "recordRate": { "numerator": 15, "denominator": 18,
                     "meaning": "作業した証拠のある日のうち、外部ログに入っている割合" },
     "recordRateCalendar": { "numerator": 15, "denominator": 125,
@@ -103,7 +105,19 @@
 }
 ```
 
-### 2.1 `activeDaysMethod` の定義（🚨 max ではなく union）
+### 2.1 `activeDaysMethod` — 同じ名前の2つの量を取り違えない
+
+🚨 `activeDays` は **2箇所に出るが別の量**。親オブジェクトを見ずに名前だけで読むと 5.9% ずれる。
+
+| パス | 値（実測） | 意味 | `activeDaysMethod` |
+|---|---|---|---|
+| `window.activeDays` | 17 | 人間発話が1件以上ある日。**全軸の分母スコープ** | `"human-turn-days"` |
+| `externalLog.activeDays` | 18 | 何らかの証拠がある日の和集合。**記録率の分母** | `"union-of-observed(...)"` |
+
+`window.activeDays ≤ externalLog.activeDays` は構造的に成立する（人間発話があった日は、その発話を読んだ jsonl が残っているので和集合に必ず含まれる）。逆転したら取り違えなので、妥当性ではなく**入れ替えの検出器**として使う。
+
+以下は `externalLog.activeDays` 側の定義。
+
 
 ```
 activeDays = |union(git のコミット日, jsonl の日付, 外部ログの日付)|
