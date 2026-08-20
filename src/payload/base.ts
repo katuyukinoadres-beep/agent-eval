@@ -48,6 +48,10 @@ const TOOL_VERSIONS = {
 const ALL_NOT_APPLICABLE: Axis = {
   availability: 'not_applicable',
   lineStates: { available: 0, not_applicable: LINES_READ, parse_failed: 0 },
+  // No rate: with 11 session clusters against a minimum denominator of 20 there
+  // is nothing to divide. null rather than 0/0, which would read as a measured
+  // zero instead of an absence.
+  metric: null,
   score: null,
   confidenceInterval: null,
   belowMinDenominator: true,
