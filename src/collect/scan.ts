@@ -12,12 +12,14 @@
  * source for something measured here and each returns a constant zero.
  */
 
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { FileEntry, Inventory } from './walk.js'
 import { notHumanBecause, userText } from './humanTurn.js'
 import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.js'
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
 import { referenceIndex, type ReferenceIndex } from './reference.js'
+import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
 
 /**
  * Every jsonl key this reducer is allowed to look at.
@@ -148,6 +150,11 @@ export interface ScanCounts {
   readonly lastMention: (path: string) => string | null
   /** Distinct path-shaped tokens seen, so an empty index reads as empty. */
   readonly referenceTokens: number
+  /**
+   * Axis 2's within-window repeat rate, over signatures of (tool, class,
+   * target). Error text is classified here and never carried further.
+   */
+  readonly errorRepeats: RepeatRate
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -240,6 +247,50 @@ interface Mut {
   cacheCreation: number
 }
 
+/** The text of a tool_result, flattened. Read locally, classified, discarded. */
+function resultText(block: Record<string, unknown>): string {
+  const content = block['content']
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  let out = ''
+  for (const part of content) {
+    if (isObj(part) && typeof part['text'] === 'string') out += part['text']
+  }
+  return out
+}
+
+/**
+ * The third term of a signature: what the failing call was aimed at.
+ *
+ * An extension for a file operation, a command's first token for a shell one —
+ * v1's definition. Hashing it matters for the second: a first token is often
+ * the name of a private script. The signatures never leave this process, since
+ * they exist to produce one ratio, but hashing keeps a stray log line from
+ * carrying it.
+ *
+ * An earlier version hashed the tool name instead, which put no information in
+ * the term at all: constant per tool, so a signature was really (tool, class)
+ * and two failures against different targets could not be told apart.
+ */
+export function targetOf(toolName: string, input: unknown): string {
+  if (!isObj(input)) return ''
+  if (toolName === 'Bash') {
+    const command = input['command']
+    if (typeof command !== 'string') return ''
+    const first = command.trim().split(/\s+/)[0] ?? ''
+    // Strip a directory so `scripts/x.py` and `./x.py` are the same target.
+    return first.split(/[\\/]/).pop() ?? ''
+  }
+  const path = input['file_path'] ?? input['notebook_path'] ?? input['path']
+  if (typeof path !== 'string') return ''
+  const base = path.split(/[\\/]/).pop() ?? ''
+  const at = base.lastIndexOf('.')
+  return at <= 0 ? '' : base.slice(at + 1).toLowerCase()
+}
+
+const hashTarget = (target: string): string =>
+  target === '' ? '' : createHash('sha256').update(target, 'utf8').digest('hex').slice(0, 8)
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -261,6 +312,8 @@ function reduceLine(
   bundles: BundleTracker,
   paths: Map<string, MutPathTally>,
   refs: ReferenceIndex,
+  toolOf: Map<string, { name: string; target: string }>,
+  signatures: Array<readonly [string, ErrorClass, string]>,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -394,9 +447,26 @@ function reduceLine(
       m.toolResultTotal += 1
       if ('is_error' in block) {
         m.toolResultWithIsErrorKey += 1
-        if (block['is_error'] === true) m.toolResultIsErrorTrue += 1
+        if (block['is_error'] === true) {
+          m.toolResultIsErrorTrue += 1
+          // Joined to the call by tool_use_id. Without the join the class is
+          // known and the tool is not, and (class, target) alone collapses a
+          // Bash failure and an Edit failure into one signature.
+          const id = block['tool_use_id']
+          const call = typeof id === 'string' ? toolOf.get(id) : undefined
+          signatures.push([
+            call?.name ?? 'unknown',
+            classifyError(resultText(block)),
+            hashTarget(call?.target ?? ''),
+          ])
+        }
       }
     } else if (block['type'] === 'tool_use') {
+      const id = block['id']
+      const toolName = block['name']
+      if (typeof id === 'string' && typeof toolName === 'string') {
+        toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
+      }
       const name = block['name']
       if (name === 'Edit' || name === 'Write' || name === 'MultiEdit' || name === 'NotebookEdit') {
         const input = block['input']
@@ -441,6 +511,8 @@ export function scan(
   const notHuman = new Map<string, number>()
   const paths = new Map<string, MutPathTally>()
   const refs = referenceIndex()
+  const toolOf = new Map<string, { name: string; target: string }>()
+  const signatures: Array<readonly [string, ErrorClass, string]> = []
   let bundleSeq = 0
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
 
@@ -461,7 +533,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths, refs)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths, refs, toolOf, signatures)
     }
     m.taskBundles += bundles.opened()
     m.rootBundles += bundles.roots()
@@ -495,6 +567,7 @@ export function scan(
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
     referenceTokens: refs.size(),
+    errorRepeats: repeatRate(signatures),
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
     editedFilesDistinct: edits.size,
