@@ -47,7 +47,7 @@ v1 との関係
 |---|---|---|---|
 | C-11 | 軸0 測定カバレッジ | redefine | 実効窓日数の読み場所（C-03）と、subagents サブツリー走査の必須化（C-02）。I4（file-history 実バイト照合）はセッションの13%にしか実体が無いので v1 のまま維持 |
 | C-12 | 軸1 一発着地率 | redefine | データ源の `[Request interrupted by user]` は main 1,502ファイル中28件しかなく、誘発判定の材料にならないので内訳表示へ降格。`toolUseResult.interrupted` への乗り換えも不可（キー保持 8,727件・true 0件、Leon も 1,268件中0件）。depth は scope=all で集計 |
-| C-13 | 軸2 空振り率 | redefine | 分子を帰属表適用後の 548 に確定（816 から 1.49倍下がる。内訳は A_agent_code 345 + D_dependency 59 + T_timeout 44 + Z_other 100）。W_ref による絶対値比較は母集団が層別で揃うまで凍結 |
+| C-13 | 軸2 空振り率 | redefine | 分子を帰属表適用後に確定。W_ref による絶対値比較は母集団が層別で揃うまで凍結。**⚠️ 2026-08-20（Q-5）で上書き**: ここに書いた分類（A_agent_code 等）は定義が存在せず再現できないため、`error_class` と `toolDenialKind` による機械判定に置換（§5.1） |
 | C-14 | 軸3 自己検証率 | redefine | 条件(ii) の「過去窓」を `windowDays` / `windowSource` で明示（Niko 設定14日・実測15日連続、Leon 設定なし・実測42日）。編集区間の集計を scope=all にし、検証がサブエージェント側で起きた分を内訳で分離 |
 | C-15 | 軸4 成果の定着 | keep | v1 全文を grep して pr-link / pr_link は0ヒット、§15 で PR 帰属は既に rejected 済み。Leon 284件 / Niko 0件 という pr-link のドメイン依存を最初から回避している。定義本体は据え置き、scope 必須化と attribution の付け替えのみ |
 | C-16 | 軸5 環境の代謝 | redefine | U の分子が「行数」か「distinct 種類数」かで桁が変わる（Niko 行数 12,432 / distinct 43 / 定義81 = 53.1%、Leon 行数231 / distinct 3 / 定義27 = 11.1%）。FC の主式が cache_read 依存で、実測 cache_read は総トークンの94.7%（13.03B / 13.76B）。v1 §15 が rejected した「キャッシュ効率」に化けていた |
@@ -103,7 +103,7 @@ v1 との関係
 | # | 軸名 | attribution | 弾 | 重み | 主データ源 | 走査範囲 | 三値の判定条件 |
 |---|---|---|---|---|---|---|---|
 | 1 | 一発着地率 | agent | 第1弾 | 18.75 | `tool_use.input.file_path`（Edit/Write/NotebookEdit）、`toolUseResult.structuredPatch`、人間発話の位置 | all（main + subagents） | 実測クラスタ131・分子135・分母1,498 で available。SA が0件なら not_applicable。`structuredPatch` のパース失敗が5%超で parse_failed |
-| 2 | 空振り率 | agent | 第1弾 | 17.5 | `tool_result{is_error, content}` を `tool_use_id` で join | all | 実測クラスタ146・分子446・分母16,871 で available。フィルタ後の tool_use が50未満で not_applicable |
+| 2 | 空振り率 | agent | 第1弾 | 17.5 | `tool_result{is_error, content}` を `tool_use_id` で join | all | 分母は**タスク束数**（実測 3,184）。フィルタ後の tool_use が窓内50未満で not_applicable。詳細は §3.2 |
 | 3 | 自己検証率 | agent | 第1弾 | 17.5 | tool_use の並び、`is_error`、書込系 file_path、前窓スナップショット | all（検証がサブ側で起きた分は内訳分離） | 編集区間25未満で not_applicable。条件(ii) は初回窓 not_applicable |
 | 4 | 成果の定着 | joint | 第1弾 | 17.5 | SA（P6）、後続 tool_use の input、人間発話、`attachment.type == "edited_text_file"`（実測199件）、`staleRecovered`（実測98件） | all | SA 0件 または タスク束10未満で not_applicable。次窓生存は初回 not_applicable。(c) は最小分母を割ったら (c) 抜きで再正規化 |
 | 5 | 環境の代謝 | agent | 第1弾 | 12.5 | `message.usage.*`、`skill_listing` attachment、`attributionSkill`（行数と distinct を別持ち）、hook 発火記録 | all | 資産数3未満で U は not_applicable（台形スコアのみ）。`skill_listing` が20,001字で截断されていたら上限側 parse_failed |
@@ -141,7 +141,8 @@ v1 との関係
 そもそも何をどれだけ読めたのか。読んだログは書き換えられていないか。測定の直前だけ環境が整えられていないか。
 
 データ源と走査範囲
-- jsonl は scope=all（`projects/*/*/*.jsonl` と `projects/*/*/subagents/**/*.jsonl` の両方）。`rootsWalked` に後者が含まれていないスキャンは、それだけで軸0を parse_failed にする
+- jsonl は scope=all。グロブは **3本の union**（`projects/*/*.jsonl` / `projects/*/archived/*.jsonl` / `projects/*/*/subagents/**/*.jsonl`）。`rootsWalked` に subagents が含まれていないスキャンは、それだけで軸0を parse_failed にする
+  🚨 **`archived/` を落とすと黙って消える。** Niko 環境の実測（2026-08-20）で archived は 2ファイル・**7,990行（全体の5.9%）**・is_error 27件。Leon 環境では `projects/*/*.jsonl` が 11件で `projects/*/*/*.jsonl` が 0件、Niko 環境では 1,286件と 2件。**どちらか片方だけを採ると、必ずどちらかの環境が黙って欠ける**（`skillFired` の分母グロブと同じ形）
 - `settings*.json` の4スコープ merge（enterprise managed / user / project / local）
 - 各 jsonl の最古・最新 timestamp
 
@@ -162,7 +163,8 @@ filesRead / bytesRead / linesRead / linesParseFailed
 subLineRatio     = サブ配下の行数 / 全行数            # 実測 27,965 / 104,577 = 0.267
                    🚨 導出値は必ず同じ走査の成分から算出する。走査範囲の違う
                    分子・分母を並べると、成分と比が食い違ったサンプルになる
-excludedEvents   = {N_network: 141, hookDenial: 44, ...}  # §5 の帰属表の除外分を実名で
+excludedEvents   = {networkTool: 57, hookDenial: 51, userRejected: 11, contract: 47}
+                   # §5 の帰属表で除外した分。キーは閉じた union（実測は Niko 2026-08-20）
 ```
 
 三値の判定
@@ -252,7 +254,7 @@ forwardTurns / redoTurns / generationInterrupts   # generationInterrupts 実測 
 問い
 到達に寄与しなかった手数を、1タスクあたり何回踏んだか。
 
-v1 からの変更点は3つ。(a) 分子を帰属表適用後に確定（816 → 548）、(b) 率を提出物から降格し分子分母を生カウントで持つ、(c) W_ref による絶対値比較を凍結。
+v1 からの変更点は3つ。(a) 分子を帰属表適用後に確定（Niko 環境で failures 603 → 472）、(b) 率を提出物から降格し分子分母を生カウントで持つ、(c) W_ref による絶対値比較を凍結。
 
 データ源と走査範囲
 - `tool_result{is_error, content}` を `tool_use_id` で join したツール名 — scope=all
@@ -261,20 +263,33 @@ v1 からの変更点は3つ。(a) 分子を帰属表適用後に確定（816 �
 
 算出（分子と分母を生カウントで持つ）
 ```
-# 分母（3通りを全部持つ。どれを表示に使ったかを scanManifest に書く）
-toolResultTotal     = 27,775   # tool_result の総数
-isErrorKeyPresent   = 13,374   # is_error キーを持つレコード数
-taskBundles         = タスク束数（P5）
+# 🚨 分子は「エラー件数」ではない（Q-5 確定・2026-08-20）
+# v1 の本体は「1タスクあたり何手空振りしたか」で、分子は重み付きの空振り量。
+# エラー件数（旧記載の 816 / 548）はその第1項 failures に入る値であって、分子そのものではない。
+# 旧記載の 446 は 816 とも 548 とも閉じず、由来を特定できなかったので削除した（§5.3）。
 
-# 分子（帰属表 §5 適用後）
-wastedCalls = A_agent_code 345 + D_dependency 59 + T_timeout 44 + Z_other 100 = 548
-              # 帰属前は 816。差の 268 = N_network 141 + C_contract 71 + hookDenial 44
-              #                        + user-rejected 11 + hook denial 無し 1
-              # main のみでは 483 → 360（270 + 26 + 30 + 34）
+# 分母 = タスク束数（P5）。v1 が明示的にそう決めている
+#   総ツール呼び出し数を分母にすると、失敗を減らすより「確実に成功する呼び出しを
+#   数百回打つ」ほうが安く、副作用がゼロになる。この攻撃を塞ぐための分母。
+#   参考値として toolResultTotal と isErrorKeyPresent も提出するが、W の分母には使わない。
 
-# 参考: 率にすると 816/27,762 = 2.94% ↔ 548/27,762 = 1.97%（1.49倍）
-#       走査範囲では main 2.70% ↔ sub 3.40%（1.26倍）
-#       分母定義では 2.94% ↔ 6.10%（2.08倍）
+# 分子（v1 の重み）
+wastedTotal = failures × 1.0
+            + writeRepeats × 0.7          # 書込/実行系の同一入力の再実行
+            + investigationRepeats × 0.2  # Read/Grep/WebSearch/WebFetch の再実行
+            + timedOut × 1.0
+            + largeOutput × 0.5           # persistedOutputSize > 100,000 bytes
+W = wastedTotal / taskBundles
+
+# failures は帰属表 §5 を適用した後の件数（下の実測を参照）
+
+# Niko 環境の実測（2026-08-20・走査 1,510ファイル / 135,005行 / 未パース0 / union グロブ）
+#   is_error 総数        638
+#   帰属後 failures      472   （帰属前 603 から -131 = 21.7%）
+#   taskBundles        3,184
+#   W                 0.2253
+#   r_in              0.5714
+# 参考: Leon 環境（#17 実測）は W 1.1583 / r_in 0.5124
 
 # 反復（v1 のまま）
 repeatWrite  = 同一タスク束で (tool_name, 正規化input) が2回目以降の書込/実行系
@@ -288,8 +303,24 @@ r_in = 1 - distinct(sig) / count(errors)
 
 W_ref = 3.0 での絶対値採点は、母集団が規模層別で揃うまで凍結する。第1弾は自己時系列Δと、分類別の実名上位3件のみを出す。
 
+🚨 **凍結の意味を実装に届かせる。** 現状の実装は `score` を出しており、その値は W_ref = 3.0 に依存している。2環境の実測を入れると W_ref の選び方でスコア差がこれだけ動く:
+
+| W_ref | Niko (W 0.2253 / r_in 0.5714) | Leon (W 1.1583 / r_in 0.5124) | 差 |
+|---|---|---|---|
+| 1.0 | 65.36 | 17.07 | 48.29 |
+| 2.0 | 72.68 | 44.42 | 28.26 |
+| 3.0 | 75.12 | 56.97 | 18.15 |
+
+**同じ2環境の順位は変わらないが、差は 2.6倍動く。** どちらも 3.0 に遠く届かないので、3.0 は上限として緩い可能性が高い（Niko は W/W_ref = 7.5%、Leon で 38.6% しか使っていない）。第1弾では `score` に**暫定定数に依存している印**を付けて出す:
+
+```
+axes.wastedMotion.provisionalConstants = [{ "name": "W_ref", "value": 3.0 }]
+```
+
+これがある軸は、自己時系列Δには使ってよいが、環境間比較と母集団統計からは外す。`omittedTerms` が「落ちた項」を明示するのと同じ扱いを、「まだ校正できていない定数」にも与える。
+
 三値の判定
-- クラスタ >= 20 かつ 分母 >= 200 かつ 分子 >= 5 → available（実測 分子446 / 分母16,871 / クラスタ146 で available）
+- クラスタ >= 20 かつ 分母 >= 200 かつ 分子 >= 5 → available（Niko 環境の実測 2026-08-20: 分子 472 / 分母 3,184束 / available）
 - フィルタ後の tool_use が窓内50未満 → not_applicable
 - hook 起因の分離ができない環境（外部ログも本文パターンも無い）→ 「hook 起因を分離できていない」を not_applicable として明示。parse_failed にはしない
 
@@ -305,7 +336,7 @@ W_ref = 3.0 での絶対値採点は、母集団が規模層別で揃うまで�
 | 分母定義を有利なほうに選ぶ | 分母3通りを全部提出させ、表示に使った定義を scanManifest に固定する |
 
 低スコア時のアドバイス例
-「Edit の失敗のうち37件が C_contract（`String to replace not found` / `File has been modified since read`）でした。これは軸3の検証欠落の証拠として扱っているので、この軸の分子には入れていません。空振りの本体は A_agent_code 345件です。うち最多は同一署名の反復で、PreToolUse の Edit フックで直前 Read を検査すると機械で止まります。」
+「Edit の失敗のうち42件が `edit_string_not_found` / `edit_stale_read` でした（E7）。これは軸3の検証欠落の証拠として扱っているので、この軸の分子には入れていません。空振りの本体は残余420件で、最多は Bash の traceback です。うち同一署名の反復が r_in 0.5714 を作っています。PreToolUse の Edit フックで直前 Read を検査すると、E7 の側は機械で止まります。」
 
 ---
 
@@ -336,7 +367,7 @@ windowDays   = 10（稼働日）
 windowSource = "setting" | "observed"   # Niko: setting/14、Leon: observed/42
 ```
 
-C_contract（E7・実測71件 = Edit 37 / Read 28 / Write 5）は、この軸の分子（検証欠落の証拠）として使う。軸2の分子からは除外し、分母には残す。
+E7（`error_class ∈ {edit_string_not_found, edit_stale_read}`・Niko 実測47件、うち Edit 42）は、この軸の分子（検証欠落の証拠）として使う。軸2の分子からは除外し、分母には残す。
 
 TodoWrite 未使用の固定 -5点は据え置く。ただし Leon 側の TodoWrite 利用有無を確認するまでは、内訳表示のみで減点は保留する（§9 の Leon 待ち事項）。
 
@@ -357,7 +388,7 @@ TodoWrite 未使用の固定 -5点は据え置く。ただし Leon 側の TodoWr
 | 自作自演の失敗から修復して S を稼ぐ | 分子を初出エラークラスに限定（v1 のまま） |
 
 低スコア時のアドバイス例
-「編集区間のうち、書いた対象を自分で確かめたのは12%です。加えて軸2の分類で C_contract が71件出ています（Edit 37 / Read 28 / Write 5）。これは『読まずに書いた』の直接の証拠です。散文で『編集したら確認する』と書く方式はこの環境では守られていないので、PostToolUse の Edit フックで1コマンドの検査に変えてください。」
+「編集区間のうち、書いた対象を自分で確かめたのは12%です。加えて軸2の分類で E7 が47件出ています（うち Edit 42）。これは『読まずに書いた』の直接の証拠です。散文で『編集したら確認する』と書く方式はこの環境では守られていないので、PostToolUse の Edit フックで1コマンドの検査に変えてください。」
 
 ---
 
@@ -762,8 +793,8 @@ activeDays = |union(git のコミット日, jsonl の日付, 外部ログの日�
     "rulesetVersion": "v2-E1..E14",
     "evaluationOrder": ["E1","E2","E3","E4","E7","E6","E5","E8","E9"],
     "reconciliation": {
-      "isErrorTotal": 816,
-      "scored": 548,
+      "isErrorTotal": 638,
+      "scored": 472,
       "excludedEnvNoise": 141,
       "toSafetyCheck": 44,
       "toAxis3": 71,
@@ -829,17 +860,24 @@ Niko が追加提案する分母定義まわり
 
 ### 5.1 帰属表（E1〜E14）
 
-| ID | イベント | 実測 | 一次帰属 | 他軸での扱い |
+🚨 **判定キーを「機械で決まるもの」に置き換えた（Q-5 確定・2026-08-20）。** 旧版は `A_agent_code` / `D_dependency` / `N_network` / `C_contract` / `Z_other` という分類名で件数（345 / 59 / 141 / 71 / 100）だけを載せていたが、**この5クラスの定義は v1 にも v2 にも無い**。v1 が正規表現で定義しているのは `error_class` 9種（`edit_string_not_found` / `edit_stale_read` / `cmd_not_found` / `traceback:<例外>` / `timeout` / `permission_denied` / `no_such_file` / `syntax_error` / `other:<先頭60字のhash>`）だけで、こちらは r_in の署名用。**定義の無い分類で出した件数は誰も再現できない**ので、既に実装されている `error_class` と構造化フィールドの上に帰属を組み直す。
+
+| ID | 判定キー（この順で最初にマッチしたものに帰属） | Niko 実測 | 一次帰属 | 他軸での扱い |
 |---|---|---|---|---|
-| E1 | `toolDenialKind == "permission-rule"` かつ本文に `hook error` | 31（H_hook_fired 全32件を含む） | 安全チェック（非採点・作動証拠） | 軸2の分子分母から除外 |
-| E2 | `permission-rule` かつ `hook error` なし | 13 | 安全チェック | 軸2から除外。軸8内訳に表示 |
-| E3 | `toolDenialKind == "user-rejected"` | 11 | 人間側 H2 の内訳表示のみ（最小分母を割るため採点しない） | 軸2から除外 |
-| E4 | `is_error` × N_network | 141（WebFetch 126 + obsidian MCP 13） | どこにも帰属させず全軸から除外 | 軸0のカバレッジ注記へ |
-| E5 | D_dependency | 59 | 軸2の分子 | 安全チェックに実名列挙 |
-| E6 | T_timeout | 44（Grep 27 / Bash 14） | 軸2の分子 | — |
-| E7 | C_contract | 71（Edit 37 / Read 28 / Write 5） | 軸3 自己検証率の分子（検証欠落の証拠） | 軸2の分子から除外し、分母には残す |
-| E8 | A_agent_code | 345 | 軸2の分子 | 軸6 層Aに署名を供給 |
-| E9 | Z_other 残り | 100 | 軸2の分子 | — |
+| E1 | `toolDenialKind == "permission-rule"` かつ本文に `(Pre\|Post)ToolUse:` | 35 | 安全チェック（非採点・作動証拠） | 軸2の分子分母から除外 |
+| E2 | `toolDenialKind == "permission-rule"`（本文マッチなし） | 16 | 安全チェック | 軸2から除外 |
+| E3 | `toolDenialKind == "user-rejected"` | 11 | 人間側 H2 の内訳表示のみ | 軸2から除外 |
+| E4 | ツール名が `WebFetch` / `WebSearch` / `mcp__*` | 57 | どこにも帰属させず全軸から除外 | 軸0のカバレッジ注記へ |
+| E7 | `error_class ∈ {edit_string_not_found, edit_stale_read}` | 47 | 軸3 自己検証率の分子（検証欠落の証拠） | 軸2の分子から除外し、分母には残す |
+| E6 | `error_class == timeout` | 35 | 軸2の分子 | — |
+| E5 | `error_class ∈ {cmd_not_found, no_such_file}` | 17 | 軸2の分子 | 安全チェックに実名列挙 |
+| E8+E9 | 残余（`traceback:*` / `syntax_error` / `permission_denied` / `other:*`） | 420 | 軸2の分子 | 軸6 層Aに署名を供給 |
+
+🚨 **`toolDenialKind` は row 直下にある**（`toolUseResult` の中ではない）。旧版は階層を書いていなかった。Niko 環境で `toolUseResult.toolDenialKind` を見に行くと **0件**、row 直下なら **62件**。書いていない階層は、実装ごとに違う場所を見て違う数字を出す。
+
+**`A_agent_code` と `Z_other` を分ける定義は書けなかったので、1つにまとめた。** 「エージェントのコードが悪い」は意味論的な判断で、正規表現では決まらない。分けられないものを分けたふりをするより、残余として1つにする。
+
+**E1〜E3 は本文パターンではなく構造化フィールドで採る。** 実装は今 `(Pre|Post)ToolUse:` の本文マッチで hook 起因を拾っているが、Niko 環境では本文マッチ 35件に対し `toolDenialKind` は 62件で、**構造化フィールドは本文マッチの完全な上位集合**（35件すべてが denial 付き）。本文パターンは環境ごとの文言に依存する（Leon 環境向けに調整した `permission_denied` パターンは、Niko 環境の denial 62件のうち **12件（19.4%）しか当てない**）。
 | E10 | `[Request interrupted by user]`（生成中断） | 21 | 軸1の誘発型リダイレクト判定材料 | 軸2では使わない |
 | E11 | `[Request interrupted by user for tool use]` | 19 | 安全チェック | 軸1・軸2では使わない |
 | E12 | `attributionSkill` 行 | 12,432行 / distinct 43 | 軸5 | 行数と種類数を別フィールドで持つ |
@@ -854,21 +892,29 @@ Niko が追加提案する分母定義まわり
 
 ### 5.3 検算（本セッションで実証済み）
 
+Niko 環境・2026-08-20 実測（走査 1,510ファイル / 135,005行 / 未パース0）。上の判定順序をそのまま当てたもの。
+
 ```
-is_error 816件 = 採点対象 548
-               + 環境ノイズ除外 141
-               + 安全チェック帰属 44
-               + 軸3帰属 71
-               + 人間側H2帰属 11
-               + hook denial 無し 1
-main のみ: 483 → 360（= A_agent_code 270 + D_dependency 26 + T_timeout 30 + Z_other 34）
+is_error 638件 = 軸2の分子 472
+               + 安全チェック帰属 51   （E1 35 + E2 16）
+               + 人間側H2帰属 11      （E3）
+               + 環境ノイズ除外 57    （E4）
+               + 軸3帰属 47          （E7）
+472 + 166 = 638  ✅ 閉じる
+
+軸2の分子 472 = E6 timeout 35 + E5 dependency 17 + E8/E9 残余 420
+帰属を当てない場合の failures は 603。帰属で -131（-21.7%）
 ```
+
+旧版の検算（816 = 548 + 141 + 44 + 71 + 11 + 1）は 2026-08-18 の測定で、**分類定義が残っていないため再現できない**。446 は §2.1・§3.2・§6.2 の3箇所に出ていたが、816 とも 548 とも閉じず、由来が特定できなかったので削除した。
 
 ### 5.4 なぜこの表が要るか
 
-`toolDenialKind` を持つ tool_use_id は55件で、その55件全部（100%）が同時に `is_error == true` にも現れる。内訳は permission-rule × hook error = 31、permission-rule × その他 = 13、user-rejected × `The user doesn't want to proceed` = 11 で、後者は is_error 側の U_user_rejected 11件と件数が完全に一致する。帰属ルールが無ければこの55件は確実に二重計上され、軸2の値は帰属前 816/27,762 = 2.94% に対し帰属後 548/27,762 = 1.97% と1.49倍動く（main では 2.68% → 2.00% の1.34倍）。
+`toolDenialKind` を持つ行は Niko 環境で **62件**（2026-08-20 実測）で、その **62件全部（100%）が同じ行に `is_error == true` を持つ**。内訳は permission-rule × 本文に `(Pre|Post)ToolUse:` = 35、permission-rule のみ = 16、user-rejected = 11。帰属ルールが無ければこの62件は軸2の分子に入ったまま二重計上され、**failures は 603 と 472 の間で 1.28倍動く**（2026-08-18 の測定では 55件で 1.49倍だった）。
 
-分類器の妥当性はツール別内訳で裏取り済み。H_hook_fired は Bash 31件のみ、U_user_rejected は AskUserQuestion 9 / Bash 2、N_network は WebFetch 126、C_contract は Edit 37 / Read 28、T_timeout は Grep 27 と、それぞれ特定ツールに集中していて的を外していない。
+分類の妥当性はツール別内訳で裏取りする。Niko 環境では `edit_string_not_found` は Edit 24件、`edit_stale_read` は Edit 18件、`timeout` は Grep 17 / Bash 16 / WebFetch 8、`permission_denied`（本文）は Bash 13件と、それぞれ特定ツールに集中している。
+
+🚨 **ただし本文パターンだけでは足りない。** Leon 環境向けに調整した `permission_denied` パターンは、Niko 環境の denial 62件のうち **12件（19.4%）しか当てない**。残りは `other:<digest>` に落ちる。E1〜E3 を構造化フィールドで採るのはこのため。なお `other` の比率自体も環境で動く（Leon 32.5% / Niko 44.7%）。
 
 ---
 
@@ -910,7 +956,7 @@ CI = (r_[100], r_[3900])           # 2.5% / 97.5% パーセンタイル
 
 | 対象 | 分子 | 分母 | クラスタ | 判定 |
 |---|---|---|---|---|
-| 軸2 空振り率 | 446 | 16,871 | 146 | available |
+| 軸2 空振り率 | 472 | 3,184（束） | 146 | available |
 | 軸1 一発着地 | 135 | 1,498 | 131 | available |
 | 安全チェック permission-rule | 41 | 17,941 | 26 | available |
 | 軸1 誘発中断 | 28 | 2,952 | 22 | available（ぎりぎり） |
@@ -1244,7 +1290,7 @@ v1 §17 の Phase 0 を、v2 の確定事項で組み直したもの。
 | 優先 | 何を作るか | 理由 |
 |---|---|---|
 | 1 | 軸0 + 共通土台（P1 の新定義・稼働日窓・scanManifest・帰属表 E1〜E14・スナップショット） | これがないと「スコアが低い」のか「測れなかった」のかを区別できない。帰属表と scanManifest は後から変えると全軸を作り直しになる |
-| 2 | 軸2 空振り率 | 実測でクラスタ146・分子446・分母16,871 と最も安定している。帰属表を当てた効果（816 → 548）が最初に目に見える軸でもある |
+| 2 | 軸2 空振り率 | 実測でクラスタ146と最も安定している。帰属表を当てた効果（Niko 環境で failures 603 → 472）が最初に目に見える軸でもある |
 | 3 | 軸1 一発着地率 | 深度の実名列挙が最も分かりやすい。`depthByScope` でサブ委譲の効果が見える |
 | 4 | 安全チェック | 実装が最も軽く（`settings*.json` の merge と存在確認だけ）、`Bash(python:*)` や `PreToolUse:Edit` cancelled 108/success 27 のような発見のインパクトが大きい |
 | 5 | 軸6 層B（D-6） | 合意4の中心軸。外部ログの集計だけなので実装は軽い（2.30秒 / 186,184行）。ただし §9.3 の Leon 待ちが解けるまでは Niko のみ available |
