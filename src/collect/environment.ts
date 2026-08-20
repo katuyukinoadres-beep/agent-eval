@@ -227,7 +227,19 @@ export function mcpSourcePaths(cwd: string, home: string): readonly string[] {
 }
 
 export interface McpCount {
+  /** Locally configured servers plus claude.ai connectors ever connected. */
   readonly servers: number
+  /** Of those, the ones defined in a config file on this machine. */
+  readonly configured: number
+  /**
+   * Of those, claude.ai connectors.
+   *
+   * The key is `claudeAiMcpEverConnected`, and *ever* is load-bearing: a
+   * connector used once and dropped stays in the list. The denominator is
+   * therefore "servers this machine has had available", not "servers connected
+   * right now", and `denominatorMeaning` has to say so.
+   */
+  readonly connectors: number
   readonly sourcesRead: number
 }
 
@@ -237,7 +249,8 @@ export function countMcpServers(
   paths: readonly string[],
   read: Reader = (p) => readFileSync(p, 'utf8'),
 ): McpCount {
-  const names = new Set<string>()
+  const configured = new Set<string>()
+  const connectors = new Set<string>()
   let sourcesRead = 0
   for (const path of paths) {
     let doc: unknown
@@ -249,16 +262,23 @@ export function countMcpServers(
     if (!isObj(doc)) continue
     sourcesRead += 1
     const servers = doc['mcpServers']
-    if (isObj(servers)) for (const name of Object.keys(servers)) names.add(name)
+    if (isObj(servers)) for (const name of Object.keys(servers)) configured.add(name)
     // Some layouts nest a server map per project.
     const projects = doc['projects']
     if (isObj(projects)) {
       for (const entry of Object.values(projects)) {
         if (!isObj(entry)) continue
         const nested = entry['mcpServers']
-        if (isObj(nested)) for (const name of Object.keys(nested)) names.add(name)
+        if (isObj(nested)) for (const name of Object.keys(nested)) configured.add(name)
       }
     }
+    // claude.ai connectors leave no server definition anywhere else. Counting
+    // only config files gave a denominator of 1 against a numerator of 3 on this
+    // machine -- the 107% shape again, numerator and denominator taken from
+    // different universes. makeMetric refuses to build it, which is how it was
+    // found rather than shipped.
+    for (const name of strings(doc['claudeAiMcpEverConnected'])) connectors.add(name)
   }
-  return { servers: names.size, sourcesRead }
+  const all = new Set<string>([...configured, ...connectors])
+  return { servers: all.size, configured: configured.size, connectors: connectors.size, sourcesRead }
 }

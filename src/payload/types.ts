@@ -110,6 +110,31 @@ export type ActiveDaysMethod =
   | 'union-of-observed(jsonl, externalLog)'
   | 'union-of-observed(jsonl)'
 
+/**
+ * Why an axis has no score.
+ *
+ * It deliberately separates two things that both produce `not_applicable`:
+ * the environment does not have enough of something (measured, against
+ * thresholds the spec gives), and the definition needed to compute it is not
+ * settled yet.
+ *
+ * Reporting both as a bare `not_applicable` would tell someone their
+ * environment is too small about an axis that was never implemented. The
+ * three-value enum has no room for a fourth state — V-7 refuses one — so the
+ * distinction lives in this field instead.
+ */
+export type UnavailableReason =
+  | 'too-few-clusters'
+  | 'denominator-below-minimum'
+  | 'numerator-below-minimum'
+  | 'insufficient-tool-uses'
+  | 'insufficient-edit-intervals'
+  | 'insufficient-assets'
+  | 'no-external-log'
+  | 'first-window'
+  | 'definition-pending'
+  | 'environment-gated'
+
 export const AXIS_KEYS = [
   // first wave — scored
   'firstPassLanding',
@@ -277,18 +302,32 @@ export interface TokenCounts {
   readonly cacheCreation: Count
 }
 
+/**
+ * Every rate here is nullable, and the null is not defensive coding.
+ *
+ * Each denominator can genuinely be zero: a project with no skills, a machine
+ * with no MCP servers, a window where nothing was ever denied. The first draft
+ * of the assembler wrote `Math.max(1, denominator)` to get past makeMetric's
+ * refusal of a zero denominator, and the run that found it reported
+ * `skillFired: 3/1` — three skills fired out of one defined, on a directory with
+ * none. A floor of 1 does not avoid the absence; it renames it as the smallest
+ * possible presence and multiplies the rate accordingly.
+ *
+ * `null` says the environment has no denominator for this. 0/0 would read as a
+ * measured zero, and a floor of 1 reads as 300%.
+ */
 export interface Metrics {
-  readonly toolError: Metric & BooleanDerived
-  readonly toolErrorAlt: Metric & BooleanDerived
-  readonly skillFired: Metric
+  readonly toolError: (Metric & BooleanDerived) | null
+  readonly toolErrorAlt: (Metric & BooleanDerived) | null
+  readonly skillFired: Metric | null
   readonly skillRows: Count
-  readonly mcpUsed: Metric
+  readonly mcpUsed: Metric | null
   readonly humanTurns: Count
-  readonly denialUserRejected: Metric & BooleanDerived
+  readonly denialUserRejected: (Metric & BooleanDerived) | null
   readonly permissions: PermissionCounts
-  readonly editPaths: Metric
+  readonly editPaths: Metric | null
   readonly tokens: TokenCounts
-  readonly hookPushback: Metric & BooleanDerived
+  readonly hookPushback: (Metric & BooleanDerived) | null
 }
 
 // ── axes ──────────────────────────────────────────────────────────────────────
@@ -323,6 +362,14 @@ export interface Axis {
   readonly score: number | null
   readonly confidenceInterval: readonly [number, number] | null
   readonly belowMinDenominator: boolean
+  /**
+   * Every condition that withheld a score, not just the first.
+   *
+   * Empty when the axis is available. A near miss on one threshold and a miss on
+   * all three are different facts about an environment, and an axis that reports
+   * only that it is unavailable cannot tell anyone which they have.
+   */
+  readonly unavailableReasons: readonly UnavailableReason[]
 }
 
 export type Axes = Readonly<Record<AxisKey, Axis>>

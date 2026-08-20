@@ -189,6 +189,34 @@ describe('counting MCP servers', () => {
     expect(c.sourcesRead).toBe(2)
   })
 
+  it('counts claude.ai connectors, which no config file defines', () => {
+    // Found by makeMetric refusing to build the result: mcpUsed came out 3/1 on
+    // this machine, numerator over denominator, because three servers had been
+    // called and only one was in a config file. The other nine are claude.ai
+    // connectors, listed under claudeAiMcpEverConnected and nowhere else.
+    //
+    // The key says *ever* connected, so the denominator is "servers this
+    // machine has had available", not "connected right now". denominatorMeaning
+    // has to carry that.
+    const c = countMcpServers(
+      ['/h/.claude.json'],
+      read({
+        '/h/.claude.json': JSON.stringify({
+          mcpServers: { playwright: {} },
+          claudeAiMcpEverConnected: ['claude.ai Notion', 'claude.ai Gmail'],
+        }),
+      }),
+    )
+    expect(c.configured).toBe(1)
+    expect(c.connectors).toBe(2)
+    expect(c.servers).toBe(3)
+  })
+
+  it('reads a config with no connector list without inventing one', () => {
+    const c = countMcpServers(['/a.json'], read({ '/a.json': JSON.stringify({ mcpServers: { x: {} } }) }))
+    expect(c).toMatchObject({ servers: 1, configured: 1, connectors: 0 })
+  })
+
   it('unions across sources without double counting a shared name', () => {
     const c = countMcpServers(
       ['/a.json', '/b.json'],

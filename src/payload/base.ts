@@ -55,6 +55,10 @@ const ALL_NOT_APPLICABLE: Axis = {
   score: null,
   confidenceInterval: null,
   belowMinDenominator: true,
+  // 11 clusters against a minimum of 20. Stated rather than left implicit,
+  // because an axis that says only `not_applicable` cannot distinguish "this
+  // environment is small" from "this axis was never implemented".
+  unavailableReasons: ['too-few-clusters'],
 }
 
 const axes = Object.fromEntries(AXIS_KEYS.map((k) => [k, ALL_NOT_APPLICABLE])) as Axes

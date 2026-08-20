@@ -280,3 +280,63 @@ node ../anki-new/scripts/emit-service-key.mjs:*
 ### 3クラスは allow の分割ではない
 
 `unrestrictedExec + cliWildcard + scriptPathFixed + exact = allow` だが、`exact`（ワイルドカード無し）はリスククラスではない。3クラスはリスクの部分集合。
+
+---
+
+## 2026-08-20 — S8 + 組み立て + `scan`: 初めて通しで動いた
+
+`agent-eval scan` が実データからペイロードを作り、**自分の検証器を通す**ところまで到達。
+
+```
+scanned    249 files, 30,723 lines, 0 unparsed
+           main 18,377 / sub 12,346 (share 0.4018)
+projects   5      versions 5      origin 288/8,874
+window     人間発話日 5 / user行日 9 / observed
+evidence   23 日 (union-of-observed(git, jsonl, externalLog))
+record     19/23
+gate       passed
+axes       0/11 available   （11 × too-few-clusters, 9 × definition-pending,
+                              1 × first-window, 1 × no-external-log）
+validation passed (0 violations, 1 flags: W-1 origin 3.2%)
+```
+
+出力は **11,334 バイト**。`katuy` / `Yama-Agent` / `anki-new` / `emit-service-key` / ドライブレター、いずれも **0 件**。
+
+### 点は1つも出していない
+
+率→点の変換式は v1 軸文書にあり、このリポジトリに無い。埋めるために式を作れば、**誰も擁護できない数字を画面に出す**ことになる。全軸 `score: null`。
+
+代わりに `unavailableReasons` を持たせ、**2種類の理由を分けた**:
+
+- `too-few-clusters` — 実測（11 クラスタ < 最小 20）。仕様が与えた閾値に対する測定結果
+- `definition-pending` — この環境の話ではない。`taskBundles` / `SA` / `P1` が手元に無いだけ
+
+素の `not_applicable` だけだと、**実装していない軸について「あなたの環境は小さい」と言う**ことになる。三値 enum に4つ目を足すことは V-7 が禁じているので、区別は理由フィールドに置いた。
+
+### 発見1: `Math.max(1, 分母)` で 3/0 を 3/1 と報告していた
+
+`makeMetric` のゼロ分母拒否を回避するために書いた1行。初回の通し実行が **`skillFired: 3/1`** を出して発覚した — スキルが1つも無いディレクトリで「3種類が27種類中…ではなく1種類中発火」。
+
+**下限 1 は不在を回避しない。不在を「あり得る最小の存在」に改名し、率を分子の倍率だけ跳ね上げる。**
+
+7つの率すべてを `Metric | null` にした。`null` は「この環境にこの分母は無い」。`0/0` は測定されたゼロに読め、下限 1 は 300% に読める。
+
+### 発見2: 測っていない不足を11回報告していた
+
+`axisReasons` が最小分母チェックに `denominator: 0, numerator: 0` を渡していたため、**どの軸も分母を計算していないのに `denominator-below-minimum` を全11軸で報告**していた。
+
+クラスタ項だけを見るよう修正。実測していない項目については `definition-pending` が真実。
+
+### 発見3: `mcpUsed` が 3/1 だった → claude.ai コネクタ
+
+設定ファイル由来の分母が 1、ログ由来の分子が 3。107% と同じ「分子と分母が別の宇宙から来ている」形で、`makeMetric` が拒否して発覚。
+
+「ローカルには列挙できない」と結論する前に `~/.claude.json` を実際に見たところ、**`claudeAiMcpEverConnected` に 9 件**あった。合わせて分母 10、3/10 = 30%。
+
+キー名の `Ever` は効いている。分母は「今つながっているサーバー」ではなく「これまで使えたサーバー」で、`denominatorMeaning` がそれを言う必要がある。
+
+### 自分の出力を自分のルールで検証する
+
+`run()` は payload を **JSON ラウンドトリップしてから** `validate()` に通し、落ちたら **exit 1** で返す。受信側に適用するのと同じルールを送信側にも適用する。
+
+送信側が自分のチェックを免除するのが、DECISION_LOG のインシデント全件の共通形だった。

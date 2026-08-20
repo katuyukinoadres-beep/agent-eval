@@ -110,7 +110,24 @@ export interface ScanCounts {
   readonly userRowDates: readonly string[]
   /** Days carrying `origin.kind === 'human'`. The window's own definition. */
   readonly humanTurnDates: readonly string[]
+  /**
+   * Per-project line tallies, keyed by project directory name.
+   *
+   * The aggregate cannot show a partial miss. Four of five projects on this
+   * machine hold nothing and one holds every line, so a glob that missed four of
+   * them leaves a total that looks healthy. W-2 checks the sub-line share per
+   * project for exactly that reason, and it needs these.
+   */
+  readonly perProject: Readonly<Record<string, ProjectTally>>
 }
+
+export interface ProjectTally {
+  readonly lines: number
+  readonly subLines: number
+  readonly humanRows: number
+}
+
+interface MutProjectTally { lines: number; subLines: number; humanRows: number }
 
 /** The three date sets, gathered in one pass so they cannot drift apart. */
 interface DateSets {
@@ -158,13 +175,18 @@ function reduceLine(
   sessions: Set<string>,
   dates: DateSets,
   edits: EditTally,
+  proj: MutProjectTally,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
 
   m.linesRead += 1
+  proj.lines += 1
   if (kind === 'main') m.mainLines += 1
-  else m.subLines += 1
+  else {
+    m.subLines += 1
+    proj.subLines += 1
+  }
 
   let row: unknown
   try {
@@ -214,6 +236,7 @@ function reduceLine(
       m.originBearingUserRows += 1
       if (origin['kind'] === 'human') {
         m.humanTurns += 1
+        proj.humanRows += 1
         if (day !== null) dates.humanTurn.add(day)
       }
     }
@@ -291,8 +314,14 @@ export function scan(
   const sessions = new Set<string>()
   const dates: DateSets = { all: new Set(), userRow: new Set(), humanTurn: new Set() }
   const edits: EditTally = new Map()
+  const perProject = new Map<string, MutProjectTally>()
 
   for (const file of inv.files) {
+    let proj = perProject.get(file.project)
+    if (proj === undefined) {
+      proj = { lines: 0, subLines: 0, humanRows: 0 }
+      perProject.set(file.project, proj)
+    }
     m.bytesRead += file.bytes
     let text = ''
     try {
@@ -303,7 +332,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj)
     }
   }
 
@@ -342,5 +371,6 @@ export function scan(
     dates: [...dates.all].sort(),
     userRowDates: [...dates.userRow].sort(),
     humanTurnDates: [...dates.humanTurn].sort(),
+    perProject: Object.fromEntries([...perProject.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
   }
 }
