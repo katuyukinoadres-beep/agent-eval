@@ -20,6 +20,7 @@ import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
 import { referenceIndex, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
+import { LARGE_OUTPUT_BYTES, isInvestigation, wastedTracker, type WastedCounts, type WastedTracker } from './wasted.js'
 
 /**
  * Every jsonl key this reducer is allowed to look at.
@@ -155,6 +156,8 @@ export interface ScanCounts {
    * target). Error text is classified here and never carried further.
    */
   readonly errorRepeats: RepeatRate
+  /** Axis 2's numerator terms, before weighting. */
+  readonly wasted: WastedCounts
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -291,6 +294,19 @@ export function targetOf(toolName: string, input: unknown): string {
 const hashTarget = (target: string): string =>
   target === '' ? '' : createHash('sha256').update(target, 'utf8').digest('hex').slice(0, 8)
 
+interface MutWasted {
+  failures: number
+  hookOriginated: number
+  writeRepeats: number
+  investigationRepeats: number
+  timedOut: number
+  largeOutput: number
+  callsPerBundle: Map<string, number>
+}
+
+/** A failure a hook produced. 17 here; v1 measured 29 on the other machine. */
+const HOOK_ORIGINATED = /(Pre|Post)ToolUse:/
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -314,6 +330,8 @@ function reduceLine(
   refs: ReferenceIndex,
   toolOf: Map<string, { name: string; target: string }>,
   signatures: Array<readonly [string, ErrorClass, string]>,
+  wasted: WastedTracker,
+  w: MutWasted,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -410,6 +428,13 @@ function reduceLine(
 
   // P6 — a write's landing place and size, from the result rather than the
   // call: the call says where, the result says how much.
+  const result = row['toolUseResult']
+  if (isObj(result)) {
+    if (result['timedOutAfterMs'] !== undefined && result['timedOutAfterMs'] !== null) w.timedOut += 1
+    const size = result['persistedOutputSize']
+    if (typeof size === 'number' && size > LARGE_OUTPUT_BYTES) w.largeOutput += 1
+  }
+
   const write = readWrite(row['toolUseResult'])
   if (write !== null) recordWrite(paths, write, typeof ts === 'string' ? ts : null, bundle)
 
@@ -449,6 +474,11 @@ function reduceLine(
         m.toolResultWithIsErrorKey += 1
         if (block['is_error'] === true) {
           m.toolResultIsErrorTrue += 1
+          const text = resultText(block)
+          // A guardrail firing is the guardrail working, not wasted motion.
+          // Excluded from numerator and denominator both, per v1.
+          if (HOOK_ORIGINATED.test(text)) w.hookOriginated += 1
+          else w.failures += 1
           // Joined to the call by tool_use_id. Without the join the class is
           // known and the tool is not, and (class, target) alone collapses a
           // Bash failure and an Edit failure into one signature.
@@ -456,7 +486,7 @@ function reduceLine(
           const call = typeof id === 'string' ? toolOf.get(id) : undefined
           signatures.push([
             call?.name ?? 'unknown',
-            classifyError(resultText(block)),
+            classifyError(text),
             hashTarget(call?.target ?? ''),
           ])
         }
@@ -466,6 +496,14 @@ function reduceLine(
       const toolName = block['name']
       if (typeof id === 'string' && typeof toolName === 'string') {
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
+      }
+      if (typeof toolName === 'string') {
+        const key = bundle === null ? 'none' : String(bundle)
+        w.callsPerBundle.set(key, (w.callsPerBundle.get(key) ?? 0) + 1)
+        if (wasted.call(bundle, toolName, block['input'])) {
+          if (isInvestigation(toolName)) w.investigationRepeats += 1
+          else w.writeRepeats += 1
+        }
       }
       const name = block['name']
       if (name === 'Edit' || name === 'Write' || name === 'MultiEdit' || name === 'NotebookEdit') {
@@ -513,6 +551,11 @@ export function scan(
   const refs = referenceIndex()
   const toolOf = new Map<string, { name: string; target: string }>()
   const signatures: Array<readonly [string, ErrorClass, string]> = []
+  const wasted = wastedTracker()
+  const w: MutWasted = {
+    failures: 0, hookOriginated: 0, writeRepeats: 0, investigationRepeats: 0,
+    timedOut: 0, largeOutput: 0, callsPerBundle: new Map<string, number>(),
+  }
   let bundleSeq = 0
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
 
@@ -533,7 +576,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths, refs, toolOf, signatures)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths, refs, toolOf, signatures, wasted, w)
     }
     m.taskBundles += bundles.opened()
     m.rootBundles += bundles.roots()
@@ -568,6 +611,15 @@ export function scan(
     lastMention: refs.lastMention,
     referenceTokens: refs.size(),
     errorRepeats: repeatRate(signatures),
+    wasted: {
+      failures: w.failures,
+      hookOriginated: w.hookOriginated,
+      writeRepeats: w.writeRepeats,
+      investigationRepeats: w.investigationRepeats,
+      timedOut: w.timedOut,
+      largeOutput: w.largeOutput,
+      callsPerBundle: Object.fromEntries(w.callsPerBundle),
+    },
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
     editedFilesDistinct: edits.size,
