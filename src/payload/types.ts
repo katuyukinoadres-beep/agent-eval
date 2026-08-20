@@ -246,6 +246,15 @@ export interface LineStates {
 export interface Axis {
   readonly availability: Availability
   readonly lineStates: LineStates
+  /**
+   * The rate this axis scores, or null when it has none to give.
+   *
+   * A Metric rather than loose numerator/denominator/denominatorMeaning fields,
+   * so the rule that every rate states what it divided by reaches the axes too —
+   * they are the product's actual output, and leaving them outside that rule
+   * would exempt the numbers that matter most.
+   */
+  readonly metric: Metric | null
   /** Absent while the rate-to-score formula for this axis is still unresolved. */
   readonly score: number | null
   readonly confidenceInterval: readonly [number, number] | null
