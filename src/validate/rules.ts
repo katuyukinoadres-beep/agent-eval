@@ -26,6 +26,7 @@ export const RULE_IDS = [
   'V-13',
   'V-14',
   'V-15',
+  'V-16',
 ] as const
 
 export type RuleId = (typeof RULE_IDS)[number]
@@ -58,6 +59,7 @@ export const RULE_REASONS: Readonly<Record<RuleId, string>> = {
   'V-13': 'the record rate divides by a number the payload does not otherwise state — externalLog.activeDays and recordRate.denominator must be the same figure',
   'V-14': 'more human-turn days than evidence days, which cannot happen: a day with a human turn left a transcript, so it is already an evidence day',
   'V-15': 'windowSource and cleanupPeriodDays contradict each other — a window claimed to come from a setting must say which value it read',
+  'V-16': 'the three day counts are not nested — human-turn days sit inside user-row days, which sit inside evidence days, by construction',
 }
 
 /**

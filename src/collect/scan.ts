@@ -92,6 +92,31 @@ export interface ScanCounts {
   readonly toolVersions: Readonly<Record<string, number>>
   readonly sessionIds: readonly string[]
   readonly dates: readonly string[]
+  /**
+   * Days carrying a user row of any kind — the ceiling on human-turn days under
+   * this scan.
+   *
+   * Carried because `humanTurnDates` is a function of `origin` coverage, which
+   * is 3.11% here. Measured on this machine: 5 human-turn days against 9 days
+   * with user rows. The four missing ones are in July, where the log has user
+   * rows and no `origin` object on any of them.
+   *
+   * The gap matters because the spec gates the whole environment on
+   * `activeDays < 5`. At 5 measured, one day either way decides whether anything
+   * is scored, and which side it lands on is set by which tool versions wrote
+   * the log rather than by how much work happened. Emitting both lets a receiver
+   * see that rather than infer it.
+   */
+  readonly userRowDates: readonly string[]
+  /** Days carrying `origin.kind === 'human'`. The window's own definition. */
+  readonly humanTurnDates: readonly string[]
+}
+
+/** The three date sets, gathered in one pass so they cannot drift apart. */
+interface DateSets {
+  readonly all: Set<string>
+  readonly userRow: Set<string>
+  readonly humanTurn: Set<string>
 }
 
 interface Mut {
@@ -131,7 +156,7 @@ function reduceLine(
   mcp: Set<string>,
   versions: Map<string, number>,
   sessions: Set<string>,
-  dates: Set<string>,
+  dates: DateSets,
   edits: EditTally,
 ): void {
   const line = raw.trim()
@@ -163,7 +188,8 @@ function reduceLine(
   if (typeof sessionId === 'string') sessions.add(sessionId)
 
   const ts = row['timestamp']
-  if (typeof ts === 'string' && ts.length >= 10) dates.add(ts.slice(0, 10))
+  const day = typeof ts === 'string' && ts.length >= 10 ? ts.slice(0, 10) : null
+  if (day !== null) dates.all.add(day)
 
   const skill = row['attributionSkill']
   if (typeof skill === 'string' && skill.length > 0) {
@@ -182,10 +208,14 @@ function reduceLine(
 
   if (row['type'] === 'user') {
     m.userRows += 1
+    if (day !== null) dates.userRow.add(day)
     const origin = row['origin']
     if (isObj(origin)) {
       m.originBearingUserRows += 1
-      if (origin['kind'] === 'human') m.humanTurns += 1
+      if (origin['kind'] === 'human') {
+        m.humanTurns += 1
+        if (day !== null) dates.humanTurn.add(day)
+      }
     }
   }
 
@@ -259,7 +289,7 @@ export function scan(
   const mcp = new Set<string>()
   const versions = new Map<string, number>()
   const sessions = new Set<string>()
-  const dates = new Set<string>()
+  const dates: DateSets = { all: new Set(), userRow: new Set(), humanTurn: new Set() }
   const edits: EditTally = new Map()
 
   for (const file of inv.files) {
@@ -309,6 +339,8 @@ export function scan(
     },
     toolVersions: Object.fromEntries([...versions.entries()].sort()),
     sessionIds: [...sessions].sort(),
-    dates: [...dates].sort(),
+    dates: [...dates.all].sort(),
+    userRowDates: [...dates.userRow].sort(),
+    humanTurnDates: [...dates.humanTurn].sort(),
   }
 }

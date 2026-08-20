@@ -173,6 +173,26 @@ export function validate(payload: unknown): Verdict {
       }
     }
 
+    // ── V-16: the three day counts nest ──────────────────────────────────────
+    // human-turn days ⊆ user-row days ⊆ evidence days, each by construction: a
+    // human turn is a user row, and a user row is a transcript line whose date
+    // is already in the union. Measured here as 5 ⊆ 9 ⊆ 16.
+    //
+    // The middle term is what makes the first gate auditable. `activeDays` is a
+    // function of origin coverage, which is 3.11% on this machine, and the spec
+    // scores nothing when it falls under 5. Measured: exactly 5.
+    if (isObj(window) && isObj(external)) {
+      const human = window['activeDays']
+      const userDays = window['userRowDays']
+      const evidence = external['activeDays']
+      if (isNum(human) && isNum(userDays) && human > userDays) {
+        add('V-16', 'scanManifest.window.userRowDays', `${human} human-turn days against ${userDays} user-row days`)
+      }
+      if (isNum(userDays) && isNum(evidence) && userDays > evidence) {
+        add('V-16', 'scanManifest.window.userRowDays', `${userDays} user-row days against ${evidence} evidence days`)
+      }
+    }
+
     // ── V-15: a configured window has to say what it read ────────────────────
     if (isObj(window)) {
       const source = window['windowSource']

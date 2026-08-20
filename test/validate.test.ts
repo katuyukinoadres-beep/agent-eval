@@ -270,6 +270,41 @@ describe('V-14 — more human-turn days than evidence days', () => {
   })
 })
 
+describe('V-16 — day counts that do not nest', () => {
+  const win = (p: Mutable): Mutable => obj(obj(p, 'scanManifest'), 'window')
+
+  it('refuses more human-turn days than days carrying a user row', () => {
+    // A human turn is a user row. The count can only be smaller.
+    expectRefused(broken((p) => { win(p)['userRowDays'] = 16 }), 'V-16')
+  })
+
+  it('refuses more user-row days than evidence days', () => {
+    // A user row is a transcript line, whose date is already in the union.
+    expectRefused(broken((p) => { win(p)['userRowDays'] = 19 }), 'V-16')
+  })
+
+  it('accepts all three being equal', () => {
+    const v = validate(broken((p) => {
+      win(p)['activeDays'] = 18
+      win(p)['userRowDays'] = 18
+    }))
+    expect(v.violations.map((x) => x.rule)).not.toContain('V-16')
+  })
+
+  it('is what makes the first gate auditable', () => {
+    // The spec scores nothing when activeDays < 5, and activeDays is a function
+    // of origin coverage — 3.11% on this machine, where the two counts are 5 and
+    // 9. Sending only the first leaves a receiver unable to see that one day
+    // either way decides whether the environment is scored at all.
+    const v = validate(broken((p) => {
+      win(p)['activeDays'] = 5
+      win(p)['userRowDays'] = 9
+    }))
+    expect(v.violations.map((x) => x.rule)).not.toContain('V-16')
+    expect(v.ok).toBe(true)
+  })
+})
+
 describe('V-15 — a window whose source contradicts what it read', () => {
   it('refuses "setting" with no period recorded', () => {
     // What base itself claimed before this stage: a window sourced from a
@@ -302,7 +337,7 @@ describe('the rule set is honest about what it does not check', () => {
     // Guards against a rule id existing with nothing exercising it.
     const covered = new Set<RuleId>([
       'V-1', 'V-2', 'V-3', 'V-4', 'V-5', 'V-6', 'V-7', 'V-9', 'V-10', 'V-11',
-      'V-13', 'V-14', 'V-15',
+      'V-13', 'V-14', 'V-15', 'V-16',
     ])
     expect([...RULE_IDS].filter((r) => !covered.has(r))).toEqual([])
   })
