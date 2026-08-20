@@ -34,6 +34,8 @@
   "scanManifest": { /* §2 */ },
   "metrics":      { /* §3 */ },
   "axes":         { /* §4 */ },
+  "composite":    { /* §4.4 */ },
+  "comparison":   { /* §4.5 */ },
   "environment":  { /* §5 */ }
 }
 ```
@@ -196,7 +198,8 @@ activeDays = |union(git のコミット日, jsonl の日付, 外部ログの日�
     "denominatorMeaning": "...",
     "score": 72.4,
     "confidenceInterval": [68.1, 76.9],
-    "belowMinDenominator": false
+    "belowMinDenominator": false,
+    "omittedTerms": []
   }
 }
 ```
@@ -224,6 +227,70 @@ activeDays = |union(git のコミット日, jsonl の日付, 外部ログの日�
 `parse_failed / (available + not_applicable + parse_failed) > 0.05` の軸は `availability: "parse_failed"` として扱い、**総合スコアの計算から外したうえで、外したことを画面に明示する**。
 
 理由: パーサが静かに0を返す事故が実際に起きた（Leon の非再帰 glob。**Leon 自身が「パーサが静かに0を返す」と警告した直後に、自分がそれをやった**）。ユーザーからは「スコアが低い」のか「読めていない」のか区別がつかない。
+
+### 4.4 `composite` — 総合点（設計書 v2 §12 が正本）
+
+```jsonc
+// この例の軸スコア: firstPassLanding 72.4 / wastedMotion 66.0 /
+//                   selfVerification 61.5 / artifactUptake 74.2
+"composite": {
+  "score": 68.59,                       // null なら suppressedReason を必ず埋める
+  "tier": "B",                          // score が null なら null
+  "axesUsed": ["firstPassLanding", "wastedMotion", "selfVerification", "artifactUptake"],
+  "nominalWeightSum": 71.25,            // axesUsed の公称重みの和
+  "effectiveWeights": {                 // 合計 100。キー集合は axesUsed と一致
+    "firstPassLanding": 26.32, "wastedMotion": 24.56,
+    "selfVerification": 24.56, "artifactUptake": 24.56
+  },
+  "excluded": ["environmentMetabolism", "recurrencePrevention"],
+  "suppressedReason": null,             // 閉じた union（下記）
+  "leans": null,                        // この例は axesUsed に omittedTerms が無いので null
+  "outcomeScore": 68.59,                // 帰結（軸1-4）。3軸未満なら null
+  "designScore": null                   // 設計（軸5-6）。2軸そろわなければ null
+}
+```
+
+- `excluded` は**軸キーの配列だけ**。理由は既に `axes.<key>.availability` と `axes.<key>.unavailableReasons` にある。ここに理由を書き直すと、同じことを2つの語彙で言う場所が生まれる（V-22 が両者の矛盾を検査する）
+- `suppressedReason` の union: `parse-failure-rate` / `subagents-not-walked` / `too-few-active-days` / `too-many-missing-axes`。前3語は `src/score/gate.ts` の `GateReason` の実文字列で、**新設は `too-many-missing-axes` だけ**。今は `totalAllowed` の真偽しかワイヤに出ておらず、「なぜ総合点が無いか」は送れていない
+- `omittedTerms` は `{ term, cause, leans }` の配列。`cause` は `not-implemented`（実装が無い・版で固定）か `below-minimum`（この窓のデータが足りない）。`leans` は `high` / `low`。名前は実装の `OMITTED_TERMS`（`src/score/wastedMotion.ts`）に合わせた。実際の軸2は今こうなる:
+
+```jsonc
+"omittedTerms": [
+  { "term": "unused-success",         "cause": "not-implemented", "leans": "high" },
+  { "term": "verification-exclusion", "cause": "not-implemented", "leans": "high" },
+  { "term": "user-script-decay",      "cause": "not-implemented", "leans": "high" },
+  { "term": "winsorisation",          "cause": "not-implemented", "leans": "low"  }
+]
+```
+
+- `composite.leans` は SCORED 軸の `omittedTerms` を実効重みで集約したもの。**総合点だけを出して傾きを黙っていると、系統的にずれた値が素の値に見える**（設計書 v2 §12.4b）
+- SCORED は `availability == "available"` のみで決める。`belowMinDenominator` は合成の可否ではなく **CI とΔの可否**に効く（同 §12.1 / §12.6）
+- **`score: null` と `score: 0` を混ぜない。** 0 は「測って0点」、null は「出せない」
+
+**総合点は送信側の計算を信じる対象ではない。** 受信側が `axesUsed` の score と `effectiveWeights` から再計算して一致を確かめる（V-19）。材料を全部載せるのはそのため。
+
+### 4.5 `comparison` — Δ は同じ軸集合の上でしか出さない
+
+```jsonc
+"comparison": {
+  "previousWindow": {
+    "basis": "identical",               // "identical" | "intersection"
+    "axes": ["firstPassLanding", "wastedMotion", "selfVerification", "artifactUptake"],
+    "compositeNow": 68.59, "compositeThen": 67.07, "delta": 1.52,
+    "deltaCI": [0.31, 2.74],
+    "significant": true,                // CI が0を跨がず |delta| >= 1.0pt
+    "contribution": {                   // キー集合は axes と一致。合計 = delta
+      "firstPassLanding": -0.05, "wastedMotion": 0.49,
+      "selfVerification": 0.00, "artifactUptake": 1.08
+    }
+  },
+  "baseline": null
+}
+```
+
+軸集合が2窓で違うときは共通部分で両方を計算し直し、`basis: "intersection"` にして `axes` に共通部分を書く。共通部分が4軸未満なら `delta` は null（設計書 v2 §12.6）。
+
+**丸めの規約**: 提出する数値は小数2桁。検算（V-19 / V-21）は生値で行い、許容差は **±0.05** とする。上のサンプルは丸めた値どうしでも閉じる組み合わせを選んである（`68.59 − 67.07 = 1.52` / `−0.05 + 0.49 + 0.00 + 1.08 = 1.52`）。
 
 ---
 
@@ -273,6 +340,14 @@ n=2 の実測で **両環境とも単一プロジェクト支配**だった（Le
 | V-6 | `environment.projects` の件数 ≠ `environment.projectCount` | 部分提出の検知 |
 | V-7 | `axes` の `availability` が三値以外 | — |
 | V-8 | 本文・コード・ハッシュらしき長大文字列を含む | プライバシー設計憲法 |
+| V-17 | `composite.score` が non-null なのに `excluded` が3件以上、または `nominalWeightSum < 63.75` | 欠測3軸で総合点の約4割が1軸に乗る（設計書 v2 §12.2） |
+| V-23 | `axesUsed` のいずれかが `belowMinDenominator: true` なのに `comparison.*.significant` が true | クラスタ最小値を満たさない軸を含む総合点の差を「改善」と呼んでいる（同 §12.6） |
+| V-24 | `axesUsed` のいずれかに `omittedTerms` があるのに `composite.leans` が null | 系統的にずれた総合点を素の値として出している（同 §12.4b） |
+| V-18 | `effectiveWeights` の合計が 100 ± 0.01 でない、またはキー集合が `axesUsed` と一致しない | 再正規化の壊れ。ここが黙って通ると総合点が別の式の値になる |
+| V-19 | `composite.score` が `axesUsed` の score と `effectiveWeights` からの再計算と ±0.05 で一致しない | 送信側の計算を信じないための検算 |
+| V-20 | `composite.score` が null なのに `suppressedReason` が無い / union 外 | 「出せない」と「0点」の混同を型で止める |
+| V-22 | `excluded` の軸が `axes` 側で `availability == "available"`、または `axesUsed` の軸が `availability != "available"` | 総合点の除外と軸の状態が食い違う。片方だけ直した改修をここで捕まえる |
+| V-21 | `comparison.*.delta` が non-null なのに 2窓の `axes` 集合が一致しない、`axes` が4軸未満、または `contribution` の合計が `delta` と ±0.05 で一致しない | 軸集合の違いを環境の変化として報告させない（設計書 v2 §12.6） |
 
 ### 6.2 警告条件（受理するが `flags` を付けて母集団統計から除外可能にする）
 
@@ -284,6 +359,7 @@ n=2 の実測で **両環境とも単一プロジェクト支配**だった（Le
 | W-4 | `recordRate` の比が閾値未満 | データが疎。トレンドを描く前に画面へ明示 |
 | W-5 | `linesParseFailed / linesRead` > 0.01 | パーサの疑い |
 | W-6 | ブール由来の指標で `numerator == 0` かつ `denominator > 100` | **本当にゼロなのか、フィールドが死んでいるのかを区別できない**。V で拒否すると正当なゼロを弾くので警告に留める（閾値100は仮置き・実装しながら調整可） |
+| W-8 | `composite.excluded` の軸のうち、`axes.<key>.availability == "parse_failed"` が1つ以上ある | 欠測ではなくバグの疑い。受理はするが、母集団統計からは外せるようにする |
 
 ### 6.3 部分提出を受け付けない
 
