@@ -221,3 +221,62 @@ cleanupPeriodDays                  = null（4スコープ全てに不在）
 ### 行数のドリフト
 
 Python 29,652 → TS 29,892 → TS 29,922 と単調増加した。進行中セッションが自分のトランスクリプトに書き足しているため。**同一環境の2回の提出を区別するにはマニフェストに `measuredAt` が要る**ことの実データ。
+
+---
+
+## 2026-08-20 — S11a: 環境収集
+
+### 実機で出た数字（Python 独立実装と全項目一致）
+
+```
+permissions  allow=67  deny=3  ask=0            （user 16 + project 0 + local 51）
+  分類       unrestrictedExec=0  cliWildcard=27  scriptPathFixed=24  exact=16
+skills       .claude/skills/*/SKILL.md =  0
+             .claude/skills/*.md       = 27      union = 27
+hooks        5 件 / 3 イベント（PreToolUse / SessionStart / Stop）
+mcpServers   1 件（~/.claude.json の top-level）
+```
+
+### 発見: MCP サーバー定義は settings 4スコープに無い
+
+`settings*.json` の4スコープは**全て 0**。実体は `~/.claude.json` の top-level `mcpServers`。
+
+これは AB-87 で NiKo に投げた Q-11（`mcpUsed` の分母ソース）の実測回答。settings スイープだけで作った収集器は **`mcpUsed` の分母を 0 にする** — V-4 は通り、W-6 の下限 100 未満、結果 0/0 の穴。
+
+読む先を `.mcp.json` / `~/.claude.json` / `~/.claude/settings.json` の union にした。
+
+### permissions は「マージ」であって「上書き」ではない
+
+Claude Code は全スコープのリストを適用するので、実効面は和集合。最高優先スコープだけを見ると **このマシンで 67 件を 16 件と報告する**。
+
+### 文字列は載せない — 実データで確認した理由
+
+このマシンの allow に含まれるもの:
+
+```
+node scripts/emit-service-key.mjs:*
+node scripts/ban-test-accounts.mjs:*
+node ../anki-new/scripts/emit-service-key.mjs:*
+```
+
+スクリプト名が「このマシンが何をして良いか」を説明し、相対パスが**別プロジェクト名**を運ぶ。仕様のスケッチ（`"effectivelyUnrestrictedPatterns": ["Bash(python:*)"]` を文字列で送る）は、同じ問いに `{class, count}` で答えられる。
+
+### 分類器は allow だけに掛ける
+
+`deny` のワイルドカードはリスクの逆。同じに数えると、**丁寧に締めた環境ほど開いて見える**。
+
+### 3つのゼロに全て陽性対照を付けた
+
+このマシンで 0 を返す3項目は、壊れた収集器の出力と同じ:
+
+| 0 になる項目 | 対照 | 結果 |
+|---|---|---|
+| `unrestrictedExec` | 実データに `Bash(python:*)` を1件足す | 0 → 1 |
+| `skills/*/SKILL.md` | 入れ子レイアウトの glob 結果を注入 | 0 → 1 |
+| settings 内の MCP | `~/.claude.json` を読む経路 | 0 → 1 |
+
+`unrestrictedExec` の対照は**単体テストではなく実データ経路**で取った。テストの偽データで通る分類器が、実ファイルの形では動かないことがあるため。
+
+### 3クラスは allow の分割ではない
+
+`unrestrictedExec + cliWildcard + scriptPathFixed + exact = allow` だが、`exact`（ワイルドカード無し）はリスククラスではない。3クラスはリスクの部分集合。
