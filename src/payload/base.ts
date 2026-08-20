@@ -99,11 +99,18 @@ export const BASE_PAYLOAD = {
     window: {
       unit: 'activeDays',
       windowDays: 10,
-      windowSource: 'setting',
+      // This machine has no cleanupPeriodDays key in any of the four settings
+      // scopes, so the window length is measured rather than configured. The
+      // previous pairing here — source `setting` beside a null period — claimed
+      // a setting had been found and then declined to say what it was.
+      windowSource: 'observed',
       cleanupPeriodDays: null,
       calendarSpanDays: 22,
-      activeDays: 18,
-      activeDaysMethod: 'union-of-observed(git, jsonl, externalLog)',
+      // 17, not 18. Days carrying a human turn, per the spec's §5 sample. The
+      // 18 that used to sit here is the evidence-day count, which belongs to
+      // externalLog below and is the record rate's denominator.
+      activeDays: 17,
+      activeDaysMethod: 'human-turn-days',
       contiguousDays: 11,
       gapCount: 2,
     },
@@ -111,6 +118,8 @@ export const BASE_PAYLOAD = {
       exists: true,
       rows: 42,
       recordedDays: 15,
+      activeDays: 18,
+      activeDaysMethod: 'union-of-observed(git, jsonl, externalLog)',
       recordRate: makeMetric({
         numerator: 15,
         denominator: 18,

@@ -112,3 +112,49 @@ Leon 環境で `usage_collector.py` の rebuild バグを直したとき、`star
 | ブール値が死んでいる | `sourceField` 無し |
 
 実際の事故を固定しておけば、同じ穴をリグレッションとして二度踏まない。今回の 4 件は全て「検出器が動くことを確かめなかった」形だった。
+
+---
+
+## 2026-08-20 — 仕様書2本の食い違い3件（S7a で確定）
+
+S7 の実装に入る前に窓の定義を読み直したところ、`agent_eval_axes_v2.md` と `submission_payload_spec_v1.md` が3箇所で食い違っていた。3件とも**受信側が黙って比較に失敗する**形で、例外にはならない。
+
+### 1. `windowSource` の第2値: `observed` か `measured` か
+
+| 出典 | 値 |
+|---|---|
+| `submission_payload_spec_v1.md` §2 | `"setting" \| "observed"` |
+| `agent_eval_axes_v2.md`（2箇所） | `"setting" \| "measured"` |
+
+同じものを指す2つの語。閉じた union の照合は文字列一致で行うので、送信側が `observed`・受信側が `measured` なら**どの環境も一致せず、片方が黙って落ちる**。
+
+**採用: `observed`。** ペイロードの語彙はペイロード仕様が決める。ただし受信側が軸仕様から実装されていれば1行の差なので、AB-87 で確認に出した。
+
+### 2. `activeDays` が同一環境で2つの値を持つ
+
+| パス | 値 | 意味 |
+|---|---|---|
+| `window.activeDays` | **17** | 人間発話が1件以上ある日。全軸の分母スコープ |
+| `externalLog.activeDays` | **18** | 何らかの証拠がある日の和集合。記録率の分母 |
+
+どちらも正しく、答えている問いが違う。危険なのは**親オブジェクトを見ずに `activeDays` を読むと 5.9% ずれる**こと。事故#1〜#4 と同じ形。
+
+**対策:** 型を分けた（`WindowDaysMethod` = `'human-turn-days'` / `ActiveDaysMethod` = union 系）。ラベルを取り違えた値は構築できない。加えて 2 つの検算ルールを追加:
+
+- **V-13** — `externalLog.recordRate.denominator` は `externalLog.activeDays` と一致すること。分数の中にしか存在しない分母は、何とも突き合わせられない
+- **V-14** — `window.activeDays ≤ externalLog.activeDays`。人間発話があった日はその発話を読んだ jsonl を残しているので、和集合に必ず含まれる。**大小逆転は構造的に不可能**＝入れ替えの検出器になる
+
+### 3. base 自身が矛盾していた（main 上の実バグ）
+
+`windowSource: 'setting'` と `cleanupPeriodDays: null` が同居していた。「設定から読んだ」と言いながら「何を読んだかは無い」状態。このマシンには4スコープのどこにもキーが無いので、正しくは `observed`。
+
+**V-15** を追加した。`setting` なら period 必須、`observed` なら period は null。
+
+### 陽性対照
+
+| 対照 | 結果 |
+|---|---|
+| V-13/14/15 を `add()` で握りつぶす | 該当の拒否テスト4件だけが失敗、他 111 件は無傷 |
+| base を修正前の値（18 / `setting`）に戻す | base 拒否 + W 系 fixture が全滅（12件） |
+
+1 回目の対照は perl の置換が一致せず**対照が走らないまま 115 件通過**した。`grep -c` で「対照が入っていること」を先に確認する手順に変えた。検出器を無効化したつもりで無効化できていない場合、出力は「全部通る」で、成功と見分けがつかない。

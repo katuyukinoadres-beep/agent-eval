@@ -17,6 +17,7 @@ import {
   RULE_REASONS,
   TOOL_VERSION_CEILING,
   VALID_AVAILABILITY,
+  WINDOW_DAYS_METHOD,
   type FlagId,
   type RuleId,
 } from './rules.js'
@@ -102,23 +103,85 @@ export function validate(payload: unknown): Verdict {
       add('V-9', 'scanManifest.filesRead', `${mainFiles} + ${subFiles} = ${mainFiles + subFiles}, not ${filesRead}`)
     }
 
-    // ── V-11: activeDays may only union sources we can reason about ──────────
     const window = manifest['window']
+    const external = manifest['externalLog']
+
+    // ── V-11: each activeDays must carry its own method, and only its own ────
+    // The window counts human-turn days; the external log counts evidence days.
+    // Swapping the labels leaves two plausible numbers with no way to tell which
+    // definition produced either, so each side is pinned separately.
     if (isObj(window)) {
       const method = window['activeDaysMethod']
+      if (method !== WINDOW_DAYS_METHOD) {
+        add(
+          'V-11',
+          'scanManifest.window.activeDaysMethod',
+          `must be ${WINDOW_DAYS_METHOD}, got ${JSON.stringify(method)} — the union methods belong to externalLog`,
+        )
+      }
+    }
+
+    if (isObj(external)) {
+      const method = external['activeDaysMethod']
       if (typeof method !== 'string') {
-        add('V-11', 'scanManifest.window.activeDaysMethod', 'missing or not a string')
+        add('V-11', 'scanManifest.externalLog.activeDaysMethod', 'missing or not a string')
       } else {
         const m = ACTIVE_DAYS_METHOD.exec(method)
         if (m === null) {
-          add('V-11', 'scanManifest.window.activeDaysMethod', `not a union of observed sources: ${method}`)
+          add('V-11', 'scanManifest.externalLog.activeDaysMethod', `not a union of observed sources: ${method}`)
         } else {
           const named = (m[1] ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0)
           const unknown = named.filter((s) => !(KNOWN_DAY_SOURCES as readonly string[]).includes(s))
           if (unknown.length > 0) {
-            add('V-11', 'scanManifest.window.activeDaysMethod', `unknown day source(s): ${unknown.join(', ')}`)
+            add('V-11', 'scanManifest.externalLog.activeDaysMethod', `unknown day source(s): ${unknown.join(', ')}`)
           }
         }
+      }
+    }
+
+    // ── V-13: the record rate divides by a figure the payload states ─────────
+    // A denominator that exists only inside a fraction is a denominator nothing
+    // can cross-check. Stated twice, it can disagree with itself and be caught.
+    if (isObj(external)) {
+      const rate = external['recordRate']
+      const evidenceDays = external['activeDays']
+      if (isObj(rate) && isNum(rate['denominator']) && isNum(evidenceDays)) {
+        if (rate['denominator'] !== evidenceDays) {
+          add(
+            'V-13',
+            'scanManifest.externalLog.recordRate.denominator',
+            `${rate['denominator']} against a stated activeDays of ${evidenceDays}`,
+          )
+        }
+      }
+    }
+
+    // ── V-14: human-turn days cannot outnumber evidence days ─────────────────
+    // A day with a human turn left the transcript the turn was read from, so it
+    // is already a jsonl day and therefore already in the union. Greater-than is
+    // structurally impossible, which makes it a swap detector: the two values
+    // are 17 and 18 here, and putting them the wrong way round trips this.
+    if (isObj(window) && isObj(external)) {
+      const humanDays = window['activeDays']
+      const evidenceDays = external['activeDays']
+      if (isNum(humanDays) && isNum(evidenceDays) && humanDays > evidenceDays) {
+        add(
+          'V-14',
+          'scanManifest.window.activeDays',
+          `${humanDays} human-turn days against ${evidenceDays} evidence days`,
+        )
+      }
+    }
+
+    // ── V-15: a configured window has to say what it read ────────────────────
+    if (isObj(window)) {
+      const source = window['windowSource']
+      const period = window['cleanupPeriodDays']
+      if (source === 'setting' && period === null) {
+        add('V-15', 'scanManifest.window.cleanupPeriodDays', 'windowSource is "setting" but no period was recorded')
+      }
+      if (source === 'observed' && period !== null && period !== undefined) {
+        add('V-15', 'scanManifest.window.windowSource', `"observed" but cleanupPeriodDays is ${JSON.stringify(period)}`)
       }
     }
 
