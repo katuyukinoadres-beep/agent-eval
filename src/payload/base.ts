@@ -59,6 +59,7 @@ const ALL_NOT_APPLICABLE: Axis = {
   // because an axis that says only `not_applicable` cannot distinguish "this
   // environment is small" from "this axis was never implemented".
   unavailableReasons: ['too-few-clusters'],
+  detail: null,
 }
 
 const axes = Object.fromEntries(AXIS_KEYS.map((k) => [k, ALL_NOT_APPLICABLE])) as Axes

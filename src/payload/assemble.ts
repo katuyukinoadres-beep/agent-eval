@@ -38,6 +38,8 @@ import type { AssembledWindow } from '../collect/window.js'
 import type { McpCount, PermissionTally, SkillCount, HookCount } from '../collect/environment.js'
 import { gate, type GateVerdict } from '../score/gate.js'
 import { MIN_DENOMINATOR, MIN_NUMERATOR, meetsMinimum } from '../score/minimum.js'
+import { wastedMotion } from '../score/wastedMotion.js'
+import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
 
 export interface AssembleInputs {
   readonly inventory: Inventory
@@ -148,6 +150,15 @@ export function assemble(inputs: AssembleInputs): Assembled {
   const clusters = counts.sessionIds.length
   const reasons = axisReasons(clusters, !verdict.totalAllowed)
 
+  // Axis 2 is available on its own condition -- filtered tool_use of at least
+  // 50, per v1 -- not on the cluster minimum. The cluster minimum gates whether
+  // a change between windows may be called an improvement, which is a different
+  // question from whether the rate exists. Conflating them reported a machine
+  // with 8,502 tool calls as having nothing to measure.
+  const motion = wastedMotion(counts.wasted, counts.errorRepeats.rIn, counts.taskBundles)
+  const toolCalls = counts.toolResultTotal
+  const axis2Available = toolCalls >= MIN_FILTERED_CALLS && motion.score !== null
+
   const axisFor = (key: string): Axis => ({
     availability: 'not_applicable',
     // Every line got a verdict, and they sum to linesRead. A tally that does not
@@ -158,9 +169,49 @@ export function assemble(inputs: AssembleInputs): Assembled {
     confidenceInterval: null,
     belowMinDenominator: true,
     unavailableReasons: reasons[key] ?? ['definition-pending'],
+    detail: null,
   })
 
-  const axes = Object.fromEntries(AXIS_KEYS.map((k) => [k, axisFor(k)])) as Axes
+  const minimum = meetsMinimum({
+    clusters,
+    denominator: motion.bundles,
+    numerator: Math.floor(motion.numerator),
+  })
+
+  const wastedAxis: Axis = {
+    availability: axis2Available ? 'available' : 'not_applicable',
+    // Rows carrying a tool_use or tool_result are the axis's evidence; the rest
+    // had nothing for it to judge. The three states still sum to linesRead.
+    lineStates: {
+      available: axis2Available ? counts.toolActivityRows : 0,
+      not_applicable: axis2Available ? linesRead - counts.toolActivityRows : linesRead,
+      parse_failed: 0,
+    },
+    metric: null,
+    // Rounded. A fifteen-digit float in a payload is noise, and two decimals
+    // is finer than anything this score can actually resolve.
+    score: axis2Available && motion.score !== null ? Math.round(motion.score * 100) / 100 : null,
+    // No interval. v1 fixes it to a session-cluster bootstrap at B=4,000, and
+    // 11 clusters is under the minimum of 20, so any interval computed here
+    // would be one nobody should read.
+    confidenceInterval: null,
+    belowMinDenominator: !minimum.meetsMinimum,
+    unavailableReasons: axis2Available ? [] : [...(reasons['wastedMotion'] ?? [])],
+    detail: {
+      wastedTotal: Math.round(motion.numerator * 100) / 100,
+      bundleCount: motion.bundles,
+      wastedPerBundle: Math.round(motion.w * 10_000) / 10_000,
+      repeatRate: Math.round(motion.rIn * 10_000) / 10_000,
+      failures: counts.wasted.failures,
+      writeRepeats: counts.wasted.writeRepeats,
+      investigationRepeats: counts.wasted.investigationRepeats,
+      hookOriginatedExcluded: counts.wasted.hookOriginated,
+    },
+  }
+
+  const axes = Object.fromEntries(
+    AXIS_KEYS.map((k) => [k, k === 'wastedMotion' ? wastedAxis : axisFor(k)]),
+  ) as Axes
 
   const projects: ProjectSummary[] = inventory.projects.map((p) => {
     // A project with no files never reaches the reducer, so it has no tally.

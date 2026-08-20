@@ -370,6 +370,18 @@ export interface Axis {
    * only that it is unavailable cannot tell anyone which they have.
    */
   readonly unavailableReasons: readonly UnavailableReason[]
+  /**
+   * The parts the score was computed from, so a receiver can recompute it.
+   *
+   * Numbers only, and deliberately not named `numerator` / `denominator`. Axis
+   * 2's rate is wasted moves per task bundle — 1.16 here — and a ratio that
+   * legitimately exceeds 1 is not a proportion. V-5 refuses a numerator above
+   * its denominator, correctly, because the 107.1% it was written for was a
+   * proportion that could not exceed 1 and did. Marking this pair exempt would
+   * put a hole in that rule wide enough for the next 107% to walk through, so
+   * the fields carry names that say what they are instead.
+   */
+  readonly detail: Readonly<Record<string, number>> | null
 }
 
 export type Axes = Readonly<Record<AxisKey, Axis>>
