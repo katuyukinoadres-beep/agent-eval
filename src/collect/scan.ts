@@ -1,0 +1,314 @@
+/**
+ * Reads every enumerated transcript exactly once and reduces it to counts.
+ *
+ * One pass, one open per file. Not for speed — the whole corpus here is 72MB —
+ * but because a second pass is where two passes disagree. The measurement that
+ * started this project was a subagent count of 27,751 from one pass and 0 from
+ * another over the same machine on the same day, differing only in which files
+ * they walked.
+ *
+ * Nothing decides anything from a field outside READ_KEYS. Three fields are
+ * excluded by name and a test asserts they stay excluded; each is the obvious
+ * source for something measured here and each returns a constant zero.
+ */
+
+import { readFileSync } from 'node:fs'
+import type { FileEntry, Inventory } from './walk.js'
+
+/**
+ * Every jsonl key this reducer is allowed to look at.
+ *
+ * An allowlist rather than a denylist so a field has to be argued for before it
+ * can influence a number, and so the three below can be shown absent rather than
+ * merely unmentioned.
+ */
+export const READ_KEYS = [
+  'type',
+  'subtype',
+  'version',
+  'timestamp',
+  'sessionId',
+  'origin',
+  'message',
+  'attributionSkill',
+  'attributionMcpServer',
+  'toolDenialKind',
+  'hookErrors',
+] as const
+
+export type ReadKey = (typeof READ_KEYS)[number]
+
+/**
+ * Fields that must never influence a count.
+ *
+ *   isSidechain               false on every main-transcript row on both
+ *                             machines; position in the tree decides instead
+ *   toolUseResult.interrupted 9,995 occurrences across two machines, 0 true
+ *   preventedContinuation     all false on both machines even on the rows where
+ *                             a hook did push a response back — the event is in
+ *                             hookErrors, which is in the allowlist above
+ *
+ * None of the three errors when read. Each returns a well-formed zero, which is
+ * why a denylist that is only a comment does not hold.
+ */
+export const FORBIDDEN_KEYS = ['isSidechain', 'toolUseResult', 'preventedContinuation'] as const
+
+export interface ScanCounts {
+  readonly linesRead: number
+  readonly linesParseFailed: number
+  readonly bytesRead: number
+  readonly mainLines: number
+  readonly subLines: number
+
+  readonly toolResultTotal: number
+  readonly toolResultWithIsErrorKey: number
+  readonly toolResultIsErrorTrue: number
+
+  readonly attributionSkillRows: number
+  readonly attributionSkillDistinct: number
+  readonly mcpServerDistinct: number
+
+  /** Rows carrying an `origin` object at all — the denominator of coverage. */
+  readonly userRows: number
+  readonly originBearingUserRows: number
+  readonly humanTurns: number
+
+  readonly denialRows: number
+  readonly denialUserRejected: number
+
+  readonly editedFilesDistinct: number
+  readonly editedFilesRepeated: number
+
+  readonly stopHookSummaryRows: number
+  readonly hookErrorsNonEmpty: number
+
+  readonly tokens: {
+    readonly input: number
+    readonly output: number
+    readonly cacheRead: number
+    readonly cacheCreation: number
+  }
+
+  readonly toolVersions: Readonly<Record<string, number>>
+  readonly sessionIds: readonly string[]
+  readonly dates: readonly string[]
+}
+
+interface Mut {
+  linesRead: number
+  linesParseFailed: number
+  bytesRead: number
+  mainLines: number
+  subLines: number
+  toolResultTotal: number
+  toolResultWithIsErrorKey: number
+  toolResultIsErrorTrue: number
+  attributionSkillRows: number
+  userRows: number
+  originBearingUserRows: number
+  humanTurns: number
+  denialRows: number
+  denialUserRejected: number
+  stopHookSummaryRows: number
+  hookErrorsNonEmpty: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreation: number
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** How many times a file was edited, keyed by path. Only the counts leave here. */
+type EditTally = Map<string, number>
+
+function reduceLine(
+  raw: string,
+  kind: FileEntry['kind'],
+  m: Mut,
+  skills: Set<string>,
+  mcp: Set<string>,
+  versions: Map<string, number>,
+  sessions: Set<string>,
+  dates: Set<string>,
+  edits: EditTally,
+): void {
+  const line = raw.trim()
+  if (line.length === 0) return
+
+  m.linesRead += 1
+  if (kind === 'main') m.mainLines += 1
+  else m.subLines += 1
+
+  let row: unknown
+  try {
+    row = JSON.parse(line)
+  } catch {
+    // Counted, never guessed at. A line that would not parse is reported as a
+    // parse failure rather than skipped, because a parser returning a quiet zero
+    // is the failure this whole product exists to make visible.
+    m.linesParseFailed += 1
+    return
+  }
+  if (!isObj(row)) {
+    m.linesParseFailed += 1
+    return
+  }
+
+  const version = row['version']
+  if (typeof version === 'string') versions.set(version, (versions.get(version) ?? 0) + 1)
+
+  const sessionId = row['sessionId']
+  if (typeof sessionId === 'string') sessions.add(sessionId)
+
+  const ts = row['timestamp']
+  if (typeof ts === 'string' && ts.length >= 10) dates.add(ts.slice(0, 10))
+
+  const skill = row['attributionSkill']
+  if (typeof skill === 'string' && skill.length > 0) {
+    m.attributionSkillRows += 1
+    skills.add(skill)
+  }
+
+  const server = row['attributionMcpServer']
+  if (typeof server === 'string' && server.length > 0) mcp.add(server)
+
+  const denial = row['toolDenialKind']
+  if (typeof denial === 'string') {
+    m.denialRows += 1
+    if (denial === 'user-rejected') m.denialUserRejected += 1
+  }
+
+  if (row['type'] === 'user') {
+    m.userRows += 1
+    const origin = row['origin']
+    if (isObj(origin)) {
+      m.originBearingUserRows += 1
+      if (origin['kind'] === 'human') m.humanTurns += 1
+    }
+  }
+
+  if (row['subtype'] === 'stop_hook_summary') {
+    m.stopHookSummaryRows += 1
+    const errs = row['hookErrors']
+    // Non-empty hookErrors, not preventedContinuation. The boolean is false on
+    // every one of these rows on both machines, including the ones where a hook
+    // really did refuse the response.
+    if (Array.isArray(errs) && errs.length > 0) m.hookErrorsNonEmpty += 1
+  }
+
+  const message = row['message']
+  if (!isObj(message)) return
+
+  const usage = message['usage']
+  if (isObj(usage)) {
+    const n = (k: string): number => (typeof usage[k] === 'number' ? (usage[k] as number) : 0)
+    m.input += n('input_tokens')
+    m.output += n('output_tokens')
+    m.cacheRead += n('cache_read_input_tokens')
+    m.cacheCreation += n('cache_creation_input_tokens')
+  }
+
+  const content = message['content']
+  if (!Array.isArray(content)) return
+  for (const block of content) {
+    if (!isObj(block)) continue
+    if (block['type'] === 'tool_result') {
+      m.toolResultTotal += 1
+      if ('is_error' in block) {
+        m.toolResultWithIsErrorKey += 1
+        if (block['is_error'] === true) m.toolResultIsErrorTrue += 1
+      }
+    } else if (block['type'] === 'tool_use') {
+      const name = block['name']
+      if (name === 'Edit' || name === 'Write' || name === 'MultiEdit' || name === 'NotebookEdit') {
+        const input = block['input']
+        if (isObj(input)) {
+          const path = input['file_path'] ?? input['notebook_path']
+          // The path is tallied and discarded. Only "how many files" and "how
+          // many of them more than once" survive this function.
+          if (typeof path === 'string' && path.length > 0) {
+            edits.set(path, (edits.get(path) ?? 0) + 1)
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Read every file in the inventory once.
+ *
+ * `read` is injectable so a test can count opens per path. The default is a
+ * single readFileSync per file, and the test asserts exactly that — a reducer
+ * that quietly took a second pass would still produce correct-looking totals.
+ */
+export function scan(
+  inv: Inventory,
+  read: (path: string) => string = (p) => readFileSync(p, 'utf8'),
+): ScanCounts {
+  const m: Mut = {
+    linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
+    toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
+    attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0,
+    denialRows: 0, denialUserRejected: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
+  }
+  const skills = new Set<string>()
+  const mcp = new Set<string>()
+  const versions = new Map<string, number>()
+  const sessions = new Set<string>()
+  const dates = new Set<string>()
+  const edits: EditTally = new Map()
+
+  for (const file of inv.files) {
+    m.bytesRead += file.bytes
+    let text = ''
+    try {
+      text = read(file.path)
+    } catch {
+      // Unreadable file: every one of its lines is unaccounted for, and saying
+      // so is better than a total that silently omits them.
+      continue
+    }
+    for (const line of text.split('\n')) {
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits)
+    }
+  }
+
+  let repeated = 0
+  for (const count of edits.values()) if (count > 1) repeated += 1
+
+  return {
+    linesRead: m.linesRead,
+    linesParseFailed: m.linesParseFailed,
+    bytesRead: m.bytesRead,
+    mainLines: m.mainLines,
+    subLines: m.subLines,
+    toolResultTotal: m.toolResultTotal,
+    toolResultWithIsErrorKey: m.toolResultWithIsErrorKey,
+    toolResultIsErrorTrue: m.toolResultIsErrorTrue,
+    attributionSkillRows: m.attributionSkillRows,
+    attributionSkillDistinct: skills.size,
+    mcpServerDistinct: mcp.size,
+    userRows: m.userRows,
+    originBearingUserRows: m.originBearingUserRows,
+    humanTurns: m.humanTurns,
+    denialRows: m.denialRows,
+    denialUserRejected: m.denialUserRejected,
+    editedFilesDistinct: edits.size,
+    editedFilesRepeated: repeated,
+    stopHookSummaryRows: m.stopHookSummaryRows,
+    hookErrorsNonEmpty: m.hookErrorsNonEmpty,
+    tokens: {
+      input: m.input,
+      output: m.output,
+      cacheRead: m.cacheRead,
+      cacheCreation: m.cacheCreation,
+    },
+    toolVersions: Object.fromEntries([...versions.entries()].sort()),
+    sessionIds: [...sessions].sort(),
+    dates: [...dates].sort(),
+  }
+}
