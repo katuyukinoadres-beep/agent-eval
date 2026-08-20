@@ -49,9 +49,14 @@
 
 **この節の項目が1つでも欠けたら、ペイロード全体を拒否する。**（§6）
 
+🚨 **以下は内部整合させた例示値**（実測の生値ではない）。走査範囲の違う実測を並べると、成分と導出値が食い違ったサンプルになり、それを fixture にした実装が全ステージ「base は妥当」を前提に積み上がる。**導出値は必ず成分から従わせる**。
+
 ```jsonc
 {
   "parserVersion": "1",              // 必須。パーサ実装のバージョン
+  "measuredAt": "2026-08-19T14:02:11+09:00",  // 必須。走査を実行した時刻（ISO 8601・TZ 必須）
+                                     // 🚨 進行中セッションは走査中も自分の jsonl に書き足す。
+                                     // これが無いと同一環境の2回の提出を区別できない
   "scope": "all",                    // 必須。"main" | "sub" | "all"
   "rootsWalked": [                   // 必須。実際に走査したグロブを全部
     "~/.claude/projects/*/*.jsonl",
@@ -59,13 +64,13 @@
   ],
   "recursive": true,                 // 必須
   "filesRead": 1502,                 // 必須
-  "linesRead": 129873,               // 必須
+  "linesRead": 129132,               // 必須。= mainLines + subLines（成分と一致すること）
   "linesParseFailed": 0,             // 必須（0 でも明示する）
   "bytesRead": 663311155,
 
   "mainFiles": 1094, "mainLines": 101196,
   "subFiles": 368,   "subLines": 27936,
-  "subLineRatio": 0.267,             // 必須。事故#1 の再発検知に使う
+  "subLineRatio": 0.2163,            // 必須。= subLines / linesRead。事故#1 の再発検知に使う
 
   "toolVersions": {                  // 必須。行ごとの version を集計
     "2.1.234": 51914, "2.1.233": 5269, "2.1.112": 930
@@ -150,7 +155,7 @@ activeDays = |union(git のコミット日, jsonl の日付, 外部ログの日�
 |---|---|---|---|
 | `toolError` | `is_error == true` の tool_result 数 | tool_result 総数 | window 内の tool_result ブロック総数（キーの有無を問わない） |
 | `toolErrorAlt` | 同上 | `is_error` キーを持つ tool_result 数 | 🚨 事故#2 の当事者。**両方送る**。どちらが正かは受け取り側が決める |
-| `skillFired` | `attributionSkill` の **distinct 値の数** | 定義スキル数（`.claude/skills/*/SKILL.md`、先頭 `_` を除く） | 書いたスキルのうち実際に発火した種類数。🚨 **行数ではない** |
+| `skillFired` | `attributionSkill` の **distinct 値の数** | 定義スキル数（**union**: `.claude/skills/*/SKILL.md` ∪ `.claude/skills/*.md`、先頭 `_` を除く）。🚨 片方だけだと環境によって分母 0 になる（実測: Niko 81/0、Leon 0/27）。分母 0 は V-4 も W-6 もすり抜ける | 書いたスキルのうち実際に発火した種類数。🚨 **行数ではない** |
 | `skillRows` | `attributionSkill` を持つ行数 | — | 参考値。`skillFired` と取り違えると桁でずれる（Leon 231行→3種） |
 | `mcpUsed` | `attributionMcpServer` の distinct 値の数 | 接続 MCP サーバー数 | 繋いだサーバーのうち実際に呼ばれた数 |
 | `humanTurns` | `origin.kind == "human"` の行数 | — | 🚨 `originFieldCoverage` を必ず併読すること |

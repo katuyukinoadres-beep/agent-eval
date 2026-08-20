@@ -159,6 +159,8 @@ activeDaysMethod = "human-turn-days"                  # 🚨 window 側は必ず
 contiguousDays   = 連続稼働の最長                     # 実測 11（08-09〜08-19）
 filesRead / bytesRead / linesRead / linesParseFailed
 subLineRatio     = サブ配下の行数 / 全行数            # 実測 27,965 / 104,577 = 0.267
+                   🚨 導出値は必ず同じ走査の成分から算出する。走査範囲の違う
+                   分子・分母を並べると、成分と比が食い違ったサンプルになる
 excludedEvents   = {N_network: 141, hookDenial: 44, ...}  # §5 の帰属表の除外分を実名で
 ```
 
@@ -675,13 +677,13 @@ activeDays = |union(git のコミット日, jsonl の日付, 外部ログの日�
     ],
     "filesRead": 1502,
     "bytesRead": 663311155,
-    "linesRead": 129873,
+    "linesRead": 129132,
     "linesParseFailed": 0,
     "mainFiles": 1094,
     "mainLines": 101196,
     "subFiles": 368,
     "subLines": 27936,
-    "subLineRatio": 0.267
+    "subLineRatio": 0.2163
   },
 
   "window": {
