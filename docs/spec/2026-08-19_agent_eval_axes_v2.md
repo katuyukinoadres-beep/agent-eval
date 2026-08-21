@@ -74,7 +74,7 @@ v1 との関係
 |---|---|---|---|
 | C-28 | §14 で段階1 Tier制 → 段階2 到達率（n50以上）→ 段階3 percentile（n300以上）と、母集団比較への昇格を主線に置いた | 時系列（自己の窓間Δ）を第1弾、母集団比較を第2弾に反転 | Leon と合意済み。加えて規模差が約10倍（jsonl 1,502本/632.6MB 対 156本/64.1MB、skills 81 対 27、hooks 61 対 7）で、層別なしの percentile は情報を持たない |
 | C-29 | 人間側2軸（軸7・軸8）を重み12+8で総合点に組み込んだ | 人間側は第1弾に入れない。第1弾の総合点は軸1〜6のみ | 合意6。加えて軸8は drop、軸7は attribution 修正が要る |
-| C-30 | 未解決リスク #1（hook がブロックした実績の記録形式）は未確定 | 確定。hook のブロックには専用の型が無く、`toolDenialKind == "permission-rule"` + `is_error == true` + 本文 `PreToolUse:<Tool> hook error: [...]` の3点セットで記録される | permission-rule 45件を本文と全件突き合わせた実測。hook が止めた31件・permissions 設定が止めた13件・基盤エラー（`Tool permission stream closed`）1件に機械的に3分できる |
+| C-30 | 未解決リスク #1（hook がブロックした実績の記録形式）は未確定 | 確定。hook のブロックには専用の型が無く、`toolDenialKind == "permission-rule"` + `is_error == true` + 本文 `PreToolUse:<Tool> hook error: [...]` の3点セットで記録される | permission-rule 45件を本文と全件突き合わせた実測。hook が止めた31件・permissions 設定が止めた13件・基盤エラー1件に機械的に3分できる。**⚠️ この 45 の数え方は §7(e) に明記（Q-6）** |
 
 ### 1.5 走査実行ごとに数字が動くことの記録
 
@@ -597,8 +597,23 @@ v1 のまま、最も価値が高い。hookName 単位で `cancelled / (success 
 SKILL.md 500行超 / description が空または1024字超 / 参照が2階層以上ネスト / 100行超の reference に目次がない。測定直前の書き換えで動くので、点にはしない。
 
 (e) hook denial の分離（未解決リスク #1 の解決）
+🚨 **数える単位と範囲を先に固定する（Q-6 確定）。** ここの 45 は `全期間 × scope=all × 単位=行 × 基盤エラー込み`。同じ環境の同じ量が、数え方でこれだけ動く（Niko 環境・2026-08-21 実測）:
+
+| 数え方 | 件数 |
+|---|---|
+| 全期間 × all × 行 × 基盤込み | 52 |
+| 〃 基盤エラー除く | 51 |
+| main のみ | 48 |
+| main のみ × 基盤除く | 47 |
+| **窓内 × all × distinct tool_use_id × 基盤除く**（§6.2 が使う定義） | **41** |
+| 窓内 × main のみ × 行 | 39 |
+
+**幅は 39〜52 の 1.33倍**で、v1 の 40・§6.2 の 41・§5.3 の 44・本節の 45 はすべてこの帯の中にある。**4つの数字は互いに矛盾していない。同じ量について違う問いに答えている。** 44 と 45 の関係だけは定義で説明でき、45 − 基盤エラー1件 = 44（§5.3 の検算が 44 側で組まれていたのはこのため）。
+
+🚨 **行と distinct tool_use_id は一致しない。** Niko 環境で同一 `tool_use_id` を持つ permission-rule 行が2行あり（2026-08-14・同一ファイル内）、行なら 52、id なら 51 になる。§5.4 は「tool_use_id は55件」と id で数え、本節は行で数えていた。**単位を書かない数字は、それだけで ±1 のずれを持つ。**
+
 ```
-permission-rule 45件を3分する:
+permission-rule 45件を3分する（全期間 × all × 行 × 基盤込み）:
   本文に "PreToolUse:<Tool> hook error: [...]" を含む 31件 → hook が止めた（作動証拠）
   含まない 13件                                         → permissions 設定が止めた
   "Tool permission stream closed" 1件                    → 基盤エラー
@@ -621,6 +636,25 @@ permissions 側13件は3型:
 ## 4. scanManifest 仕様
 
 提出ペイロードの完全な構造。率は送らず、分子と分母を生カウントで送る。本文とそのハッシュは送らない。
+
+### 4.0-a `countBasis` — カウントの既定（Q-6 確定・2026-08-21）
+
+率には `denominatorMeaning` があるが、**件数にはそれが無い**。permission-rule の件数が仕様の4箇所で 40 / 41 / 44 / 45 と食い違ったのは、4つが違う量だったからではなく、**それぞれが違う数え方で、どれも数え方を書かなかったから**である（Niko 環境の実測で同じ量が 39〜52 の 1.33倍に動く。§7(e)）。
+
+そこで**この提出のすべてのカウントが従う既定**を scanManifest に1箇所置く。
+
+```jsonc
+"countBasis": {
+  "scope":    "all",              // "all" | "main"
+  "period":   "window",           // "window" | "allTime"
+  "unit":     "toolUseId",        // "toolUseId" | "row"
+  "excludes": ["infrastructure-error"]   // 閉じた union
+}
+```
+
+- **既定から外れるカウントだけが**、自分の `basis` を持ち、既定と違う旨を明示する。全フィールドに basis を書かせない
+- `unit` を書く理由: Niko 環境に同一 `tool_use_id` を持つ permission-rule 行が2行あり、**行なら52・id なら51** になる。単位を書かない数字は、それだけで ±1 のずれを持つ
+- `excludes` の `infrastructure-error` は `Tool permission stream closed` のような**拒否の判断が下されていない失敗**。件数からは外すが、軸0のカバレッジには実名で残す（消すのではなく、別の箱に入れる）
 
 ### 4.0 v2.1 追記（2026-08-19・Leon AB-74 の実測を受けて）
 
@@ -959,6 +993,8 @@ CI = (r_[100], r_[3900])           # 2.5% / 97.5% パーセンタイル
 | 軸2 空振り率 | 472 | 3,184（束） | 146 | available |
 | 軸1 一発着地 | 135 | 1,498 | 131 | available |
 | 安全チェック permission-rule | 41 | 17,941 | 26 | available |
+
+🚨 **この 41 の定義（Q-6 確定・2026-08-21）**: `窓内 × scope=all × 単位=distinct tool_use_id × 基盤エラー除く`。Niko 環境に同じ定義を当て直すと **2026-08-21 時点でも 41**（分母 15,085 / クラスタ 246）で、定義が復元できた。分母とクラスタが上表と違うのは測定日が違うためで、分子が一致したのは定義が一致したから。
 | 軸1 誘発中断 | 28 | 2,952 | 22 | available（ぎりぎり） |
 | hookErr | 30 | 17,991 | 18 | not_applicable |
 | H2 user-rejected | 11 | 17,941 | 10 | not_applicable |

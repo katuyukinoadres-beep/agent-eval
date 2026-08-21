@@ -112,6 +112,19 @@
 }
 ```
 
+### 2.0-a `countBasis` — 件数の既定（必須・設計書 v2 §4.0-a）
+
+```jsonc
+"countBasis": {
+  "scope": "all", "period": "window", "unit": "toolUseId",
+  "excludes": ["infrastructure-error"]
+}
+```
+
+率には `denominatorMeaning` があるのに、**件数には数え方を書く場所が無かった**。permission-rule の件数が設計書の4箇所で 40 / 41 / 44 / 45 に割れたのはこれが理由で、同じ環境の同じ量が数え方で **39〜52（1.33倍）** 動く。既定をここに1つ置き、**既定から外れるカウントだけが自分の `basis` を持つ**。
+
+`unit` が要るのは、同一 `tool_use_id` を持つ行が実在するため（Niko 環境で行 52 / id 51）。単位の書かれていない件数は、それだけで ±1 のずれを持つ。
+
 ### 2.1 `activeDaysMethod` — 同じ名前の2つの量を取り違えない
 
 🚨 `activeDays` は **2箇所に出るが別の量**。親オブジェクトを見ずに名前だけで読むと 5.9% ずれる。
@@ -346,6 +359,7 @@ n=2 の実測で **両環境とも単一プロジェクト支配**だった（Le
 | V-18 | `effectiveWeights` の合計が 100 ± 0.01 でない、またはキー集合が `axesUsed` と一致しない | 再正規化の壊れ。ここが黙って通ると総合点が別の式の値になる |
 | V-19 | `composite.score` が `axesUsed` の score と `effectiveWeights` からの再計算と ±0.05 で一致しない | 送信側の計算を信じないための検算 |
 | V-20 | `composite.score` が null なのに `suppressedReason` が無い / union 外 | 「出せない」と「0点」の混同を型で止める |
+| V-25 | `scanManifest.countBasis` が無い、または `scope` / `period` / `unit` のいずれかが union 外 | 数え方の書かれていない件数を母集団に入れない。V-3 の件数版 |
 | V-22 | `excluded` の軸が `axes` 側で `availability == "available"`、または `axesUsed` の軸が `availability != "available"` | 総合点の除外と軸の状態が食い違う。片方だけ直した改修をここで捕まえる |
 | V-21 | `comparison.*.delta` が non-null なのに 2窓の `axes` 集合が一致しない、`axes` が4軸未満、または `contribution` の合計が `delta` と ±0.05 で一致しない | 軸集合の違いを環境の変化として報告させない（設計書 v2 §12.6） |
 
