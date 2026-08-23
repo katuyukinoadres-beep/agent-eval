@@ -27,6 +27,12 @@ export const RULE_IDS = [
   'V-14',
   'V-15',
   'V-16',
+  'V-17',
+  'V-18',
+  'V-19',
+  'V-20',
+  'V-22',
+  'V-24',
   'V-25',
 ] as const
 
@@ -44,7 +50,13 @@ export type RuleId = (typeof RULE_IDS)[number]
  * here — an older parser that predates the field would be rejected outright, and
  * losing the submission is worse than flagging it.
  */
-export const NOT_IMPLEMENTED_HERE = ['V-8', 'V-12'] as const
+export const NOT_IMPLEMENTED_HERE = ['V-8', 'V-12', 'V-21', 'V-23'] as const
+
+/**
+ * V-21 and V-23 check the `comparison` block, which needs a previous window to
+ * compare against. Nothing writes one yet -- that is P4 -- so there is no
+ * comparison to check and a rule that always passes would read as coverage.
+ */
 
 export const RULE_REASONS: Readonly<Record<RuleId, string>> = {
   'V-1': 'scanManifest is absent — a payload whose scan range is unstated cannot be compared with any other',
@@ -61,6 +73,12 @@ export const RULE_REASONS: Readonly<Record<RuleId, string>> = {
   'V-14': 'more human-turn days than evidence days, which cannot happen: a day with a human turn left a transcript, so it is already an evidence day',
   'V-15': 'windowSource and cleanupPeriodDays contradict each other — a window claimed to come from a setting must say which value it read',
   'V-16': 'the three day counts are not nested — human-turn days sit inside user-row days, which sit inside evidence days, by construction',
+  'V-17': 'a composite score exists over three or more missing axes, or on under 63.75 nominal weight — 39% of the total can ride on one axis there',
+  'V-18': 'effectiveWeights do not sum to 100, or their keys are not axesUsed',
+  'V-19': 'the composite does not match a recomputation from axesUsed and effectiveWeights',
+  'V-20': 'a null composite with no suppressedReason — "no score" without saying why',
+  'V-22': 'an excluded axis is available, or an axis used is not — the two vocabularies disagree',
+  'V-24': 'an axis used dropped a term but the composite states no leaning, so a systematically shifted number reads as a plain one',
   'V-25': 'countBasis is missing or names a scope, period or unit outside its union — a count with no stated basis moved 1.33x across four published figures',
 }
 
@@ -134,7 +152,7 @@ export const ACTIVE_DAYS_METHOD = /^union-of-observed\(([a-zA-Z, ]+)\)$/
 // from a statistic without losing the submission. Everything here describes a
 // reading that is probably wrong rather than certainly malformed.
 
-export const FLAG_IDS = ['W-1', 'W-2', 'W-3', 'W-5', 'W-6', 'W-7'] as const
+export const FLAG_IDS = ['W-1', 'W-2', 'W-3', 'W-5', 'W-6', 'W-7', 'W-8'] as const
 
 export type FlagId = (typeof FLAG_IDS)[number]
 
@@ -152,7 +170,22 @@ export const FLAG_REASONS: Readonly<Record<FlagId, string>> = {
   'W-5': 'over 1% of lines failed to parse',
   'W-6': 'a boolean-derived numerator is zero over a large denominator — indistinguishable from a field that never fires',
   'W-7': 'a rate with a zero denominator, which passes V-4 and sits under W-6 threshold',
+  'W-8': 'an axis excluded from the composite is parse_failed rather than merely not_applicable — the log could not be read, not the environment quiet',
 }
+
+/** v2 §12.2: below this nominal weight, one axis can carry 39% of the total. */
+export const MIN_NOMINAL_WEIGHT = 63.75
+export const MAX_MISSING_AXES = 2
+/** V-19's tolerance, and V-18's. The spec gives both. */
+export const COMPOSITE_TOLERANCE = 0.05
+export const WEIGHT_SUM_TOLERANCE = 0.01
+
+export const SUPPRESSED_REASONS = [
+  'parse-failure-rate',
+  'subagents-not-walked',
+  'too-few-active-days',
+  'too-many-missing-axes',
+] as const
 
 export const ORIGIN_COVERAGE_FLOOR = 0.1
 export const TOOL_VERSION_CEILING = 5

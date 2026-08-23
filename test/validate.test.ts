@@ -270,6 +270,143 @@ describe('V-14 — more human-turn days than evidence days', () => {
   })
 })
 
+describe('the composite rules', () => {
+  const comp = (p: Mutable): Mutable => obj(p, 'composite')
+
+  /**
+   * base has no total: five of six axes are unbuilt. To exercise the rules that
+   * only fire on a scored composite, one is built here from base's own axes.
+   */
+  const scored = (mutate: (p: Mutable) => void = () => {}): Mutable =>
+    broken((p) => {
+      const axes = obj(p, 'axes')
+      for (const key of ['firstPassLanding', 'wastedMotion', 'selfVerification', 'artifactUptake']) {
+        const a = obj(axes, key)
+        a['availability'] = 'available'
+        a['score'] = 70
+        a['lineStates'] = { available: 0, not_applicable: obj(p, 'scanManifest')['linesRead'], parse_failed: 0 }
+      }
+      p['composite'] = {
+        score: 70,
+        tier: 'A',
+        axesUsed: ['firstPassLanding', 'wastedMotion', 'selfVerification', 'artifactUptake'],
+        nominalWeightSum: 71.25,
+        effectiveWeights: {
+          firstPassLanding: 26.32, wastedMotion: 24.56,
+          selfVerification: 24.56, artifactUptake: 24.56,
+        },
+        excluded: ['environmentMetabolism', 'recurrencePrevention'],
+        suppressedReason: null,
+        leans: null,
+        outcomeScore: 70,
+        designScore: null,
+      }
+      mutate(p)
+    })
+
+  it('accepts a well-formed composite', () => {
+    expect(validate(scored()).violations).toEqual([])
+  })
+
+  it('V-17 refuses a score standing on too few axes', () => {
+    // Three missing lets 39% of the total ride on one axis.
+    expectRefused(scored((p) => { comp(p)['excluded'] = ['a', 'b', 'c'] }), 'V-17')
+  })
+
+  it('V-17 refuses a score standing on too little weight', () => {
+    expectRefused(scored((p) => { comp(p)['nominalWeightSum'] = 46.25 }), 'V-17')
+  })
+
+  it('V-18 refuses weights that do not sum to 100', () => {
+    expectRefused(
+      scored((p) => { obj(comp(p), 'effectiveWeights')['wastedMotion'] = 10 }),
+      'V-18',
+    )
+  })
+
+  it('V-18 refuses weights whose keys are not the axes used', () => {
+    expectRefused(
+      scored((p) => { comp(p)['axesUsed'] = ['firstPassLanding', 'wastedMotion', 'selfVerification'] }),
+      'V-18',
+    )
+  })
+
+  it('V-19 refuses a total that does not survive recomputation', () => {
+    // The total is not taken on trust. Every material for redoing it is sent
+    // for exactly this check.
+    expectRefused(scored((p) => { comp(p)['score'] = 90 }), 'V-19')
+  })
+
+  it('V-19 tolerates rounding, which is what the tolerance is for', () => {
+    const v = validate(scored((p) => { comp(p)['score'] = 70.03 }))
+    expect(v.violations.map((x) => x.rule)).not.toContain('V-19')
+  })
+
+  it('V-20 refuses a null score with no reason', () => {
+    expectRefused(broken((p) => { comp(p)['suppressedReason'] = null }), 'V-20')
+  })
+
+  it('V-20 refuses a reason outside the union', () => {
+    expectRefused(broken((p) => { comp(p)['suppressedReason'] = 'felt-wrong' }), 'V-20')
+  })
+
+  it('V-22 refuses an axis used that is not available', () => {
+    expectRefused(
+      scored((p) => { obj(obj(p, 'axes'), 'wastedMotion')['availability'] = 'not_applicable' }),
+      'V-22',
+    )
+  })
+
+  it('V-22 refuses an excluded axis that is available', () => {
+    expectRefused(
+      scored((p) => {
+        const a = obj(obj(p, 'axes'), 'environmentMetabolism')
+        a['availability'] = 'available'
+        a['score'] = 50
+      }),
+      'V-22',
+    )
+  })
+
+  it('V-24 refuses a total whose parts dropped terms and says nothing about it', () => {
+    // Three of axis 2's dropped terms push the score up and one pushes it down.
+    // Without the leaning, a receiver reads the number as plain.
+    expectRefused(
+      scored((p) => {
+        obj(obj(p, 'axes'), 'wastedMotion')['omittedTerms'] = [
+          { term: 'unused-success', cause: 'not-implemented', leans: 'high' },
+        ]
+      }),
+      'V-24',
+    )
+  })
+
+  it('V-24 is satisfied by a stated leaning', () => {
+    const v = validate(scored((p) => {
+      obj(obj(p, 'axes'), 'wastedMotion')['omittedTerms'] = [
+        { term: 'unused-success', cause: 'not-implemented', leans: 'high' },
+      ]
+      comp(p)['leans'] = 'high'
+    }))
+    expect(v.violations.map((x) => x.rule)).not.toContain('V-24')
+  })
+
+  it('W-8 flags an excluded axis that could not be read', () => {
+    // Flagged, not refused. The submission is still worth having; the receiver
+    // decides whether a quiet environment and an unreadable one belong in the
+    // same statistic.
+    const v = validate(scored((p) => {
+      obj(obj(p, 'axes'), 'environmentMetabolism')['availability'] = 'parse_failed'
+    }))
+    expect(v.ok).toBe(true)
+    expect(v.flags.map((f) => f.flag)).toContain('W-8')
+  })
+
+  it('does not flag W-8 for an axis that is merely not applicable', () => {
+    expect(validate(scored()).flags.map((f) => f.flag)).not.toContain('W-8')
+  })
+})
+
 describe('V-25 — a count with no stated basis', () => {
   const basis = (p: Mutable): Mutable => obj(obj(p, 'scanManifest'), 'countBasis')
 
@@ -378,13 +515,17 @@ describe('the rule set is honest about what it does not check', () => {
     // Guards against a rule id existing with nothing exercising it.
     const covered = new Set<RuleId>([
       'V-1', 'V-2', 'V-3', 'V-4', 'V-5', 'V-6', 'V-7', 'V-9', 'V-10', 'V-11',
-      'V-13', 'V-14', 'V-15', 'V-16', 'V-25',
+      'V-13', 'V-14', 'V-15', 'V-16',
+      'V-17', 'V-18', 'V-19', 'V-20', 'V-22', 'V-24', 'V-25',
     ])
     expect([...RULE_IDS].filter((r) => !covered.has(r))).toEqual([])
   })
 
   it('states the two it does not implement, rather than implying full coverage', () => {
-    expect([...NOT_IMPLEMENTED_HERE]).toEqual(['V-8', 'V-12'])
+    // V-21 and V-23 check the comparison block, which needs a previous window.
+    // Nothing writes one yet, so a rule that always passed would read as
+    // coverage of something never exercised.
+    expect([...NOT_IMPLEMENTED_HERE]).toEqual(['V-8', 'V-12', 'V-21', 'V-23'])
     expect([...RULE_IDS] as string[]).not.toContain('V-8')
   })
 })

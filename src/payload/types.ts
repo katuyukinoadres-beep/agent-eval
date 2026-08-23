@@ -13,6 +13,7 @@
  */
 
 import type { Count, CountBasis, Metric } from './metric.js'
+import type { Composite, OmittedTerm } from '../score/composite.js'
 
 // ── branded leaves ────────────────────────────────────────────────────────────
 // The handful of leaves that genuinely have to be strings. Each is built through
@@ -123,6 +124,8 @@ export type ActiveDaysMethod =
  * three-value enum has no room for a fourth state — V-7 refuses one — so the
  * distinction lives in this field instead.
  */
+export type { Composite, OmittedTerm }
+
 export type UnavailableReason =
   | 'too-few-clusters'
   | 'denominator-below-minimum'
@@ -390,6 +393,15 @@ export interface Axis {
    * the fields carry names that say what they are instead.
    */
   readonly detail: Readonly<Record<string, number>> | null
+  /**
+   * Terms of this axis's formula that were not computed, each with the
+   * direction it moves the score.
+   *
+   * Without it, two environments reporting the same named score can have
+   * computed it from different formulas and neither side can tell. "Not
+   * implemented" alone does not say which side of the truth the reader is on.
+   */
+  readonly omittedTerms: readonly OmittedTerm[]
 }
 
 export type Axes = Readonly<Record<AxisKey, Axis>>
@@ -426,5 +438,6 @@ export interface Payload {
   readonly scanManifest: ScanManifest
   readonly metrics: Metrics
   readonly axes: Axes
+  readonly composite: Composite
   readonly environment: Environment
 }

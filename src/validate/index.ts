@@ -20,6 +20,11 @@ import {
   WINDOW_DAYS_METHOD,
   COUNT_BASIS_FIELDS,
   COUNT_BASIS_EXCLUSIONS,
+  COMPOSITE_TOLERANCE,
+  MAX_MISSING_AXES,
+  MIN_NOMINAL_WEIGHT,
+  SUPPRESSED_REASONS,
+  WEIGHT_SUM_TOLERANCE,
   type FlagId,
   type RuleId,
 } from './rules.js'
@@ -232,6 +237,110 @@ export function validate(payload: unknown): Verdict {
       }
       if (source === 'observed' && period !== null && period !== undefined) {
         add('V-15', 'scanManifest.window.windowSource', `"observed" but cleanupPeriodDays is ${JSON.stringify(period)}`)
+      }
+    }
+
+    // ── the composite block ──────────────────────────────────────────────────
+    const composite = payload['composite']
+    const axesObj = payload['axes']
+    if (isObj(composite)) {
+      const used = composite['axesUsed']
+      const excluded = composite['excluded']
+      const weights = composite['effectiveWeights']
+      const score = composite['score']
+      const nominal = composite['nominalWeightSum']
+      const usedKeys = Array.isArray(used) ? used.filter((k): k is string => typeof k === 'string') : []
+
+      // V-20 — a null score has to say why. "No score" and "zero" are different
+      // states and the union is what keeps them apart.
+      if (score === null || score === undefined) {
+        const reason = composite['suppressedReason']
+        if (typeof reason !== 'string' || !(SUPPRESSED_REASONS as readonly string[]).includes(reason)) {
+          add('V-20', 'composite.suppressedReason', `missing or outside the union: ${JSON.stringify(reason)}`)
+        }
+      } else if (typeof score !== 'number' || !Number.isFinite(score)) {
+        add('V-20', 'composite.score', 'not a number and not null')
+      } else {
+        // V-17 — a score standing on too little.
+        if (Array.isArray(excluded) && excluded.length > MAX_MISSING_AXES) {
+          add('V-17', 'composite.excluded', `${excluded.length} axes missing, over the cap of ${MAX_MISSING_AXES}`)
+        }
+        if (isNum(nominal) && nominal < MIN_NOMINAL_WEIGHT) {
+          add('V-17', 'composite.nominalWeightSum', `${nominal} under ${MIN_NOMINAL_WEIGHT}`)
+        }
+
+        // V-18 — the weights have to be a partition of 100 over exactly the
+        // axes used. Either half failing makes V-19's recomputation meaningless.
+        if (!isObj(weights)) {
+          add('V-18', 'composite.effectiveWeights', 'missing or not an object')
+        } else {
+          const keys = Object.keys(weights).sort()
+          if (JSON.stringify(keys) !== JSON.stringify([...usedKeys].sort())) {
+            add('V-18', 'composite.effectiveWeights', `keys ${JSON.stringify(keys)} do not match axesUsed`)
+          }
+          const sum = Object.values(weights).reduce<number>((a, v) => a + (isNum(v) ? v : Number.NaN), 0)
+          if (!Number.isFinite(sum) || Math.abs(sum - 100) > WEIGHT_SUM_TOLERANCE) {
+            add('V-18', 'composite.effectiveWeights', `sum ${sum}, not 100`)
+          }
+
+          // V-19 — recomputed from the parts, because the total is not a number
+          // the receiver takes on trust. The materials are shipped for this.
+          if (isObj(axesObj)) {
+            let recomputed = 0
+            let usable = true
+            for (const key of usedKeys) {
+              const axis = axesObj[key]
+              const w = weights[key]
+              if (!isObj(axis) || !isNum(axis['score']) || !isNum(w)) {
+                usable = false
+                break
+              }
+              recomputed += (w / 100) * axis['score']
+            }
+            if (usable && Math.abs(recomputed - score) > COMPOSITE_TOLERANCE) {
+              add('V-19', 'composite.score', `${score} against a recomputation of ${recomputed.toFixed(4)}`)
+            }
+          }
+        }
+      }
+
+      // V-22 — the two vocabularies must agree. The excluded list carries keys
+      // only, precisely so a reason is never restated in a second place; that
+      // only works if the lists cannot contradict availability.
+      if (isObj(axesObj)) {
+        for (const key of usedKeys) {
+          const axis = axesObj[key]
+          if (isObj(axis) && axis['availability'] !== 'available') {
+            add('V-22', `axes.${key}.availability`, `used by the composite but ${JSON.stringify(axis['availability'])}`)
+          }
+        }
+        if (Array.isArray(excluded)) {
+          for (const key of excluded) {
+            if (typeof key !== 'string') continue
+            const axis = axesObj[key]
+            if (isObj(axis) && axis['availability'] === 'available') {
+              add('V-22', `axes.${key}.availability`, 'excluded from the composite but available')
+            }
+            // W-8 — excluded because the log could not be read, not because the
+            // environment was quiet. Flagged, not refused: the submission is
+            // still worth having, and the receiver decides what to do with it.
+            if (isObj(axis) && axis['availability'] === 'parse_failed') {
+              flag('W-8', `axes.${key}.availability`, FLAG_REASONS['W-8'])
+            }
+          }
+        }
+
+        // V-24 — a total whose parts dropped terms must say which way it leans.
+        let anyOmitted = false
+        for (const key of usedKeys) {
+          const axis = axesObj[key]
+          if (isObj(axis) && Array.isArray(axis['omittedTerms']) && axis['omittedTerms'].length > 0) {
+            anyOmitted = true
+          }
+        }
+        if (anyOmitted && (composite['leans'] === null || composite['leans'] === undefined)) {
+          add('V-24', 'composite.leans', 'axes used dropped terms, so the total is systematically shifted and says nothing about it')
+        }
       }
     }
 
