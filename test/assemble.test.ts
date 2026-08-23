@@ -119,6 +119,7 @@ const BUILT_AXES = new Set<string>([
   'environmentMetabolism',
   'artifactUptake',
   'selfVerification',
+  'recurrencePrevention',
 ])
 
 describe('the payload it builds passes its own rules', () => {
