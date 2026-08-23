@@ -30,8 +30,18 @@ export const WEIGHT_RESOLVED = 0.1
 /** Below this many edit intervals the axis has nothing to divide by. */
 export const MIN_INTERVALS = 25
 
-/** Deducted when TodoWrite was never used. */
-export const TODO_PENALTY = 5
+/**
+ * v1 deducts five points when TodoWrite was never used. v2 §9.2 suspends the
+ * deduction pending a decision and keeps the flag as a breakdown line, so the
+ * penalty is zero here and the flag is still measured and reported.
+ *
+ * Left as a named constant rather than deleted: the suspension is a decision
+ * that can be reversed, and a reversal should be one number rather than a
+ * re-derivation.
+ */
+export const TODO_PENALTY = 0
+/** What v1 deducted, kept so the suspended rule stays legible. */
+export const TODO_PENALTY_V1 = 5
 
 /** Where the effectiveness multiplier saturates. */
 export const G_TARGET = 0.2
@@ -41,6 +51,8 @@ export type VerificationOmission =
   | 'axis3-command-history'
   | 'axis3-effectiveness'
   | 'axis3-consecutive-read-rounding'
+  | 'axis3-no-failures'
+  | 'axis3-todo-penalty-suspended'
 
 /**
  * What is not computed, and which way each moves the score.
@@ -54,9 +66,12 @@ export type VerificationOmission =
  * **high**.
  *
  * `axis3-effectiveness` is G, the share of verifications that actually caught
- * something. Without it the multiplier is left at 1 instead of its 0.7 floor,
- * which reads **high** — and that is the same shape as filling a gap with its
- * best value, so it is named rather than left implicit.
+ * something. The multiplier it feeds runs from 0.7 to 1.0, and G is not
+ * measured. This used to leave the multiplier at 1.0 — the top of the range —
+ * which asserts that every verification caught something, on no evidence, while
+ * the omission list next to it said the score read high. Taking the **floor**
+ * asserts the opposite and is the end this codebase is built to err towards, so
+ * the score now reads **low** by up to 30% of the V term.
  *
  * `axis3-consecutive-read-rounding` collapses three or more consecutive reads
  * whose results are not used into one. Not implemented, so a run of reads
@@ -66,8 +81,14 @@ export type VerificationOmission =
  */
 export const VERIFICATION_OMISSION_LEANINGS: Readonly<Record<VerificationOmission, 'high' | 'low'>> = {
   'axis3-command-history': 'high',
-  'axis3-effectiveness': 'high',
+  // Flipped when the multiplier moved from its ceiling to its floor.
+  'axis3-effectiveness': 'low',
   'axis3-consecutive-read-rounding': 'high',
+  // Both repair terms drop and V renormalises to the whole, so the score is
+  // 100*V_eff. V is usually the smallest of the three, so this reads low.
+  'axis3-no-failures': 'low',
+  // v1 deducted five points; v2 suspends it. Not deducting reads high.
+  'axis3-todo-penalty-suspended': 'high',
 }
 
 export interface VerificationInputs {
@@ -76,6 +97,8 @@ export interface VerificationInputs {
   readonly selfRepaired: number
   readonly humanRescued: number
   readonly unresolved: number
+  /** Cleared, but outside the repair rate's numerator. Denominator only. */
+  readonly repairedNotCounted: number
   readonly todoWriteUsed: boolean
   readonly firstWindow: boolean
 }
@@ -97,8 +120,14 @@ export interface Verification {
 export function verification(inputs: VerificationInputs): Verification {
   const omitted: VerificationOmission[] = ['axis3-effectiveness', 'axis3-consecutive-read-rounding']
   if (inputs.firstWindow) omitted.unshift('axis3-command-history')
+  if (!inputs.todoWriteUsed) omitted.push('axis3-todo-penalty-suspended')
 
-  const failures = inputs.selfRepaired + inputs.humanRescued + inputs.unresolved
+  const failures =
+    inputs.selfRepaired + inputs.humanRescued + inputs.unresolved + inputs.repairedNotCounted
+  // Both repair terms fall out below when there is nothing to repair, which
+  // leaves 100*V_eff -- a different formula from the one the axis declares. It
+  // is recorded as an omission rather than applied quietly.
+  if (failures === 0) omitted.push('axis3-no-failures')
 
   if (inputs.intervals < MIN_INTERVALS) {
     return {
@@ -114,9 +143,10 @@ export function verification(inputs: VerificationInputs): Verification {
   }
 
   const v = inputs.verifiedIntervals / inputs.intervals
-  // G is not computed, so the multiplier stays at 1 rather than its 0.7 floor.
-  // Named in `omitted` with its direction: this reads high.
-  const vEff = v
+  // G is not computed. The multiplier runs from V_EFF_FLOOR to 1, and this
+  // takes the floor: leaving it at 1 asserts that every verification caught
+  // something, which is filling a gap with its best value.
+  const vEff = v * V_EFF_FLOOR
 
   // A window with no failures has nothing to repair, and a repair rate of 0
   // would read as never recovering. Both terms fall out of the score in that

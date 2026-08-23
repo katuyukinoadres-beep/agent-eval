@@ -22,6 +22,7 @@ import { normalisePath, referenceIndex, type Mention, type ReferenceIndex } from
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
 import {
   IN_AXIS2_NUMERATOR,
+  IN_REPAIR_SPLIT,
   SUPPLIES_SIGNATURE,
   attribute,
   closure,
@@ -382,12 +383,27 @@ export interface VerificationCounts {
   readonly verifiedIntervals: number
   /** Whether TodoWrite was used at all. v1 deducts five points when it was not. */
   readonly todoWriteUsed: boolean
-  /** Failures that a later success on the same target cleared, with no human turn between. */
+  /**
+   * Failures a later success on the same target cleared, inside three attempts,
+   * with no human turn between, and whose error class was new to the session.
+   *
+   * The last clause is v1's anti-gaming rule: without it, alternating a command
+   * that always fails with one that always succeeds drives the rate to 1.0.
+   */
   readonly selfRepaired: number
   /** Failures where a human turn came before the recovery. */
   readonly humanRescued: number
-  /** Failures nothing cleared. The only third of the split that is deducted for. */
+  /** Failures nothing cleared. The only part of the split that is deducted for. */
   readonly unresolved: number
+  /**
+   * Failures that were cleared but do not count towards the repair rate:
+   * cleared past the third attempt, or of a class the session had already seen.
+   *
+   * They stay in the denominator and enter neither numerator. Booking them as
+   * unresolved would deduct for a failure the agent actually fixed, which is a
+   * penalty for recovering slowly or for recovering from something familiar.
+   */
+  readonly repairedNotCounted: number
 }
 
 export interface ProjectTally {
@@ -435,6 +451,7 @@ interface Mut {
   selfRepaired: number
   humanRescued: number
   unresolved: number
+  repairedNotCounted: number
   rootBundles: number
   orphanBundles: number
   environmentNoiseRows: number
@@ -506,6 +523,19 @@ interface MutMetabolism {
   effectiveInputPerCall: number[]
 }
 
+/**
+ * A failure waiting to see whether anything cleared it.
+ *
+ * `firstSeenClass` is v1's anti-gaming clause: S's numerator counts only
+ * failures whose error class was new to the session. Without it, alternating a
+ * command that always fails with one that always succeeds drives S to 1.0.
+ */
+interface PendingFailure {
+  attempts: number
+  humanSince: boolean
+  firstSeenClass: boolean
+}
+
 interface MutWasted {
   failures: number
   hookOriginated: number
@@ -569,7 +599,8 @@ function reduceLine(
   met: MutMetabolism,
   manual: MutManualEdits,
   openEdits: Map<string, boolean>,
-  pending: Map<string, { attempts: number; humanSince: boolean }>,
+  pending: Map<string, PendingFailure>,
+  seenClasses: Set<string>,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -789,14 +820,21 @@ function reduceLine(
         if (block['is_error'] !== true && typeof okId === 'string') {
           const okCall = toolOf.get(okId)
           const okKey = `${okCall?.name ?? 'unknown'} ${okCall?.target ?? ''}`
-          const st = pending.get(okKey)
-          if (st !== undefined) {
-            // Within three attempts and with no human turn in between is a
-            // repair. With a human turn it is a rescue, which v1 counts apart
-            // and deducts for neither.
-            if (st.humanSince) m.humanRescued += 1
-            else if (st.attempts <= MAX_REPAIR_ATTEMPTS) m.selfRepaired += 1
-            else m.unresolved += 1
+          const settled = pending.get(okKey)
+          if (settled !== undefined) {
+            // v1's three-way split, plus the bucket its two clauses imply.
+            //
+            // A human turn in between makes it a rescue, which v1 counts apart
+            // and deducts for neither. Within three attempts, no human turn and
+            // a class new to the session is a self-repair. Everything else was
+            // still cleared, so it cannot be called unresolved -- that term is
+            // the only one the score deducts for, and deducting for a failure
+            // the agent fixed would be a penalty for recovering slowly or for
+            // recovering from something familiar.
+            if (settled.humanSince) m.humanRescued += 1
+            else if (settled.attempts <= MAX_REPAIR_ATTEMPTS && settled.firstSeenClass) {
+              m.selfRepaired += 1
+            } else m.repairedNotCounted += 1
             pending.delete(okKey)
           }
         }
@@ -836,6 +874,23 @@ function reduceLine(
           // Only what axis 2 charged supplies a signature. A refused call in the
           // recurrence set would make one guardrail firing twice look like the
           // same failure coming back.
+          // Axis 3's split. Only failures the work produced: a denied call
+          // never ran, so there is nothing for anyone to recover from.
+          if (IN_REPAIR_SPLIT[attributed]) {
+            const key = `${call?.name ?? 'unknown'} ${call?.target ?? ''}`
+            const open = pending.get(key)
+            if (open === undefined) {
+              pending.set(key, {
+                attempts: 1,
+                humanSince: false,
+                firstSeenClass: !seenClasses.has(errorClass),
+              })
+            } else {
+              open.attempts += 1
+            }
+            seenClasses.add(errorClass)
+          }
+
           if (SUPPLIES_SIGNATURE[attributed]) {
             // The plaintext tuple stays in this frame. `repeatRate` reads it
             // below; only the MAC and the aggregates come out.
@@ -946,7 +1001,7 @@ export function scan(
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
     denialRows: 0, denialUserRejected: 0, denialKinds: new Map<string, number>(), sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
     intervals: 0, verifiedIntervals: 0, todoWriteUsed: false,
-    selfRepaired: 0, humanRescued: 0, unresolved: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    selfRepaired: 0, humanRescued: 0, unresolved: 0, repairedNotCounted: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -963,6 +1018,7 @@ export function scan(
   const tuples: Array<readonly [string, ErrorClass, string]> = []
   const macs: Hmac128[] = []
   const perSession = new Map<string, MutSessionTally>()
+  const seenClassBySession = new Map<string, Set<string>>()
   const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
@@ -988,7 +1044,14 @@ export function scan(
     }
     const bundles = bundleTracker(nextBundleId)
     const openEdits = new Map<string, boolean>()
-    const pending = new Map<string, { attempts: number; humanSince: boolean }>()
+    const pending = new Map<string, PendingFailure>()
+    // Per session, not per file: v1 says "first seen in that session", and a
+    // session is one main transcript plus the subagent files hanging off it.
+    let seenClasses = seenClassBySession.get(file.sessionId)
+    if (seenClasses === undefined) {
+      seenClasses = new Set<string>()
+      seenClassBySession.set(file.sessionId, seenClasses)
+    }
     let st = perSession.get(file.sessionId)
     if (st === undefined) {
       st = {
@@ -1007,7 +1070,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
@@ -1068,6 +1131,7 @@ export function scan(
       selfRepaired: m.selfRepaired,
       humanRescued: m.humanRescued,
       unresolved: m.unresolved,
+      repairedNotCounted: m.repairedNotCounted,
     },
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,

@@ -129,6 +129,26 @@ export const SUPPLIES_SIGNATURE: Readonly<Record<Attribution, boolean>> = {
   E8_E9: true,
 }
 
+/**
+ * Which attributions enter axis 3's failure/recovery split.
+ *
+ * Everything the work produced, which is the numerator set plus E7. A denial is
+ * not a failure anyone recovers from — the call never ran — and the network is
+ * not the environment under test. E7 is in because a stale read is precisely
+ * what axis 3 exists to notice.
+ */
+export const IN_REPAIR_SPLIT: Readonly<Record<Attribution, boolean>> = {
+  E1: false,
+  E2: false,
+  E2b: false,
+  E3: false,
+  E4: false,
+  E7: true,
+  E6: true,
+  E5: true,
+  E8_E9: true,
+}
+
 /** Tools whose failures belong to no axis: the network, not the environment. */
 export const EXTERNAL_TOOLS = ['WebFetch', 'WebSearch'] as const
 const MCP_PREFIX = 'mcp__'

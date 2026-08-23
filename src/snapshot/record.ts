@@ -246,6 +246,10 @@ export const IDENTITY_NAMES = [
   'day-nesting',
   'signature-members',
   'axis-denominator-close',
+  // The attribution partition against the failures counted before it ran.
+  'attribution-closes',
+  // Axis 3's four buckets against the failures the attribution routed to them.
+  'repair-split-within-failures',
 ] as const
 
 export type IdentityName = (typeof IDENTITY_NAMES)[number]

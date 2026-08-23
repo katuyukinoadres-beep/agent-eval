@@ -359,6 +359,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     selfRepaired: counts.verification.selfRepaired,
     humanRescued: counts.verification.humanRescued,
     unresolved: counts.verification.unresolved,
+    repairedNotCounted: counts.verification.repairedNotCounted,
     todoWriteUsed: counts.verification.todoWriteUsed,
     firstWindow: true,
   })
@@ -394,6 +395,10 @@ export function assemble(inputs: AssembleInputs): Assembled {
       selfRepaired: counts.verification.selfRepaired,
       humanRescued: counts.verification.humanRescued,
       unresolved: counts.verification.unresolved,
+      // The fourth bucket. Without it the four numbers here do not sum to
+      // `failures`, and a reader checking the arithmetic finds a gap with no
+      // name -- which is how a term gets assumed to be zero.
+      repairedNotCounted: counts.verification.repairedNotCounted,
       todoWriteUsed: counts.verification.todoWriteUsed ? 1 : 0,
     },
   }

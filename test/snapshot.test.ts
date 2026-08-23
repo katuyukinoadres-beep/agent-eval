@@ -64,7 +64,10 @@ const counts = {
   },
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
-    selfRepaired: 2, humanRescued: 1, unresolved: 1,
+    // Three episodes against the three failures the attribution routed to axis
+    // 3's split. The identity is a subset relation and this fixture sits on the
+    // boundary, which is where it is worth pinning.
+    selfRepaired: 2, humanRescued: 1, unresolved: 0, repairedNotCounted: 0,
   },
   wasted: {
     failures: 3, hookOriginated: 0, writeRepeats: 1, investigationRepeats: 1,

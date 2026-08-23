@@ -64,7 +64,7 @@ const counts = {
   },
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
-    selfRepaired: 2, humanRescued: 1, unresolved: 1,
+    selfRepaired: 2, humanRescued: 1, unresolved: 1, repairedNotCounted: 0,
   },
   wasted: {
     failures: 10,

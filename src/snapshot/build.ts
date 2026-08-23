@@ -316,6 +316,36 @@ export function buildSnapshot(inputs: BuildInputs): Built {
     // A subset relation, not an equality: human-turn days sit inside user-row
     // days and are usually fewer.
     { name: 'day-nesting', relation: 'atMost', left: span.humanTurnDays, right: span.userRowDays },
+    // The attribution partition. `observed` is counted before any attribution
+    // runs, so this compares two quantities that were arrived at separately.
+    {
+      name: 'attribution-closes',
+      relation: 'equal',
+      left: counts.wasted.closure.numerator + counts.wasted.closure.excluded,
+      right: counts.wasted.errorsObserved,
+    },
+    // Axis 3's four buckets against the failures that could have filled them.
+    //
+    // A subset relation, not an equality, and the reason is worth keeping in
+    // front of the code: repeated failures on one target raise that episode's
+    // attempt count rather than opening a second one, so four failures on the
+    // same key settle once. Episodes are therefore at most the failures the
+    // attribution routed here. Writing this as an equality would have made it
+    // fire on every ordinary run.
+    {
+      name: 'repair-split-within-failures',
+      relation: 'atMost',
+      left:
+        counts.verification.selfRepaired +
+        counts.verification.humanRescued +
+        counts.verification.unresolved +
+        counts.verification.repairedNotCounted,
+      right:
+        counts.wasted.attribution.E5 +
+        counts.wasted.attribution.E6 +
+        counts.wasted.attribution.E7 +
+        counts.wasted.attribution.E8_E9,
+    },
   ]
   if (sessions !== null) {
     checks.push({ name: 'sessions-close', relation: 'equal', left: sessions.length, right: counts.sessionIds.length })
