@@ -100,6 +100,31 @@ function snapshotLine(result: ReturnType<typeof runScan>): string {
   return `wrote #${s.seq} (${s.hash.slice(7, 19)})${chain}${absent}`
 }
 
+/**
+ * This window against the last one.
+ *
+ * Never says improved or worsened. A delta may only be named when its interval
+ * excludes zero and its size clears the floor, and there is no interval yet, so
+ * every delta here is shown and none is named. The wording matters: on the data
+ * the floor was fitted to, one indicator moved +0.834pt significantly over one
+ * pair of windows and -0.083pt over the same data cut differently.
+ */
+function comparisonLine(result: ReturnType<typeof runScan>): string {
+  const c = result.comparison
+  if (c === null) return 'no store opened'
+  if (c.refused !== null) return `no delta — ${c.refused}`
+  const named = c.perAxis.filter((a) => a.significant).length
+  const parts = c.perAxis
+    .map((a) => `${a.axis} ${a.delta >= 0 ? '+' : ''}${a.delta}`)
+    .join(', ')
+  const gap = named === 0 ? ' (none can be called a change: no interval yet)' : ''
+  const excluded =
+    c.excludedByFingerprint.length === 0
+      ? ''
+      : ` — ${c.excludedByFingerprint.length} axis(es) excluded, formula changed`
+  return `${c.basis}, ${c.axes.length} axes: ${parts}${gap}${excluded}`
+}
+
 /** The total, or why there is not one, plus which way it leans. */
 function compositeLine(c: ReturnType<typeof runScan>['payload']['composite']): string {
   if (c.score === null) return `none — ${c.suppressedReason ?? 'unstated'}`
@@ -142,6 +167,7 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // Always printed. A snapshot that silently failed to write is discovered a
     // window later, when the comparison it existed for cannot be made.
     `snapshot   ${snapshotLine(result)}`,
+    `vs prev    ${comparisonLine(result)}`,
     `signatures ${result.signaturesSigned ? 'signed' : 'unsigned — the set is empty, not the environment'}`,
     '',
     `gate       ${gateReasons.length === 0 ? 'passed' : gateReasons.join(', ')}`,
