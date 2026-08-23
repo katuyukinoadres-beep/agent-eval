@@ -294,10 +294,27 @@ describe('the forbidden fields', () => {
 })
 
 describe('what the scan carries forward', () => {
-  it('collects session ids and dates for the window', () => {
+  it('folds clusters to the session the file belongs to, not the id on the row', () => {
+    // The bootstrap resamples over clusters and the cluster count gates the
+    // minimum denominator, so where this number comes from decides whether any
+    // rate gets a confidence interval.
+    //
+    // This corpus is deliberately a divergent one: the rows say `s1` and both
+    // files belong to session `aaaa...0001`, including the subagent transcript
+    // nested under it. Folding by path gives one cluster; trusting the row
+    // would give one too here, but on a machine where a subagent carried its
+    // own id it would give more, with nothing to say so.
     const c = counts()
-    expect(c.sessionIds).toEqual(['s1'])
+    expect(c.sessionIds).toEqual(['aaaaaaaa-0000-4000-8000-000000000001'])
     expect(c.dates).toEqual(['2026-08-19', '2026-08-20'])
+  })
+
+  it('counts rows whose own session id disagrees with their file', () => {
+    // The positive control for the zero this reports on the real machine, where
+    // 12 row-level ids and 12 folded clusters agree and no id appears only
+    // under subagents. They agree by circumstance, and a check that has never
+    // been shown to fire is not a check.
+    expect(counts().sessionIdMismatchRows).toBeGreaterThan(0)
   })
 
   it('reports bytes from the inventory rather than from what it read', () => {
