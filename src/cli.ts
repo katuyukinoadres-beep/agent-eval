@@ -78,6 +78,28 @@ function parseScanArgs(argv: readonly string[]): Parsed {
   return { repos, externalLog, at, summary, store, stateDir, error: null }
 }
 
+/**
+ * One line about the snapshot, printed whether it worked or not.
+ *
+ * The wording is deliberate on two points. It carries no path -- a path holds
+ * the OS username, and this output gets pasted into issues. And it says
+ * "self-consistent" rather than "verified": the key is local and the hash
+ * function public, so the chain establishes that nothing changed since it was
+ * written, not that its owner did not write it that way.
+ */
+function snapshotLine(result: ReturnType<typeof runScan>): string {
+  const s = result.snapshot
+  if (s === null) return 'not written (--store to keep history)'
+  if (s.kind === 'refused') return `REFUSED: ${s.reason} — ${s.detail}`
+  const c = result.chain
+  const chain =
+    c === null
+      ? ''
+      : `, chain ${c.length} ${c.continuous ? 'self-consistent' : `with ${c.breaks.length} break(s)`}`
+  const absent = s.blocksAbsent === 0 ? '' : ` — ${s.blocksAbsent} block(s) absent`
+  return `wrote #${s.seq} (${s.hash.slice(7, 19)})${chain}${absent}`
+}
+
 /** A short report, so the common case does not require reading 300 lines of JSON. */
 function summarise(result: ReturnType<typeof runScan>): string {
   const { payload, validation, gateReasons } = result
@@ -102,6 +124,9 @@ function summarise(result: ReturnType<typeof runScan>): string {
     `record     ${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`,
     '',
     `store      ${result.stateDir ?? 'not opened (--store to open it)'}`,
+    // Always printed. A snapshot that silently failed to write is discovered a
+    // window later, when the comparison it existed for cannot be made.
+    `snapshot   ${snapshotLine(result)}`,
     `signatures ${result.signaturesSigned ? 'signed' : 'unsigned — the set is empty, not the environment'}`,
     '',
     `gate       ${gateReasons.length === 0 ? 'passed' : gateReasons.join(', ')}`,
