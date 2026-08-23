@@ -14,6 +14,22 @@ import type { ScanCounts } from '../collect/scan.js'
 import type { GateVerdict } from '../score/gate.js'
 import { MIN_FILTERED_CALLS, OMITTED_TERM_LEANINGS, W_REF, WEIGHT_R_IN, WEIGHT_W } from '../score/wastedMotion.js'
 import {
+  MIN_INTERVALS,
+  TODO_PENALTY,
+  WEIGHT_RESOLVED,
+  WEIGHT_SELF_REPAIR,
+  WEIGHT_VERIFIED,
+} from '../score/verification.js'
+import { MIN_BUNDLES, WEIGHT_NOT_OVERWRITTEN, WEIGHT_REUSE } from '../score/uptake.js'
+import { WEIGHT_EXPLANATION, WEIGHT_RECURRENCE } from '../score/recurrence.js'
+import {
+  TRAPEZOID_CEILING_TOKENS,
+  TRAPEZOID_FLOOR_TOKENS,
+  TRAPEZOID_MIN_SCORE,
+  TRAPEZOID_STEP_PENALTY,
+  TRAPEZOID_STEP_TOKENS,
+} from '../score/metabolism.js'
+import {
   WEIGHT_FAILURE,
   WEIGHT_INVESTIGATION_REPEAT,
   WEIGHT_LARGE_OUTPUT,
@@ -54,6 +70,7 @@ import { day, dayOf, e4, int, semver, type Day, type Hmac128, type Sha256 } from
  * result, and until they were fingerprinted a change to any of them would have
  * made every past snapshot quietly incomparable.
  */
+/** Kept as a name for the axis-2 entry, which the tests reach for directly. */
 export const WASTED_MOTION_CONSTANTS = {
   // Scaled, because every one of these is a fraction and the canonical form
   // takes integers only. The first record built refused on
@@ -69,6 +86,54 @@ export const WASTED_MOTION_CONSTANTS = {
   weightLargeOutputE4: e4(WEIGHT_LARGE_OUTPUT),
   minFilteredCalls: MIN_FILTERED_CALLS,
 } as const
+
+/**
+ * The constants each axis's score depends on, one entry per axis that has a
+ * formula.
+ *
+ * Every axis needs this, not just the first one built. An axis carrying a
+ * measured score and a null fingerprint is one whose definition can change
+ * between windows with nothing to say it did -- which is the whole failure the
+ * fingerprint exists to stop, reintroduced per axis.
+ *
+ * Scaled, because these are fractions and the canonical form takes integers.
+ */
+export const AXIS_CONSTANTS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+  wastedMotion: {
+    wRefE4: e4(W_REF),
+    weightWE4: e4(WEIGHT_W),
+    weightRInE4: e4(WEIGHT_R_IN),
+    weightFailureE4: e4(WEIGHT_FAILURE),
+    weightWriteRepeatE4: e4(WEIGHT_WRITE_REPEAT),
+    weightInvestigationRepeatE4: e4(WEIGHT_INVESTIGATION_REPEAT),
+    weightTimeoutE4: e4(WEIGHT_TIMEOUT),
+    weightLargeOutputE4: e4(WEIGHT_LARGE_OUTPUT),
+    minFilteredCalls: MIN_FILTERED_CALLS,
+  },
+  selfVerification: {
+    weightVerifiedE4: e4(WEIGHT_VERIFIED),
+    weightSelfRepairE4: e4(WEIGHT_SELF_REPAIR),
+    weightResolvedE4: e4(WEIGHT_RESOLVED),
+    minIntervals: MIN_INTERVALS,
+    todoPenalty: TODO_PENALTY,
+  },
+  artifactUptake: {
+    weightReuseE4: e4(WEIGHT_REUSE),
+    weightNotOverwrittenE4: e4(WEIGHT_NOT_OVERWRITTEN),
+    minBundles: MIN_BUNDLES,
+  },
+  environmentMetabolism: {
+    trapezoidFloorTokens: TRAPEZOID_FLOOR_TOKENS,
+    trapezoidCeilingTokens: TRAPEZOID_CEILING_TOKENS,
+    trapezoidStepTokens: TRAPEZOID_STEP_TOKENS,
+    trapezoidStepPenaltyE4: e4(TRAPEZOID_STEP_PENALTY),
+    trapezoidMinScore: TRAPEZOID_MIN_SCORE,
+  },
+  recurrencePrevention: {
+    weightRecurrenceE4: e4(WEIGHT_RECURRENCE),
+    weightExplanationE4: e4(WEIGHT_EXPLANATION),
+  },
+}
 
 export interface BuildInputs {
   readonly counts: ScanCounts
@@ -176,8 +241,8 @@ const axesOf = (payloadAxes: Axes, counts: ScanCounts): Record<AxisKey, AxisReco
       // fingerprint and no number that a later window could compare against.
       continue
     }
-    const fingerprint =
-      key === 'wastedMotion' ? formulaFingerprint(key, WASTED_MOTION_CONSTANTS) : null
+    const constants = AXIS_CONSTANTS[key]
+    const fingerprint = constants === undefined ? null : formulaFingerprint(key, constants)
     out[key] = {
       state: a.availability === 'available' ? 'measured' : 'not-applicable',
       formulaFingerprint: fingerprint,
