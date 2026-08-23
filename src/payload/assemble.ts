@@ -140,6 +140,17 @@ function rateOrNull(
   sourceField: Parameters<typeof makeMetric>[0]['sourceField'],
 ): Metric | null {
   if (denominator <= 0) return null
+  // A numerator above its denominator is a real inconsistency and `makeMetric`
+  // is right to refuse it -- but it refused by throwing, from a call nothing
+  // between here and the CLI catches, so the whole tool produced nothing. It
+  // was reachable: `skillFired` counted its numerator across every project and
+  // its denominator in one directory, so running from a repository with few
+  // skills killed the run with `numerator 5 exceeds denominator 2`.
+  //
+  // The scope mismatch is fixed at the source. This is the second line: an
+  // inconsistency the payload cannot represent becomes an absence, which it
+  // can, rather than nothing at all.
+  if (numerator > denominator) return null
   return makeMetric({ numerator, denominator, denominatorMeaning, sourceField })
 }
 

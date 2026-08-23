@@ -27,7 +27,7 @@ import {
 } from './collect/environment.js'
 import { assemble } from './payload/assemble.js'
 import { settleArtifacts } from './score/artifact.js'
-import { ensureStateDir } from './snapshot/stateDir.js'
+import { ensureStateDir, StateDirError } from './snapshot/stateDir.js'
 import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
 import { buildSnapshot } from './snapshot/build.js'
@@ -194,11 +194,32 @@ export function run(options: RunOptions): RunResult {
   let sign = null as ReturnType<typeof signerFor> | null
   let store: { readonly stateDir: string; readonly snapshotDir: string } | null = null
   let key: ReturnType<typeof loadKey> | null = null
+  // Opening the store is allowed to fail. It used to throw sixty lines above
+  // the try that exists for exactly this, so a home directory that is version
+  // controlled, or read-only, or already holding a tracked state dir, killed
+  // the run with an uncaught error carrying an absolute path and a stack --
+  // and produced no payload, in a function whose own comment says the payload
+  // must still come out on a day the store cannot be written.
+  let storeRefusal: WriteOutcome | null = null
   if (options.useStore) {
-    const dirs = ensureStateDir(options.home, options.stateDir)
-    store = { stateDir: dirs.stateDir, snapshotDir: dirs.snapshotDir }
-    key = loadKey(options.home, dirs.stateDir)
-    sign = signerFor(key.master)
+    try {
+      const dirs = ensureStateDir(options.home, options.stateDir)
+      store = { stateDir: dirs.stateDir, snapshotDir: dirs.snapshotDir }
+      key = loadKey(options.home, dirs.stateDir)
+      sign = signerFor(key.master)
+    } catch (e) {
+      store = null
+      key = null
+      sign = null
+      storeRefusal = {
+        kind: 'refused',
+        reason: 'state-dir-unwritable',
+        // A StateDirError carries advice and, deliberately, no path. Anything
+        // else is a filesystem error whose message embeds one, so it becomes a
+        // fixed phrase chosen by errno.
+        detail: e instanceof StateDirError ? e.message : filesystemReason(e),
+      }
+    }
   }
 
   const counts = scan(inventory, undefined, sign)
@@ -248,7 +269,9 @@ export function run(options: RunOptions): RunResult {
     artifacts,
     window,
     permissions: tallyPermissions(scopes),
-    skills: countSkills(join(options.cwd, '.claude')),
+    // Both directories skills can live in, so the denominator covers the same
+    // ground as a numerator collected across every project on the machine.
+    skills: countSkills([join(options.cwd, '.claude'), join(options.home, '.claude')]),
     hooks: countHooks(scopes),
     mcp: countMcpServers(mcpSourcePaths(options.cwd, options.home)),
     os: options.os,
@@ -265,7 +288,7 @@ export function run(options: RunOptions): RunResult {
   // the shape it ships in.
   const validation = validate(JSON.parse(JSON.stringify(payload)) as unknown)
 
-  let snapshot: WriteOutcome | null = null
+  let snapshot: WriteOutcome | null = storeRefusal
   let chain: ChainVerdict | null = null
   let comparison: Comparison | null = null
   if (store !== null && key !== null) {

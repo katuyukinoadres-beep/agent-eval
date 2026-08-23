@@ -187,17 +187,50 @@ const defaultGlobber: Globber = (pattern, cwd) => {
   }
 }
 
-export function countSkills(claudeDir: string, glob: Globber = defaultGlobber): SkillCount {
+/**
+ * Skills defined across every directory that can hold them.
+ *
+ * Takes a list, because the denominator has to cover the same ground as the
+ * numerator. `attributionSkill` is collected across every project on the
+ * machine while this counted one `.claude` directory, so running from a
+ * repository with fewer skills than the log mentions made the numerator exceed
+ * the denominator -- and `makeMetric` refuses that by throwing, from a call
+ * nothing catches. The tool produced nothing at all.
+ *
+ * A leading underscore marks a skill as disabled; the payload spec excludes
+ * them, and counting them pads a denominator with things that cannot fire.
+ */
+export function countSkills(
+  claudeDirs: readonly string[] | string,
+  glob: Globber = defaultGlobber,
+): SkillCount {
+  const dirs = typeof claudeDirs === 'string' ? [claudeDirs] : claudeDirs
   const byGlob: Record<string, number> = {}
   const seen = new Set<string>()
   for (const pattern of SKILL_GLOBS) {
-    const hits = glob(pattern, claudeDir)
-    byGlob[pattern] = hits.length
-    // Deduplicated: a repository could satisfy both layouts, and a skill counted
-    // twice inflates a denominator, which lowers a rate and looks like caution.
-    for (const h of hits) seen.add(h)
+    let hits = 0
+    for (const dir of dirs) {
+      for (const h of glob(pattern, dir)) {
+        if (isDisabledSkill(h)) continue
+        hits += 1
+        // Deduplicated: two layouts can match the same file, and a skill counted
+        // twice inflates a denominator, which lowers a rate and looks like care.
+        seen.add(`${dir}/${h}`)
+      }
+    }
+    byGlob[pattern] = hits
   }
   return { total: seen.size, byGlob }
+}
+
+/** A leading underscore on the skill's own name marks it disabled. */
+export const isDisabledSkill = (path: string): boolean => {
+  const parts = path.split('/').filter((x) => x.length > 0)
+  // `skills/_foo.md` and `skills/_foo/SKILL.md` -- the name is the segment
+  // after `skills/`, which is the last one for a flat layout and the
+  // second-to-last for a directory one.
+  const name = parts[parts.length - 1] === 'SKILL.md' ? parts[parts.length - 2] : parts[parts.length - 1]
+  return name !== undefined && name.startsWith('_')
 }
 
 // ── hooks ─────────────────────────────────────────────────────────────────────

@@ -1667,3 +1667,30 @@ wastedMotion: { availability: "available", score: 46.25 }
 ### null の指紋が「同じ式」として比較されていた（#35）
 
 `a.formulaFingerprint !== b.formulaFingerprint` は `null !== null` が false なので、**式が両方とも不明な軸ペアが比較可能に落ちる**。null は生成される（定数表を持たない軸、読み戻し時にフィールドが欠けたスナップショット）。定数表を埋める前に書いたスナップショットは既にディスク上にある。
+
+---
+
+## 2026-08-23 — ツールが何も出さなくなる経路2件
+
+### `skillFired` の分母と分子でスコープが違い、throw していた（#22）
+
+- 分子 `attributionSkillDistinct` は**マシン上の全プロジェクト**を走査
+- 分母 `countSkills(join(cwd, '.claude'))` は**1ディレクトリだけ**
+
+`makeMetric` は分子 > 分母を throw で拒否する（正しい不変条件）。だが `assemble` と `cli` の間に catch は無い。
+
+**スキルの少ないリポジトリから実行すると `MetricError: numerator 5 exceeds denominator 2` で、ツールは何も出さない。**
+
+2段構えで直した:
+1. 根本原因: skills を hooks と同じ4スコープ相当（`<cwd>/.claude` と `<home>/.claude`）で数える。あわせて `_` 始まりの無効スキルを除外（payload spec:173）
+2. 第2線: `rateOrNull` が反転も null にする。**payload が表現できない不整合は「欠測」になる。欠測は表現できる。何も出ないより良い**
+
+### `ensureStateDir` が catch の外で throw していた（#27）
+
+`run.ts` の try は62行下。ホームディレクトリを git 管理している人、読み取り専用の人、既に tracked な state dir がある人は、**絶対パス入りの未捕捉エラーとスタックトレース**を受け取り、**payload は出ない** — 「ストアが書けない日でも payload は必ず出す」と自分で書いてある関数で。
+
+ストア初期化を同じ try に入れ、失敗したら `--no-store` 相当に降格する。
+
+あわせて、tracked 拒否メッセージから**パスを削った**。このメッセージはサマリ行と、剪定されないスナップショットフィールドに載る。パスはホーム配下なので**OSユーザ名が入る**。ユーザーは自分の state dir の場所を知っているので、必要なのは助言のほう。
+
+陽性対照: メッセージが `stateDir` も `home` も含まず、かつ `--state-dir` と `tracked by git` は含むことを確認。

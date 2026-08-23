@@ -9,6 +9,7 @@ import {
   mcpSourcePaths,
   tallyPermissions,
   type ScopeDocument,
+  isDisabledSkill,
 } from '@/collect/environment.js'
 
 /**
@@ -271,5 +272,46 @@ describe('an interpreter told to read its program from the argument', () => {
     // The distinction the class exists to draw, and it must survive the fix.
     expect(classifyPermission('Bash(python:*)')).toBe('unrestrictedExec')
     expect(classifyPermission('Bash(python scripts/redact.py:*)')).toBe('scriptPathFixed')
+  })
+})
+
+describe('counting skills across the directories they live in', () => {
+  /**
+   * The denominator has to cover the same ground as the numerator.
+   * `attributionSkill` is collected across every project on the machine while
+   * this counted one `.claude` directory, so a repository with fewer skills
+   * than the log mentions made the numerator exceed the denominator -- and
+   * `makeMetric` refuses that by throwing, from a call nothing catches. The
+   * tool produced nothing at all.
+   */
+  const fakeGlob = (hits: Readonly<Record<string, readonly string[]>>) =>
+    (pattern: string, dir: string): readonly string[] => hits[`${dir}|${pattern}`] ?? []
+
+  it('adds up the directories rather than taking one', () => {
+    const g = fakeGlob({
+      '/proj/.claude|skills/*.md': ['skills/a.md'],
+      '/home/.claude|skills/*.md': ['skills/b.md', 'skills/c.md'],
+    })
+    expect(countSkills(['/proj/.claude', '/home/.claude'], g).total).toBe(3)
+    expect(countSkills('/proj/.claude', g).total).toBe(1)
+  })
+
+  it('leaves out a skill whose name starts with an underscore', () => {
+    // A leading underscore marks it disabled. Counting it pads a denominator
+    // with something that cannot fire, which lowers a rate and reads as care.
+    const g = fakeGlob({
+      '/x|skills/*.md': ['skills/a.md', 'skills/_off.md'],
+      '/x|skills/*/SKILL.md': ['skills/live/SKILL.md', 'skills/_dead/SKILL.md'],
+    })
+    expect(countSkills(['/x'], g).total).toBe(2)
+  })
+
+  it('recognises the disabled marker in both layouts', () => {
+    expect(isDisabledSkill('skills/_off.md')).toBe(true)
+    expect(isDisabledSkill('skills/_dead/SKILL.md')).toBe(true)
+    expect(isDisabledSkill('skills/live.md')).toBe(false)
+    expect(isDisabledSkill('skills/live/SKILL.md')).toBe(false)
+    // Not a substring match: an underscore anywhere else is not the marker.
+    expect(isDisabledSkill('skills/my_skill.md')).toBe(false)
   })
 })
