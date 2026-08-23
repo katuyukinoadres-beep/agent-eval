@@ -227,8 +227,23 @@ export function composite(inputs: CompositeInputs): Composite {
     }
   }
 
+  // Largest remainder, because these are a partition of 100 and have to be
+  // emitted as one. Rounding each share independently loses the remainder:
+  // four axes at 17.5/17.5/17.5/16.25 give 25.45 x3 + 23.64 = 99.99, and V-18
+  // refused exactly that the first time a live composite ran over four axes.
+  // The rule was right and the emitter was wrong.
   const effectiveWeights: Record<string, number> = {}
-  for (const k of axesUsed) effectiveWeights[k] = round2((100 * AXIS_WEIGHTS[k]) / nominalWeightSum)
+  const exact = axesUsed.map((k) => ({ key: k, value: (100 * AXIS_WEIGHTS[k]) / nominalWeightSum }))
+  let assigned = 0
+  for (const e of exact.slice(0, -1)) {
+    const v = round2(e.value)
+    effectiveWeights[e.key] = v
+    assigned += v
+  }
+  const last = exact[exact.length - 1]
+  // The final share takes whatever is left, so the set sums to 100 by
+  // construction rather than by luck.
+  if (last !== undefined) effectiveWeights[last.key] = round2(100 - assigned)
 
   const raw = scored.reduce(
     (sum, a) => sum + AXIS_WEIGHTS[a.key as ScoredAxisKey] * (a.score ?? 0),
