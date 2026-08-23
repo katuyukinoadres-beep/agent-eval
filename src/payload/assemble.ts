@@ -507,6 +507,14 @@ export function assemble(inputs: AssembleInputs): Assembled {
       sourceField: 'origin.kind',
     }),
     countBasis: COUNT_BASIS,
+    failureAttribution: {
+      observed: counts.wasted.errorsObserved,
+      inAxis2Numerator: counts.wasted.closure.numerator,
+      excluded: counts.wasted.closure.excluded,
+      balanced: counts.wasted.closure.balanced,
+      byId: counts.wasted.attribution,
+      denialKinds: counts.denialKinds,
+    },
     window: window.window,
     externalLog: {
       exists: window.externalRows > 0,

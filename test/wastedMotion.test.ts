@@ -21,6 +21,9 @@ import type { WastedCounts } from '@/collect/wasted.js'
 const counts = (over: Partial<WastedCounts> = {}): WastedCounts => ({
   failures: 0,
   hookOriginated: 0,
+  errorsObserved: 0,
+  attribution: { E1: 0, E2: 0, E2b: 0, E3: 0, E4: 0, E7: 0, E6: 0, E5: 0, E8_E9: 0 },
+  closure: { observed: 0, attributed: 0, numerator: 0, excluded: 0, balanced: true },
   writeRepeats: 0,
   investigationRepeats: 0,
   timedOut: 0,

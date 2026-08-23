@@ -229,6 +229,33 @@ export interface ExternalLog {
   readonly recordRateCalendar: Metric
 }
 
+/**
+ * How the failed tool calls split across the attribution table.
+ *
+ * Reported because §5.2 requires the subtraction to be machine-verified and
+ * because the split is the largest single lever on axis 2: the same 412
+ * failures produce a numerator of 412, 282 or 190 depending on which of them
+ * are charged to the agent.
+ */
+export interface FailureAttribution {
+  /** Failures counted before any attribution ran. */
+  readonly observed: number
+  readonly inAxis2Numerator: number
+  readonly excluded: number
+  /** False means events were lost, and no axis built on them may be emitted. */
+  readonly balanced: boolean
+  /** The per-id split, keyed by the table's ids. */
+  readonly byId: Readonly<Record<string, number>>
+  /**
+   * Every `toolDenialKind` value this machine emitted, with its count.
+   *
+   * The spec names `permission-rule` and `user-rejected`. This machine also
+   * emits `automode-blocked` and `automode-unavailable`, which carry 95 of 412
+   * failures here and none on the machine the spec was written against.
+   */
+  readonly denialKinds: Readonly<Record<string, number>>
+}
+
 export interface ScanManifest {
   readonly parserVersion: '1'
   readonly scope: Scope
@@ -257,6 +284,7 @@ export interface ScanManifest {
    * 1.33x across four published figures, none of which stated its basis.
    */
   readonly countBasis: CountBasis
+  readonly failureAttribution: FailureAttribution
   readonly window: Window
   readonly externalLog: ExternalLog
   readonly measuredAt: Iso8601

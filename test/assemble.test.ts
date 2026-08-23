@@ -34,7 +34,7 @@ const counts = {
   toolResultTotal: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
   attributionSkillRows: 40, attributionSkillDistinct: 3, mcpServerDistinct: 3,
   userRows: 500, originBearingUserRows: 20, humanTurns: 15,
-  denialRows: 8, denialUserRejected: 2,
+  denialRows: 8, denialUserRejected: 2, denialKinds: {},
   editedFilesDistinct: 30, editedFilesRepeated: 9,
   stopHookSummaryRows: 12, hookErrorsNonEmpty: 1,
   tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
@@ -69,6 +69,9 @@ const counts = {
   wasted: {
     failures: 10,
     hookOriginated: 0,
+    errorsObserved: 10,
+    attribution: { E1: 0, E2: 0, E2b: 0, E3: 0, E4: 0, E7: 0, E6: 0, E5: 0, E8_E9: 10 },
+    closure: { observed: 10, attributed: 10, numerator: 10, excluded: 0, balanced: true },
     writeRepeats: 4,
     investigationRepeats: 10,
     timedOut: 0,

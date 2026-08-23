@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { MAIN_GLOB, SUB_GLOB, isSubagentPath, walkProjects } from '@/collect/walk.js'
+import { ARCHIVED_GLOB, MAIN_GLOB, SUB_GLOB, isSubagentPath, walkProjects } from '@/collect/walk.js'
 
 /**
  * The tree is generated into a temp directory, never committed. The repository
@@ -49,6 +49,22 @@ beforeAll(() => {
   mkdirSync(subOnlyWf, { recursive: true })
   writeFileSync(join(subOnlyWf, 'agent-9.jsonl'), line(false))
 
+  // An archived session under the busy project.
+  mkdirSync(join(busy, 'archived'), { recursive: true })
+  writeFileSync(join(busy, 'archived', 'aaaaaaaa-0000-4000-8000-000000000003.jsonl'), line(true))
+
+  // A project whose only content is archived. The positive control for the
+  // third glob: before it existed this project walked to zero files and the
+  // manifest said so truthfully, because the two roots it declared really had
+  // matched nothing here. Nothing failed to parse, no counter moved, and 5.9%
+  // of the other machine's corpus was missing.
+  const archivedOnly = join(projects, 'C--Users-x-archived-only')
+  mkdirSync(join(archivedOnly, 'archived'), { recursive: true })
+  writeFileSync(
+    join(archivedOnly, 'archived', 'cccccccc-0000-4000-8000-000000000001.jsonl'),
+    line(true),
+  )
+
   // Files the walk must ignore.
   writeFileSync(join(busy, 'notes.md'), 'not a transcript\n')
   mkdirSync(join(busy, 'memory'), { recursive: true })
@@ -64,7 +80,7 @@ const inv = () => walkProjects(join(root, 'projects'))
 describe('what the walk finds', () => {
   it('finds main transcripts and subagent transcripts at any depth', () => {
     const i = inv()
-    expect(i.files.filter((f) => f.kind === 'main')).toHaveLength(2)
+    expect(i.files.filter((f) => f.kind === 'main')).toHaveLength(4)
     // Three under the busy project, one under the sub-only project. The third
     // busy one is nested an extra level down.
     expect(i.files.filter((f) => f.kind === 'sub')).toHaveLength(4)
@@ -77,7 +93,7 @@ describe('what the walk finds', () => {
   it('lists every project directory, including the empty ones', () => {
     // The empty ones matter: they are what a per-project check needs in order to
     // notice a partial miss, and dropping them is how the aggregate hides it.
-    expect(inv().projects).toHaveLength(6)
+    expect(inv().projects).toHaveLength(7)
   })
 })
 
@@ -87,6 +103,7 @@ describe('each glob reports its own match count', () => {
     const byGlob = Object.fromEntries(i.rootsWalked.map((r) => [r.glob, r.matchCount]))
     expect(byGlob[MAIN_GLOB]).toBe(2)
     expect(byGlob[SUB_GLOB]).toBe(4)
+    expect(byGlob[ARCHIVED_GLOB]).toBe(2)
   })
 
   it('counts sum to the files found, so a count cannot drift from the walk', () => {
@@ -100,8 +117,8 @@ describe('each glob reports its own match count', () => {
     try {
       mkdirSync(join(empty, 'projects'), { recursive: true })
       const i = walkProjects(join(empty, 'projects'))
-      expect(i.rootsWalked.map((r) => r.matchCount)).toEqual([0, 0])
-      expect(i.rootsWalked).toHaveLength(2)
+      expect(i.rootsWalked.map((r) => r.matchCount)).toEqual([0, 0, 0])
+      expect(i.rootsWalked).toHaveLength(3)
     } finally {
       rmSync(empty, { recursive: true, force: true })
     }
@@ -119,7 +136,7 @@ describe('classification is by position, not by what the file claims', () => {
     for (const f of i.files) {
       expect(isSubagentPath(f.path), f.path).toBe(f.kind === 'sub')
     }
-    expect(i.files.filter((f) => f.kind === 'main')).toHaveLength(2)
+    expect(i.files.filter((f) => f.kind === 'main')).toHaveLength(4)
     expect(i.files.filter((f) => f.kind === 'sub')).toHaveLength(4)
   })
 
@@ -149,6 +166,8 @@ describe('a subagent transcript keeps the session it came from', () => {
     expect(main.map((f) => f.sessionId).sort()).toEqual([
       'aaaaaaaa-0000-4000-8000-000000000001',
       'aaaaaaaa-0000-4000-8000-000000000002',
+      'aaaaaaaa-0000-4000-8000-000000000003',
+      'cccccccc-0000-4000-8000-000000000001',
     ])
   })
 })
@@ -156,9 +175,15 @@ describe('a subagent transcript keeps the session it came from', () => {
 describe('the inventory a payload will be built from', () => {
   it('records main and sub counts per project', () => {
     const byName = Object.fromEntries(inv().projects.map((p) => [p.project, p]))
-    expect(byName['C--Users-x-busy']).toMatchObject({ mainFiles: 2, subFiles: 3 })
-    expect(byName['C--Users-x-subonly']).toMatchObject({ mainFiles: 0, subFiles: 1 })
-    expect(byName['C--Users-x-empty-a']).toMatchObject({ mainFiles: 0, subFiles: 0 })
+    expect(byName['C--Users-x-busy']).toMatchObject({ mainFiles: 2, subFiles: 3, archivedFiles: 1 })
+    expect(byName['C--Users-x-subonly']).toMatchObject({ mainFiles: 0, subFiles: 1, archivedFiles: 0 })
+    expect(byName['C--Users-x-empty-a']).toMatchObject({ mainFiles: 0, subFiles: 0, archivedFiles: 0 })
+    // The project that walked to nothing before the third glob existed.
+    expect(byName['C--Users-x-archived-only']).toMatchObject({
+      mainFiles: 0,
+      subFiles: 0,
+      archivedFiles: 1,
+    })
   })
 
   it('measures bytes without reading a line', () => {
@@ -173,6 +198,6 @@ describe('the inventory a payload will be built from', () => {
     const i = walkProjects(join(root, 'no-such-directory'))
     expect(i.files).toEqual([])
     expect(i.projects).toEqual([])
-    expect(i.rootsWalked.map((r) => r.matchCount)).toEqual([0, 0])
+    expect(i.rootsWalked.map((r) => r.matchCount)).toEqual([0, 0, 0])
   })
 })

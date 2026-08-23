@@ -121,6 +121,24 @@ export const BASE_PAYLOAD = {
       unit: 'row',
       excludes: [],
     },
+    // The attribution split, measured. Every failure lands in exactly one id,
+    // and `balanced` is what says so: an unbalanced table has lost events, and
+    // a lost event is indistinguishable from one that never happened.
+    failureAttribution: {
+      observed: 412,
+      inAxis2Numerator: 190,
+      excluded: 222,
+      balanced: true,
+      byId: { E1: 0, E2: 28, E2b: 95, E3: 5, E4: 48, E7: 46, E6: 5, E5: 74, E8_E9: 111 },
+      // Four kinds here against the two the spec names. The two it does not
+      // name carry 95 of the 412.
+      denialKinds: {
+        'automode-blocked': 71,
+        'automode-unavailable': 24,
+        'permission-rule': 28,
+        'user-rejected': 5,
+      },
+    },
     window: {
       unit: 'activeDays',
       windowDays: 10,

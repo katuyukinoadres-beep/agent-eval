@@ -20,6 +20,14 @@ import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
 import { normalisePath, referenceIndex, type Mention, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
+import {
+  IN_AXIS2_NUMERATOR,
+  SUPPLIES_SIGNATURE,
+  attribute,
+  closure,
+  emptyTally,
+  type AttributionTally,
+} from './attribution.js'
 import { LARGE_OUTPUT_BYTES, isInvestigation, wastedTracker, type WastedCounts, type WastedTracker } from './wasted.js'
 import type { Signer } from '../snapshot/mac.js'
 import type { Hmac128 } from '../snapshot/types.js'
@@ -221,6 +229,15 @@ export interface ScanCounts {
 
   readonly denialRows: number
   readonly denialUserRejected: number
+  /**
+   * Every `toolDenialKind` value seen, with its count.
+   *
+   * Emitted rather than folded into a boolean because the spec names two kinds
+   * and this machine produces four. Which values exist decides how 95 of 412
+   * failures are attributed, and an implementation that silently drops the ones
+   * it does not recognise reports a different number without saying so.
+   */
+  readonly denialKinds: Readonly<Record<string, number>>
 
   readonly editedFilesDistinct: number
   readonly editedFilesRepeated: number
@@ -404,6 +421,7 @@ interface Mut {
   originHumanRows: number
   denialRows: number
   denialUserRejected: number
+  denialKinds: Map<string, number>
   sessionIdMismatchRows: number
   taskBundles: number
   toolActivityRows: number
@@ -491,6 +509,9 @@ interface MutMetabolism {
 interface MutWasted {
   failures: number
   hookOriginated: number
+  /** Every is_error seen, counted before any attribution. The closure check needs it. */
+  errorsObserved: number
+  attribution: AttributionTally
   writeRepeats: number
   investigationRepeats: number
   timedOut: number
@@ -515,7 +536,6 @@ const INSPECT_TOOLS = new Set(['Read', 'Grep', 'Bash', 'Glob'])
 /** v1: a failure cleared within three attempts is a repair. */
 const MAX_REPAIR_ATTEMPTS = 3
 
-const HOOK_ORIGINATED = /(Pre|Post)ToolUse:/
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -653,10 +673,19 @@ function reduceLine(
     met.mcpFirings.set(server, (met.mcpFirings.get(server) ?? 0) + 1)
   }
 
+  // Row level, not inside toolUseResult. The other machine measured 0 against
+  // the nested path and 62 against the row; a path nobody writes down is a path
+  // each implementation guesses differently.
   const denial = row['toolDenialKind']
-  if (typeof denial === 'string') {
+  const denialKind = typeof denial === 'string' && denial.length > 0 ? denial : null
+  if (denialKind !== null) {
     m.denialRows += 1
-    if (denial === 'user-rejected') m.denialUserRejected += 1
+    if (denialKind === 'user-rejected') m.denialUserRejected += 1
+    // Kept by name. The spec's union has two members and this machine emits
+    // four; the two extra carry 95 of 412 failures here and none at all on the
+    // machine the spec was written against. A value nobody enumerated is how an
+    // environment-specific figure gets read as an environment difference.
+    m.denialKinds.set(denialKind, (m.denialKinds.get(denialKind) ?? 0) + 1)
   }
 
   let human = false
@@ -773,29 +802,51 @@ function reduceLine(
         }
         if (block['is_error'] === true) {
           m.toolResultIsErrorTrue += 1
+          w.errorsObserved += 1
           const text = resultText(block)
-          // A guardrail firing is the guardrail working, not wasted motion.
-          // Excluded from numerator and denominator both, per v1.
-          if (HOOK_ORIGINATED.test(text)) w.hookOriginated += 1
-          else {
-            w.failures += 1
-            st.failures += 1
-          }
-          st.errors += 1
           // Joined to the call by tool_use_id. Without the join the class is
           // known and the tool is not, and (class, target) alone collapses a
           // Bash failure and an Edit failure into one signature.
-          const id = block['tool_use_id']
-          const call = typeof id === 'string' ? toolOf.get(id) : undefined
-          // The plaintext tuple stays in this frame. `repeatRate` reads it
-          // below; only the MAC and the aggregates come out.
-          const tuple: readonly [string, ErrorClass, string] = [
-            call?.name ?? 'unknown',
-            classifyError(text),
-            call?.target ?? '',
-          ]
-          tuples.push(tuple)
-          if (sign !== null) macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+          const errId = block['tool_use_id']
+          const call = typeof errId === 'string' ? toolOf.get(errId) : undefined
+          const errorClass = classifyError(text)
+
+          // One event, one axis, decided before anything is charged. A call a
+          // permission rule refused used to be charged to the agent as wasted
+          // motion *and* credited to the environment as a guardrail working.
+          // 407 failures here attribute to 187.
+          const attributed = attribute({
+            denialKind,
+            text,
+            tool: call?.name ?? null,
+            errorClass,
+          })
+          w.attribution[attributed] += 1
+
+          if (IN_AXIS2_NUMERATOR[attributed]) {
+            w.failures += 1
+            st.failures += 1
+          } else {
+            // Everything the table takes out of axis 2: denials of every kind,
+            // the network, and the stale reads axis 3 scores instead.
+            w.hookOriginated += 1
+          }
+          st.errors += 1
+
+          // Only what axis 2 charged supplies a signature. A refused call in the
+          // recurrence set would make one guardrail firing twice look like the
+          // same failure coming back.
+          if (SUPPLIES_SIGNATURE[attributed]) {
+            // The plaintext tuple stays in this frame. `repeatRate` reads it
+            // below; only the MAC and the aggregates come out.
+            const tuple: readonly [string, ErrorClass, string] = [
+              call?.name ?? 'unknown',
+              errorClass,
+              call?.target ?? '',
+            ]
+            tuples.push(tuple)
+            if (sign !== null) macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+          }
         }
       }
     } else if (block['type'] === 'tool_use') {
@@ -893,7 +944,7 @@ export function scan(
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
+    denialRows: 0, denialUserRejected: 0, denialKinds: new Map<string, number>(), sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
     intervals: 0, verifiedIntervals: 0, todoWriteUsed: false,
     selfRepaired: 0, humanRescued: 0, unresolved: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
@@ -922,7 +973,8 @@ export function scan(
   }
   const wasted = wastedTracker()
   const w: MutWasted = {
-    failures: 0, hookOriginated: 0, writeRepeats: 0, investigationRepeats: 0,
+    failures: 0, hookOriginated: 0, errorsObserved: 0, attribution: emptyTally(),
+    writeRepeats: 0, investigationRepeats: 0,
     timedOut: 0, largeOutput: 0, callsPerBundle: new Map<string, number>(),
   }
   let bundleSeq = 0
@@ -1028,6 +1080,9 @@ export function scan(
     wasted: {
       failures: w.failures,
       hookOriginated: w.hookOriginated,
+      errorsObserved: w.errorsObserved,
+      attribution: { ...w.attribution },
+      closure: closure(w.attribution, w.errorsObserved),
       writeRepeats: w.writeRepeats,
       investigationRepeats: w.investigationRepeats,
       timedOut: w.timedOut,
@@ -1039,6 +1094,7 @@ export function scan(
     signaturesSigned: sign !== null,
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
+    denialKinds: Object.fromEntries([...m.denialKinds.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     editedFilesDistinct: edits.size,
     editedFilesRepeated: repeated,
     stopHookSummaryRows: m.stopHookSummaryRows,
