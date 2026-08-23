@@ -1624,3 +1624,46 @@ v2 §3.4「(c) 人手上書き率は、分子が最小分母を満たさない�
 落とすと 74.80 → **68.42**（−6.38）。
 
 この項の傾きは**実測できる唯一の omission**: 値を計算してから分母不足で拒否したので、生存スコアと比較すれば方向は事実。`1 - O = 0.982 > 0.684` なので `low`（落としたことでスコアは低く出る）。cause も `not-implemented` ではなく `below-minimum`。
+
+---
+
+## 2026-08-23 — 環境ゲート・parse_failed・不正確な理由名
+
+### ゲートの判定が軸に届いていなかった（#17）
+
+各軸は自分の条件だけで `availability` を決め、`verdict` は総合点にしか届いていなかった。
+
+未パース率 20.4% の実測で:
+
+```
+composite: null, suppressedReason: "parse-failure-rate"
+wastedMotion: { availability: "available", score: 46.25 }
+```
+
+**`composite.suppressedReason` ではなく `axes` を読む受け手は、ツール自身が捨てた環境の採点済み4軸を受け取る。** v2 §3.0 は「環境まるごと parse_failed（総合点を出さない）」。
+
+全軸を `parse_failed` にし、スコアを null にする。陽性対照は両方向（ゲートが通ったときは軸をそのままにする — でないと「無条件に全軸 parse_failed」でもテストが通る）。
+
+### `parse_failed` が全軸でハードコード 0 だった（#16）
+
+`linesRead` は **JSON.parse を試す前に**インクリメントされる。だから未パース行は `linesRead` の内側にいて、`linesRead - toolActivityRows` の引き算で `not_applicable` に流し込まれていた。
+
+**合計は閉じる。V-10 は合計しか見ない。行は消える。** マニフェストが 40 と言っている横で全軸が 0 と言っていた。
+
+### 起きていない条件を理由として報告していた3件（#36）
+
+| 軸 | 報告していた理由 | 実際の条件 |
+|---|---|---|
+| 軸6 | `no-external-log`（外部ログを入れろ） | `no-failures` — 失敗ゼロ。層Bの不在は既に omittedTerms にある |
+| 軸4 | `insufficient-assets`（資産を3つ以上定義しろ） | `no-artifacts` — v2 が廃止した軸5のしきい値だった |
+| 軸4 | `definition-pending`（定義が未確定） | `too-few-bundles` — 定義は確定している。環境が小さいだけ |
+
+このモジュールの冒頭コメントが「この2つを混同しないために存在する」と書いている当のもの。
+
+### 軸2の detail が5項中2項を落としていた（#37）
+
+`timedOut`（×1.0）と `largeOutput`（×0.5）は収集され、重み付けされて合計に入り、detail から落ちていた。**タイムアウトがある環境では、見えている項が `wastedTotal` に合わない。** スコアを持つ唯一の軸で。
+
+### null の指紋が「同じ式」として比較されていた（#35）
+
+`a.formulaFingerprint !== b.formulaFingerprint` は `null !== null` が false なので、**式が両方とも不明な軸ペアが比較可能に落ちる**。null は生成される（定数表を持たない軸、読み戻し時にフィールドが欠けたスナップショット）。定数表を埋める前に書いたスナップショットは既にディスク上にある。

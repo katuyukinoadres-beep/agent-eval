@@ -32,6 +32,7 @@ import {
   type ProjectSummary,
   type ScanManifest,
   type UnavailableReason,
+  type LineStates,
 } from './types.js'
 import type { Inventory } from '../collect/walk.js'
 import type { ScanCounts } from '../collect/scan.js'
@@ -239,7 +240,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     availability: 'not_applicable',
     // Every line got a verdict, and they sum to linesRead. A tally that does not
     // close is a parser that dropped rows without saying so.
-    lineStates: { available: 0, not_applicable: linesRead, parse_failed: 0 },
+    lineStates: lineStatesFor(false),
     metric: null,
     score: null,
     confidenceInterval: null,
@@ -247,6 +248,24 @@ export function assemble(inputs: AssembleInputs): Assembled {
     unavailableReasons: reasons[key] ?? ['definition-pending'],
     detail: null,
     omittedTerms: [],
+  })
+
+  /**
+   * The three line states for an axis, which must sum to linesRead.
+   *
+   * `parse_failed` was hardcoded zero on every axis while the manifest reported
+   * a non-zero count, because `linesRead` is incremented before the JSON parse
+   * is attempted -- so unparsed rows sat inside `linesRead` and the
+   * `linesRead - toolActivityRows` arithmetic swept them into `not_applicable`.
+   * The tally closed, V-10 checks only the sum, and the rows were gone. The
+   * per-axis rule the payload spec defines could never fire.
+   */
+  const lineStatesFor = (available: boolean): LineStates => ({
+    available: available ? counts.toolActivityRows : 0,
+    not_applicable: available
+      ? linesRead - counts.toolActivityRows - counts.linesParseFailed
+      : linesRead - counts.linesParseFailed,
+    parse_failed: counts.linesParseFailed,
   })
 
   const minimum = meetsMinimum({
@@ -259,11 +278,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     availability: axis2Available ? 'available' : 'not_applicable',
     // Rows carrying a tool_use or tool_result are the axis's evidence; the rest
     // had nothing for it to judge. The three states still sum to linesRead.
-    lineStates: {
-      available: axis2Available ? counts.toolActivityRows : 0,
-      not_applicable: axis2Available ? linesRead - counts.toolActivityRows : linesRead,
-      parse_failed: 0,
-    },
+    lineStates: lineStatesFor(axis2Available),
     metric: null,
     // Rounded. A fifteen-digit float in a payload is noise, and two decimals
     // is finer than anything this score can actually resolve.
@@ -293,6 +308,13 @@ export function assemble(inputs: AssembleInputs): Assembled {
       failures: counts.wasted.failures,
       writeRepeats: counts.wasted.writeRepeats,
       investigationRepeats: counts.wasted.investigationRepeats,
+      // All five numerator terms, so the visible parts reconcile to
+      // `wastedTotal`. Two of the five were collected, weighted into the sum,
+      // and then left out of the detail -- on the one axis that carries a score,
+      // and against this payload's own promise that the detail is what a
+      // receiver recomputes from.
+      timedOut: counts.wasted.timedOut,
+      largeOutput: counts.wasted.largeOutput,
       hookOriginatedExcluded: counts.wasted.hookOriginated,
     },
   }
@@ -318,11 +340,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // good the number looks. Dropping a deduction can only raise a result, and
     // the result would be the same name for a different quantity.
     availability: 'not_applicable',
-    lineStates: {
-      available: met.score === null ? 0 : counts.toolActivityRows,
-      not_applicable: met.score === null ? linesRead : linesRead - counts.toolActivityRows,
-      parse_failed: 0,
-    },
+    lineStates: lineStatesFor(met.score !== null),
     metric: null,
     // Recorded, not scored. A later window needs the raw figures, and a
     // snapshot that omitted them would lose them for good.
@@ -384,11 +402,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const uptakeAxis: Axis = {
     availability: up.score === null ? 'not_applicable' : 'available',
-    lineStates: {
-      available: up.score === null ? 0 : counts.toolActivityRows,
-      not_applicable: up.score === null ? linesRead : linesRead - counts.toolActivityRows,
-      parse_failed: 0,
-    },
+    lineStates: lineStatesFor(up.score !== null),
     metric: null,
     score: up.score === null ? null : Math.round(up.score * 100) / 100,
     confidenceInterval: null,
@@ -399,12 +413,13 @@ export function assemble(inputs: AssembleInputs): Assembled {
       denominator: up.artifacts,
       numerator: up.reusedArtifacts,
     }).meetsMinimum,
-    unavailableReasons:
-      up.unavailable === null
-        ? []
-        : up.unavailable === 'no-artifacts'
-          ? ['insufficient-assets']
-          : ['definition-pending'],
+    // Named honestly. `no-artifacts` used to report `insufficient-assets`,
+    // whose text is "fewer than 3 assets defined" -- an axis-5 threshold v2
+    // abolished, advising a fix that would not change the outcome. And too few
+    // bundles used to report `definition-pending`, "the definition this axis
+    // needs is not settled yet", when it is settled and the environment is
+    // small. Conflating those two is what this module exists to prevent.
+    unavailableReasons: up.unavailable === null ? [] : [up.unavailable],
     omittedTerms: up.omitted.map((term): OmittedTerm => {
       // (c) is dropped for want of data in this window, not because the build
       // never implemented it — and its direction was measured before it was
@@ -443,11 +458,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const verificationAxis: Axis = {
     availability: ver.score === null ? 'not_applicable' : 'available',
-    lineStates: {
-      available: ver.score === null ? 0 : counts.toolActivityRows,
-      not_applicable: ver.score === null ? linesRead : linesRead - counts.toolActivityRows,
-      parse_failed: 0,
-    },
+    lineStates: lineStatesFor(ver.score !== null),
     metric: null,
     score: ver.score === null ? null : Math.round(ver.score * 100) / 100,
     confidenceInterval: null,
@@ -496,11 +507,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const recurrenceAxis: Axis = {
     availability: rec.score === null ? 'not_applicable' : 'available',
-    lineStates: {
-      available: rec.score === null ? 0 : counts.toolActivityRows,
-      not_applicable: rec.score === null ? linesRead : linesRead - counts.toolActivityRows,
-      parse_failed: 0,
-    },
+    lineStates: lineStatesFor(rec.score !== null),
     metric: null,
     score: rec.score === null ? null : Math.round(rec.score * 100) / 100,
     confidenceInterval: null,
@@ -509,7 +516,10 @@ export function assemble(inputs: AssembleInputs): Assembled {
       denominator: rec.errors,
       numerator: counts.errorRepeats.distinctSignatures,
     }).meetsMinimum,
-    unavailableReasons: rec.unavailable === null ? [] : ['no-external-log'],
+    // `rec.unavailable` can only be 'no-failures'. Reporting it as
+    // 'no-external-log' advised installing a log that would not change the
+    // outcome, and layer B's absence is already in `omittedTerms`.
+    unavailableReasons: rec.unavailable === null ? [] : [rec.unavailable],
     omittedTerms: rec.omitted.map(
       (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: RECURRENCE_OMISSION_LEANINGS[term] }),
     ),
@@ -522,20 +532,44 @@ export function assemble(inputs: AssembleInputs): Assembled {
     },
   }
 
+  /**
+   * The gate's verdict, applied to every axis.
+   *
+   * Each axis decided its own `availability` from its own condition, and the
+   * gate's verdict reached only the composite. At 20.4% unparseable the payload
+   * carried `composite: null, suppressedReason: 'parse-failure-rate'` beside
+   * four axes marked `available` with scores on them -- so a receiver reading
+   * `axes` instead of `composite.suppressedReason` got four scored axes off an
+   * environment the tool had already rejected. v2 §3.0 says the whole
+   * environment is parse_failed and no total comes out.
+   */
+  const gated = (axis: Axis): Axis =>
+    verdict.availability === 'parse_failed'
+      ? {
+          ...axis,
+          availability: 'parse_failed',
+          score: null,
+          confidenceInterval: null,
+          unavailableReasons: ['environment-gated'],
+        }
+      : axis
+
   const axes = Object.fromEntries(
     AXIS_KEYS.map((k) => [
       k,
-      k === 'wastedMotion'
-        ? wastedAxis
-        : k === 'environmentMetabolism'
-          ? metabolismAxis
-          : k === 'artifactUptake'
-            ? uptakeAxis
-            : k === 'selfVerification'
-              ? verificationAxis
-              : k === 'recurrencePrevention'
-                ? recurrenceAxis
-                : axisFor(k),
+      gated(
+        k === 'wastedMotion'
+          ? wastedAxis
+          : k === 'environmentMetabolism'
+            ? metabolismAxis
+            : k === 'artifactUptake'
+              ? uptakeAxis
+              : k === 'selfVerification'
+                ? verificationAxis
+                : k === 'recurrencePrevention'
+                  ? recurrenceAxis
+                  : axisFor(k),
+      ),
     ]),
   ) as Axes
 

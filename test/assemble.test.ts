@@ -232,9 +232,10 @@ describe('no axis carries a score', () => {
     const { payload } = assemble(inputs)
     expect(payload.axes.firstPassLanding.unavailableReasons).toContain('too-few-clusters')
     expect(payload.axes.firstPassLanding.unavailableReasons).toContain('definition-pending')
-    // Axis 4 is built now, and says its own reason: no artifacts in this
-    // fixture rather than a small environment.
-    expect(payload.axes.artifactUptake.unavailableReasons).toEqual(['insufficient-assets'])
+    // Axis 4 is built now, and says its own reason. It used to report
+    // `insufficient-assets` — "fewer than 3 assets defined", an axis-5
+    // threshold v2 abolished, advising a fix that would not change the outcome.
+    expect(payload.axes.artifactUptake.unavailableReasons).toEqual(['no-artifacts'])
     expect(payload.axes.coverageGate.unavailableReasons).toEqual(['too-few-clusters'])
   })
 
@@ -250,11 +251,51 @@ describe('no axis carries a score', () => {
   })
 
   it('marks every axis when the environment gate withheld the total', () => {
+    // Not only the gate's own axis. Each axis decided `availability` from its
+    // own condition and the verdict reached the composite alone, so a rejected
+    // environment shipped `composite: null` beside four axes marked
+    // `available` with scores on them. A receiver reading `axes` rather than
+    // `composite.suppressedReason` got four scores off a log the tool had
+    // already thrown out.
     const gated = assemble(over({
       counts: { ...counts, linesParseFailed: 900 },
     } as unknown as Partial<AssembleInputs>))
     expect(gated.gate.availability).toBe('parse_failed')
     expect(gated.payload.axes.coverageGate.unavailableReasons).toContain('environment-gated')
+    for (const [key, axis] of Object.entries(gated.payload.axes)) {
+      expect(axis.availability, key).toBe('parse_failed')
+      expect(axis.score, key).toBeNull()
+    }
+  })
+
+  it('leaves the axes alone when the gate passed', () => {
+    // The other direction. Without it the assertion above would also pass
+    // against a build that marked every axis parse_failed unconditionally.
+    const clean = assemble(inputs)
+    expect(clean.gate.availability).not.toBe('parse_failed')
+    expect(clean.payload.axes.wastedMotion.availability).toBe('available')
+    expect(clean.payload.axes.wastedMotion.score).not.toBeNull()
+  })
+
+  it('reports unparsed lines on every axis, not only in the manifest', () => {
+    // `linesRead` is incremented before the parse is attempted, so unparsed
+    // rows sat inside it and the `linesRead - toolActivityRows` arithmetic
+    // swept them into `not_applicable`. The tally closed, V-10 checks only the
+    // sum, and the per-axis rule could never fire.
+    const withFailures = assemble(over({
+      counts: { ...counts, linesParseFailed: 40 },
+    } as unknown as Partial<AssembleInputs>))
+    for (const [key, axis] of Object.entries(withFailures.payload.axes)) {
+      expect(axis.lineStates.parse_failed, key).toBe(40)
+      const total = axis.lineStates.available + axis.lineStates.not_applicable + axis.lineStates.parse_failed
+      expect(total, key).toBe(withFailures.payload.scanManifest.linesRead)
+    }
+  })
+
+  it('reports zero on every axis when nothing failed to parse', () => {
+    for (const [key, axis] of Object.entries(assemble(inputs).payload.axes)) {
+      expect(axis.lineStates.parse_failed, key).toBe(0)
+    }
   })
 })
 

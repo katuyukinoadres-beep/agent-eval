@@ -142,7 +142,17 @@ export type UnavailableReason =
   | 'insufficient-tool-uses'
   | 'insufficient-edit-intervals'
   | 'insufficient-assets'
+  // Axis 4's own two conditions. They used to be reported as
+  // `insufficient-assets` (an axis-5 threshold v2 abolished, whose text advises
+  // defining more assets) and `definition-pending` (which says the definition
+  // is unsettled -- it is settled; the environment is small).
+  | 'no-artifacts'
+  | 'too-few-bundles'
   | 'no-external-log'
+  // Axis 6's own condition. It used to report `no-external-log`, which advises
+  // installing a log that would not change the outcome, while layer B's absence
+  // is already in `omittedTerms`.
+  | 'no-failures'
   | 'first-window'
   | 'definition-pending'
   | 'environment-gated'
