@@ -176,3 +176,21 @@ describe('the median', () => {
     expect(median([])).toBeNull()
   })
 })
+
+describe('a deduction-style axis with a dropped deduction', () => {
+  it('says it must not be scored', () => {
+    // v2 §12.5(b): dropping a deduction can only raise the result, and
+    // redistributing its coefficient makes another deduction bite harder than
+    // it should. Neither is allowed, so the axis leaves the total.
+    //
+    // This was shipped as `available` first, and the 45.0 it produced was the
+    // same name for a different quantity -- and it went into a composite.
+    expect(metabolism(base).scorable).toBe(false)
+  })
+
+  it('still computes the number, because a later window needs it', () => {
+    // Not scored is not the same as not measured. A snapshot that omitted this
+    // would lose it for good.
+    expect(metabolism(base).score).not.toBeNull()
+  })
+})

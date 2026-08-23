@@ -265,21 +265,26 @@ export function assemble(inputs: AssembleInputs): Assembled {
   })
 
   const metabolismAxis: Axis = {
-    availability: met.score === null ? 'not_applicable' : 'available',
+    // Deduction-style with two deductions dropped, so not_applicable however
+    // good the number looks. Dropping a deduction can only raise a result, and
+    // the result would be the same name for a different quantity.
+    availability: 'not_applicable',
     lineStates: {
       available: met.score === null ? 0 : counts.toolActivityRows,
       not_applicable: met.score === null ? linesRead : linesRead - counts.toolActivityRows,
       parse_failed: 0,
     },
     metric: null,
-    score: met.score === null ? null : Math.round(met.score * 100) / 100,
+    // Recorded, not scored. A later window needs the raw figures, and a
+    // snapshot that omitted them would lose them for good.
+    score: null,
     confidenceInterval: null,
     belowMinDenominator: !meetsMinimum({
       clusters,
       denominator: Math.max(met.assets, MIN_DENOMINATOR),
       numerator: Math.max(met.firedAssets, MIN_NUMERATOR),
     }).meetsMinimum,
-    unavailableReasons: met.score === null ? ['definition-pending'] : [],
+    unavailableReasons: ['definition-pending'],
     omittedTerms: met.omitted.map(
       (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: METABOLISM_OMISSION_LEANINGS[term] }),
     ),
@@ -289,6 +294,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
       assets: met.assets,
       firedAssets: met.firedAssets,
       utilisationE4: Math.round((met.u ?? 0) * 10_000),
+      // What the score would have been, kept where it cannot be mistaken for
+      // one: outside `score`, which stays null.
+      unscoredE2: Math.round((met.score ?? 0) * 100),
       // A tax past the ceiling pins the trapezoid to its floor, and an axis on
       // its floor cannot respond to anything the environment does.
       saturated: met.saturated ? 1 : 0,

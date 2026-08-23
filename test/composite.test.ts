@@ -75,6 +75,19 @@ describe('composing', () => {
     expect(c.axesUsed).toHaveLength(4)
   })
 
+  it('emits weights that sum to exactly 100, for every subset', () => {
+    // Rounding each share independently loses the remainder. Four axes at
+    // 17.5/17.5/17.5/16.25 give 25.45 x3 + 23.64 = 99.99, and V-18 refused
+    // exactly that the first time a live composite ran over four axes -- the
+    // rule was right and the emitter was wrong.
+    for (let missing = 0; missing <= MAX_MISSING_AXES; missing += 1) {
+      const axes = allSix(70).map((a, i) => (i < missing ? { ...a, available: false, score: null } : a))
+      const c = composite({ axes, gateReason: null })
+      const sum = Object.values(c.effectiveWeights).reduce((a, b) => a + b, 0)
+      expect(Math.abs(sum - 100), `${6 - missing} axes`).toBeLessThanOrEqual(0.01)
+    }
+  })
+
   it('weights a strong axis by its weight, not equally', () => {
     const axes = allSix(0)
     axes[0] = { ...axes[0]!, score: 100 } // firstPassLanding, 18.75

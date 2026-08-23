@@ -97,6 +97,20 @@ export interface MetabolismInputs {
   readonly listingTruncated: boolean
 }
 
+/**
+ * Whether this axis may be scored at all.
+ *
+ * Axis 5 is a deduction form: the trapezoid takes points off 100, and Wd and D
+ * take more. Dropping a deduction can only raise the result, and redistributing
+ * its coefficient makes another deduction bite harder than it should. v2 §12.5
+ * allows neither, and rules that a deduction-style axis with any dropped term
+ * is `not_applicable` and leaves the total.
+ *
+ * This was implemented as `available` first. The score it produced -- 45.0 --
+ * was the same name for a different quantity, and it went into a composite.
+ */
+export const SCORABLE_WITHOUT_OMISSIONS = true
+
 export interface Metabolism {
   /** Median effective input tokens per call, or null when nothing carried usage. */
   readonly fc: number | null
@@ -117,6 +131,13 @@ export interface Metabolism {
    */
   readonly saturated: boolean
   readonly omitted: readonly MetabolismOmission[]
+  /**
+   * False whenever a deduction was dropped, which is always today.
+   *
+   * The score is still computed and still recorded -- a later window needs the
+   * raw figures -- but it must not be scored or composed.
+   */
+  readonly scorable: boolean
 }
 
 /**
@@ -163,5 +184,7 @@ export function metabolism(inputs: MetabolismInputs): Metabolism {
     score,
     saturated: fc !== null && fc > TRAPEZOID_CEILING_TOKENS,
     omitted: ['static-defects', 'dead-weight-descriptions'],
+    // Both omissions are deductions, so this axis cannot be scored.
+    scorable: false,
   }
 }
