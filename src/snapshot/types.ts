@@ -105,6 +105,39 @@ export const dayOf = (iso: string): Day | null => {
  */
 const NEWLINE = String.fromCharCode(10)
 
+/**
+ * A fixed phrase for a filesystem failure, chosen by its errno.
+ *
+ * Never the message. Node embeds the offending path in `e.message`, and that
+ * string used to reach `WriteOutcome.detail`, the summary line, and
+ * `completeness.blocksAbsent[].detail` inside a snapshot that is never pruned
+ * -- so a store on a path holding the OS username shipped it, in output that
+ * gets pasted into issues.
+ */
+export const filesystemReason = (e: unknown): string => {
+  const code = typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : ''
+  switch (code) {
+    case 'EACCES':
+    case 'EPERM':
+      return 'permission denied'
+    case 'ENOENT':
+      return 'path does not exist'
+    case 'ENOSPC':
+      return 'no space left'
+    case 'EROFS':
+      return 'read-only filesystem'
+    case 'EEXIST':
+      return 'already exists'
+    case 'EBUSY':
+      return 'resource busy'
+    case 'EMFILE':
+    case 'ENFILE':
+      return 'too many open files'
+    default:
+      return code === '' ? 'unknown filesystem error' : `filesystem error ${code}`
+  }
+}
+
 export const firstLine = (e: unknown, max = 200): string => {
   const text = e instanceof Error ? e.message : String(e)
   return (text.split(NEWLINE)[0] ?? 'unknown').slice(0, max)

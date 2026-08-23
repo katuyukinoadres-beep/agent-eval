@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { canonical, bodyHash } from './canonical.js'
 import type { Snapshot, Prev } from './record.js'
 import type { Hmac128, Sha256 } from './types.js'
-import { sha256 } from './types.js'
+import { filesystemReason, sha256 } from './types.js'
 
 export const HEAD_FILE = 'HEAD.json'
 export const LOCK_FILE = '.lock'
@@ -237,7 +237,7 @@ export function writeSnapshot(inputs: WriteInputs, io: SnapshotIo = defaultSnaps
     return {
       kind: 'refused',
       reason: 'state-dir-unwritable',
-      detail: e instanceof Error ? (e.message.split('\n')[0] ?? '').slice(0, 200) : 'unknown',
+      detail: filesystemReason(e),
     }
   } finally {
     lock?.release()

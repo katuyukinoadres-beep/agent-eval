@@ -32,8 +32,8 @@ const window = assembleWindow({
 })
 
 const counts = {
-  linesRead: 1_000, linesParseFailed: 0, bytesRead: 5_000, mainLines: 600, subLines: 400,
-  toolResultTotal: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
+  linesRead: 1_000, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 5_000, mainLines: 600, subLines: 400,
+  toolResultTotal: 300, toolUseTotal: 300, toolUseFiltered: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
   attributionSkillRows: 40, attributionSkillDistinct: 3, mcpServerDistinct: 3,
   userRows: 500, originBearingUserRows: 20, humanTurns: 15,
   denialRows: 8, denialUserRejected: 2, denialKinds: {},

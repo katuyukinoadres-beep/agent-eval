@@ -23,6 +23,7 @@ import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './e
 import {
   IN_AXIS2_NUMERATOR,
   IN_REPAIR_SPLIT,
+  isExternalTool,
   SUPPLIES_SIGNATURE,
   attribute,
   closure,
@@ -112,11 +113,30 @@ export const FORBIDDEN_SUBFIELDS = [
 export interface ScanCounts {
   readonly linesRead: number
   readonly linesParseFailed: number
+  /**
+   * Files the walk found and the scan could not open.
+   *
+   * Counted, because the alternative is a total that omits them with nothing
+   * to say so. `filesRead` counts what was enumerated; the difference is here.
+   */
+  readonly filesUnreadable: number
+  /** Files that opened and yielded no usable row. Counted for the same reason. */
+  readonly filesWithoutRows: number
   readonly bytesRead: number
   readonly mainLines: number
   readonly subLines: number
 
   readonly toolResultTotal: number
+  /** Every tool_use block. A reference value, per v2 §3.2. */
+  readonly toolUseTotal: number
+  /**
+   * tool_use blocks after the attribution table's external exclusion.
+   *
+   * The quantity v1 and v2 both name for axis 2's availability. The gate used
+   * to be fed `toolResultTotal`, which is a different block type, unfiltered,
+   * and explicitly designated a reference value.
+   */
+  readonly toolUseFiltered: number
   readonly toolResultWithIsErrorKey: number
   readonly toolResultIsErrorTrue: number
 
@@ -438,10 +458,14 @@ interface DateSets {
 interface Mut {
   linesRead: number
   linesParseFailed: number
+  filesUnreadable: number
+  filesWithoutRows: number
   bytesRead: number
   mainLines: number
   subLines: number
   toolResultTotal: number
+  toolUseTotal: number
+  toolUseFiltered: number
   toolResultWithIsErrorKey: number
   toolResultIsErrorTrue: number
   attributionSkillRows: number
@@ -927,6 +951,11 @@ function reduceLine(
     } else if (block['type'] === 'tool_use') {
       const id = block['id']
       const toolName = block['name']
+      m.toolUseTotal += 1
+      // Axis 2's availability is defined on filtered tool_use. The network is
+      // not the environment under test, so it does not count towards having
+      // enough evidence to judge one.
+      if (typeof toolName !== 'string' || !isExternalTool(toolName)) m.toolUseFiltered += 1
       if (typeof id === 'string' && typeof toolName === 'string') {
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
       }
@@ -1017,8 +1046,8 @@ export function scan(
   sign: Signer | null = null,
 ): ScanCounts {
   const m: Mut = {
-    linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
-    toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
+    linesRead: 0, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 0, mainLines: 0, subLines: 0,
+    toolResultTotal: 0, toolUseTotal: 0, toolUseFiltered: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
     denialRows: 0, denialUserRejected: 0, denialKinds: new Map<string, number>(), sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
     intervals: 0, verifiedIntervals: 0, todoWriteUsed: false,
@@ -1059,6 +1088,25 @@ export function scan(
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
 
   for (const file of inv.files) {
+    // Read first, and count a failure.
+    //
+    // The read used to sit after the bytes were added and after a per-session
+    // entry had been created, and its catch incremented nothing. An unreadable
+    // transcript then left `filesRead` counting it, `linesParseFailed` at zero,
+    // the gate green, and every count short together so the identities still
+    // closed -- indistinguishable from a quiet month. Worse, the orphaned
+    // session entry broke `sessions-close` and refused the whole snapshot, so
+    // one zero-byte file cost every later window its baseline for as long as
+    // it existed.
+    let text = ''
+    try {
+      text = (read ?? ((p: string) => readFileSync(p, 'utf8')))(file.path)
+    } catch {
+      m.filesUnreadable += 1
+      continue
+    }
+    m.bytesRead += file.bytes
+
     let proj = perProject.get(file.project)
     if (proj === undefined) {
       proj = { lines: 0, subLines: 0, humanRows: 0 }
@@ -1098,15 +1146,6 @@ export function scan(
         subBundle = existing
       }
     }
-    m.bytesRead += file.bytes
-    let text = ''
-    try {
-      text = (read ?? ((p: string) => readFileSync(p, 'utf8')))(file.path)
-    } catch {
-      // Unreadable file: every one of its lines is unaccounted for, and saying
-      // so is better than a total that silently omits them.
-      continue
-    }
     for (const line of text.split('\n')) {
       reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses)
     }
@@ -1124,6 +1163,13 @@ export function scan(
     // root and an orphan are bundles: their calls are charged to axis 2's
     // numerator, so leaving them out of the denominator raises W by counting
     // work against fewer requests than actually happened.
+    // A file that opened and produced nothing leaves no session behind. The
+    // per-session entry is created before the lines are read, and an orphaned
+    // one breaks `sessions-close` and refuses the entire snapshot.
+    if (!sessions.has(file.sessionId) && st.lines === 0) {
+      perSession.delete(file.sessionId)
+      m.filesWithoutRows += 1
+    }
     const opened = bundles.opened() + bundles.roots() + bundles.orphans()
     st.bundles += opened
     m.taskBundles += opened
@@ -1137,10 +1183,14 @@ export function scan(
   return {
     linesRead: m.linesRead,
     linesParseFailed: m.linesParseFailed,
+    filesUnreadable: m.filesUnreadable,
+    filesWithoutRows: m.filesWithoutRows,
     bytesRead: m.bytesRead,
     mainLines: m.mainLines,
     subLines: m.subLines,
     toolResultTotal: m.toolResultTotal,
+    toolUseTotal: m.toolUseTotal,
+    toolUseFiltered: m.toolUseFiltered,
     toolResultWithIsErrorKey: m.toolResultWithIsErrorKey,
     toolResultIsErrorTrue: m.toolResultIsErrorTrue,
     attributionSkillRows: m.attributionSkillRows,

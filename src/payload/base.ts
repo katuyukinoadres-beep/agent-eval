@@ -87,6 +87,8 @@ export const BASE_PAYLOAD = {
     filesRead: MAIN_FILES + SUB_FILES,
     linesRead: LINES_READ,
     linesParseFailed: 0,
+    filesUnreadable: 0,
+    filesWithoutRows: 0,
     bytesRead: 663_311_155,
     mainFiles: MAIN_FILES,
     mainLines: MAIN_LINES,

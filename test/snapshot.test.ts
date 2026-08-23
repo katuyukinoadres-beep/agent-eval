@@ -32,8 +32,8 @@ const KEY = Buffer.alloc(KEY_BYTES, 3)
 const SIGN = signerFor(KEY)
 
 const counts = {
-  linesRead: 100, linesParseFailed: 0, bytesRead: 5_000, mainLines: 60, subLines: 40,
-  toolResultTotal: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
+  linesRead: 100, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 5_000, mainLines: 60, subLines: 40,
+  toolResultTotal: 300, toolUseTotal: 300, toolUseFiltered: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
   attributionSkillRows: 4, attributionSkillDistinct: 2, mcpServerDistinct: 1,
   userRows: 20, originBearingUserRows: 2, humanTurns: 6, originHumanRows: 2,
   notHumanCounts: {}, denialRows: 2, denialUserRejected: 1, denialKinds: {},

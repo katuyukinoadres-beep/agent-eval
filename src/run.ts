@@ -39,7 +39,7 @@ const COUNT_BASIS_DOMAIN = 'agent-eval/count-basis/1' + String.fromCharCode(10)
 import { digestOf } from './snapshot/canonical.js'
 import { verifyChain, type ChainVerdict } from './snapshot/verify.js'
 import { payloadDigest } from './snapshot/canonical.js'
-import { firstLine } from './snapshot/types.js'
+import { filesystemReason } from './snapshot/types.js'
 import { COUNT_BASIS } from './payload/assemble.js'
 import { VERSION } from './version.js'
 import { validate, type Verdict } from './validate/index.js'
@@ -281,7 +281,7 @@ export function run(options: RunOptions): RunResult {
       snapshot = {
         kind: 'refused',
         reason: 'identity-violation',
-        detail: firstLine(e),
+        detail: filesystemReason(e),
       }
     }
   }

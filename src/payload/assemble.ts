@@ -201,7 +201,10 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // question from whether the rate exists. Conflating them reported a machine
   // with 8,502 tool calls as having nothing to measure.
   const motion = wastedMotion(counts.wasted, counts.errorRepeats.rIn, counts.taskBundles)
-  const toolCalls = counts.toolResultTotal
+  // Filtered tool_use, which is what v1 and v2 both name. It used to be fed
+  // `toolResultTotal` -- a different block type, unfiltered, and designated a
+  // reference value by the same spec that sets this threshold.
+  const toolCalls = counts.toolUseFiltered
   const axis2Available = toolCalls >= MIN_FILTERED_CALLS && motion.score !== null
 
   const axisFor = (key: string): Axis => ({
@@ -523,6 +526,8 @@ export function assemble(inputs: AssembleInputs): Assembled {
     filesRead: inventory.files.length,
     linesRead,
     linesParseFailed: counts.linesParseFailed,
+    filesUnreadable: counts.filesUnreadable,
+    filesWithoutRows: counts.filesWithoutRows,
     bytesRead: counts.bytesRead,
     mainFiles: inventory.files.filter((f) => f.kind === 'main').length,
     mainLines: counts.mainLines,

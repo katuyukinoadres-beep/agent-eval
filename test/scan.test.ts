@@ -102,6 +102,52 @@ describe('the reducer reads each file once', () => {
     })
     expect(c.linesRead).toBe(0)
   })
+
+  it('counts a file it could not open', () => {
+    // Asserting `linesRead === 0` cannot catch this: the lines are missing
+    // either way. Nothing incremented in the catch, `filesRead` still counted
+    // the file, `linesParseFailed` stayed 0, the gate passed, and every total
+    // was short together so the identities still closed. A corpus that failed
+    // to open was indistinguishable from a quiet month.
+    const inv = walkProjects(projects())
+    const c = scan(inv, (p) => {
+      if (p.endsWith('agent-1.jsonl')) throw new Error('EACCES')
+      return JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-08-20T00:00:00Z' })
+    })
+    expect(c.filesUnreadable).toBe(1)
+  })
+
+  it('reports zero when every file opened, so the counter is not decoration', () => {
+    // The other half. A counter that is always zero and a counter that is
+    // never written look the same from the outside.
+    const inv = walkProjects(projects())
+    const c = scan(inv, () =>
+      JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-08-20T00:00:00Z' }),
+    )
+    expect(c.filesUnreadable).toBe(0)
+  })
+
+  it('leaves no session behind for a file that opened and yielded nothing', () => {
+    // A per-session entry is created before the lines are read. An empty file
+    // left one with no session to match it, `sessions-close` failed with
+    // tolerance zero, and the whole snapshot was refused -- so a single
+    // zero-byte transcript cost every later window its baseline for as long as
+    // it sat there.
+    const inv = walkProjects(projects())
+    const c = scan(inv, () => '')
+    expect(Object.keys(c.perSession)).toEqual([])
+    expect(c.sessionIds).toEqual([])
+    expect(c.filesWithoutRows).toBe(inv.files.length)
+  })
+
+  it('keeps the session when the file did yield rows', () => {
+    const inv = walkProjects(projects())
+    const c = scan(inv, () =>
+      JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-08-20T00:00:00Z' }),
+    )
+    expect(Object.keys(c.perSession).length).toBeGreaterThan(0)
+    expect(c.filesWithoutRows).toBe(0)
+  })
 })
 
 describe('the lines account for themselves', () => {
