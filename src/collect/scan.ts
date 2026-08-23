@@ -18,7 +18,7 @@ import type { FileEntry, Inventory } from './walk.js'
 import { notHumanBecause, userText } from './humanTurn.js'
 import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.js'
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
-import { referenceIndex, type ReferenceIndex } from './reference.js'
+import { referenceIndex, type Mention, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
 import { LARGE_OUTPUT_BYTES, isInvestigation, wastedTracker, type WastedCounts, type WastedTracker } from './wasted.js'
 import type { Signer } from '../snapshot/mac.js'
@@ -154,6 +154,8 @@ export interface ScanCounts {
   readonly editedPaths: Readonly<Record<string, PathTally>>
   /** Latest mention of any path-shaped token, for P6's uptake condition (a). */
   readonly lastMention: (path: string) => string | null
+  /** The latest mention with its bundle, for axis 4's cross-bundle rule. */
+  readonly lastMentionIn: (path: string) => Mention | null
   /** Distinct path-shaped tokens seen, so an empty index reads as empty. */
   readonly referenceTokens: number
   /**
@@ -198,6 +200,22 @@ export interface ScanCounts {
    * listed is what was loaded.
    */
   readonly metabolism: MetabolismCounts
+  /**
+   * Traces that a person edited a file by hand, for axis 4's (c) term.
+   *
+   * v1 names two: an `edited_text_file` attachment and `staleRecovered`. A
+   * third field, `toolUseResult.userModified`, means the same thing and is
+   * present 766 times here -- and true zero times. It is the fourth boolean in
+   * this log found to be uniformly dead, after isSidechain,
+   * toolUseResult.interrupted and preventedContinuation, so it is recorded as
+   * such and not used.
+   *
+   * The attachment carries a `filename`, not a path, so matching against a
+   * written path is by basename. That over-matches two files of one name in
+   * different directories, which pushes the overwrite share up and the score
+   * down.
+   */
+  readonly manualEdits: ManualEditCounts
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -321,6 +339,16 @@ export interface MetabolismCounts {
   readonly effectiveInputPerCall: readonly number[]
 }
 
+export interface ManualEditCounts {
+  /** Basenames from edited_text_file attachments, lowercased. */
+  readonly editedNames: readonly string[]
+  /** Full paths whose write reported staleRecovered. */
+  readonly staleRecoveredPaths: readonly string[]
+  /** Rows carrying `userModified`, and rows where it was true. 766 and 0 here. */
+  readonly userModifiedPresent: number
+  readonly userModifiedTrue: number
+}
+
 export interface ProjectTally {
   readonly lines: number
   readonly subLines: number
@@ -357,6 +385,8 @@ interface Mut {
   toolActivityRows: number
   listingChars: number
   listingTruncated: boolean
+  userModifiedPresent: number
+  userModifiedTrue: number
   rootBundles: number
   orphanBundles: number
   environmentNoiseRows: number
@@ -414,6 +444,11 @@ export function targetOf(toolName: string, input: unknown): string {
 // wrote a file. It is replaced by a MAC over the whole signature tuple under a
 // machine-local key -- 8 hex over a space of file extensions and command names
 // is small enough to enumerate, and the tuple MAC covers the target anyway.
+
+interface MutManualEdits {
+  editedNames: Set<string>
+  staleRecoveredPaths: Set<string>
+}
 
 interface MutMetabolism {
   skillsListed: Set<string>
@@ -477,6 +512,7 @@ function reduceLine(
   wasted: WastedTracker,
   w: MutWasted,
   met: MutMetabolism,
+  manual: MutManualEdits,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -559,6 +595,13 @@ function reduceLine(
         // upper side of the dead-weight ratio cannot be measured at all.
         if (content.length >= LISTING_CAP) m.listingTruncated = true
       }
+    } else if (attachment['type'] === 'edited_text_file') {
+      // `filename`, not a path. Matching is by basename below, and that is
+      // stated rather than hidden.
+      const filename = attachment['filename']
+      if (typeof filename === 'string' && filename.length > 0) {
+        manual.editedNames.add(filename.split(/[\/]/).pop()?.toLowerCase() ?? '')
+      }
     } else if (attachment['type'] === 'hook_success') {
       const name = attachment['hookName']
       if (typeof name === 'string' && name.length > 0) {
@@ -609,6 +652,16 @@ function reduceLine(
   // call: the call says where, the result says how much.
   const result = row['toolUseResult']
   if (isObj(result)) {
+    // Counted, not consulted. Present 766 times and true 0 times here, which is
+    // the fourth uniformly dead boolean this log has produced.
+    if ('userModified' in result) {
+      m.userModifiedPresent += 1
+      if (result['userModified'] === true) m.userModifiedTrue += 1
+    }
+    if (result['staleRecovered'] === true) {
+      const fp = result['filePath']
+      if (typeof fp === 'string') manual.staleRecoveredPaths.add(fp)
+    }
     if (result['timedOutAfterMs'] !== undefined && result['timedOutAfterMs'] !== null) {
       w.timedOut += 1
       st.timedOut += 1
@@ -626,7 +679,7 @@ function reduceLine(
   // P6 uptake (a) — a path mentioned after it was written was used. Human text
   // and tool arguments both count; a person naming a file and a command taking
   // it as an argument are the same signal.
-  if (human) refs.note(userText(row), typeof ts === 'string' ? ts : null)
+  if (human) refs.note(userText(row), typeof ts === 'string' ? ts : null, bundle)
 
   if (row['subtype'] === 'stop_hook_summary') {
     m.stopHookSummaryRows += 1
@@ -697,6 +750,16 @@ function reduceLine(
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
       }
       if (typeof toolName === 'string') {
+        // A tool's arguments count as a reference too: v1 names Read, Grep and
+        // Bash arguments alongside human text.
+        const input = block['input']
+        if (isObj(input)) {
+          for (const v of Object.values(input)) {
+            if (typeof v === 'string' && v.length > 0) {
+              refs.note(v, typeof ts === 'string' ? ts : null, bundle)
+            }
+          }
+        }
         const key = bundle === null ? 'none' : String(bundle)
         w.callsPerBundle.set(key, (w.callsPerBundle.get(key) ?? 0) + 1)
         if (wasted.call(bundle, toolName, block['input'])) {
@@ -747,7 +810,7 @@ export function scan(
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -764,6 +827,7 @@ export function scan(
   const tuples: Array<readonly [string, ErrorClass, string]> = []
   const macs: Hmac128[] = []
   const perSession = new Map<string, MutSessionTally>()
+  const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
     skillFirings: new Map(),
@@ -804,7 +868,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual)
     }
     st.bundles += bundles.opened()
     m.taskBundles += bundles.opened()
@@ -843,11 +907,18 @@ export function scan(
       mcpFirings: Object.fromEntries([...met.mcpFirings.entries()].sort()),
       effectiveInputPerCall: met.effectiveInputPerCall,
     },
+    manualEdits: {
+      editedNames: [...manual.editedNames].sort(),
+      staleRecoveredPaths: [...manual.staleRecoveredPaths].sort(),
+      userModifiedPresent: m.userModifiedPresent,
+      userModifiedTrue: m.userModifiedTrue,
+    },
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,
     environmentNoiseRows: m.environmentNoiseRows,
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
+    lastMentionIn: refs.lastMentionIn,
     referenceTokens: refs.size(),
     errorRepeats: repeatRate(tuples),
     wasted: {

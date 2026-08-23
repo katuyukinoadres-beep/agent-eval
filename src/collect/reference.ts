@@ -41,24 +41,39 @@ export const basename = (s: string): string => {
   return at === -1 ? norm : norm.slice(at + 1)
 }
 
+export interface Mention {
+  readonly at: string
+  /**
+   * The task bundle the mention happened in.
+   *
+   * Axis 4 counts a re-reference only when it happens in a *different* bundle
+   * from the write. Reading back a file inside the same request is verification
+   * -- axis 3 already counts it -- and letting it count here would make
+   * re-reading one's own output the cheapest way to raise the score.
+   */
+  readonly bundle: number | null
+}
+
 export interface ReferenceIndex {
   /** Records every path-shaped token in `text` as mentioned at `timestamp`. */
-  readonly note: (text: string, timestamp: string | null) => void
+  readonly note: (text: string, timestamp: string | null, bundle: number | null) => void
   /** The latest mention of a path or its basename, or null. */
   readonly lastMention: (path: string) => string | null
+  /** The latest mention with the bundle it happened in. */
+  readonly lastMentionIn: (path: string) => Mention | null
   /** Distinct tokens held. Reported so an empty index is visible as empty. */
   readonly size: () => number
 }
 
 export function referenceIndex(): ReferenceIndex {
-  const latest = new Map<string, string>()
+  const latest = new Map<string, Mention>()
 
-  const record = (token: string, timestamp: string): void => {
+  const record = (token: string, timestamp: string, bundle: number | null): void => {
     const previous = latest.get(token)
-    if (previous === undefined || timestamp > previous) latest.set(token, timestamp)
+    if (previous === undefined || timestamp > previous.at) latest.set(token, { at: timestamp, bundle })
   }
 
-  const note = (text: string, timestamp: string | null): void => {
+  const note = (text: string, timestamp: string | null, bundle: number | null): void => {
     if (timestamp === null || text === '') return
     // Bounded: a very long row is a transcript paste, and scanning all of it
     // buys nothing a path mention in the first part does not already give.
@@ -67,20 +82,22 @@ export function referenceIndex(): ReferenceIndex {
       const raw = match[0]
       if (raw === undefined) continue
       const norm = normalisePath(raw)
-      record(norm, timestamp)
+      record(norm, timestamp, bundle)
       const base = basename(norm)
-      if (base !== norm && base.length > 0) record(base, timestamp)
+      if (base !== norm && base.length > 0) record(base, timestamp, bundle)
     }
   }
 
-  const lastMention = (path: string): string | null => {
+  const lastMentionIn = (path: string): Mention | null => {
     const norm = normalisePath(path)
     const direct = latest.get(norm)
     const byName = latest.get(basename(norm))
     if (direct === undefined) return byName ?? null
     if (byName === undefined) return direct
-    return direct > byName ? direct : byName
+    return direct.at > byName.at ? direct : byName
   }
 
-  return { note, lastMention, size: () => latest.size }
+  const lastMention = (path: string): string | null => lastMentionIn(path)?.at ?? null
+
+  return { note, lastMention, lastMentionIn, size: () => latest.size }
 }

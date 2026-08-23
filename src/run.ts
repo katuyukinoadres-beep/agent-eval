@@ -26,6 +26,7 @@ import {
   type ScopeDocument,
 } from './collect/environment.js'
 import { assemble } from './payload/assemble.js'
+import { settleArtifacts } from './score/artifact.js'
 import { ensureStateDir } from './snapshot/stateDir.js'
 import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
@@ -161,9 +162,18 @@ export function run(options: RunOptions): RunResult {
     windowDays: options.windowDays,
   })
 
+  // §8.6 -- the artifact set is what axis 4 divides by, so it has to be
+  // computed here rather than left to a later stage.
+  const artifacts = settleArtifacts({
+    paths: counts.editedPaths,
+    windowEnd: `${counts.dates[counts.dates.length - 1] ?? options.measuredAt.slice(0, 10)}T23:59:59Z`,
+    lastMention: counts.lastMention,
+  })
+
   const { payload, gate } = assemble({
     inventory,
     counts,
+    artifacts,
     window,
     permissions: tallyPermissions(scopes),
     skills: countSkills(join(options.cwd, '.claude')),
