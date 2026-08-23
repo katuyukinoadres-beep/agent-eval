@@ -56,11 +56,12 @@ import {
   type ObservedSpan,
   type ScanRecord,
   type SessionRecord,
+  type Sidecar,
   type SignatureSets,
   type Snapshot,
   type ScoredAxis,
 } from './record.js'
-import { day, dayOf, e4, int, semver, type Day, type Hmac128, type Sha256 } from './types.js'
+import { day, dayOf, e4, int, semver, type Day, type E4, type Hmac128, type Sha256 } from './types.js'
 
 /**
  * The constants axis 2's score actually depends on.
@@ -140,6 +141,15 @@ export interface BuildInputs {
   readonly axes: Axes
   readonly gate: GateVerdict
   readonly countBasis: CountBasis
+  /**
+   * The composite this window produced, or null when it was withheld.
+   *
+   * Stored, because a delta needs the previous window's figure and nothing else
+   * keeps it. It was hardcoded null on the read side for the whole of the first
+   * build, which made the composite delta structurally always null -- the one
+   * number the product exists to produce.
+   */
+  readonly compositeE4: number | null
   readonly chain: ChainLink
   readonly key: KeyRef
   readonly toolVersion: string
@@ -154,7 +164,7 @@ export interface BuildInputs {
 export interface Built {
   readonly snapshot: Snapshot
   /** The distinct signature MACs, committed to by the body and stored beside it. */
-  readonly sidecar: readonly Hmac128[] | null
+  readonly sidecar: Sidecar | null
 }
 
 const osOf = (platform: string): 'win32' | 'darwin' | 'linux' | 'other' =>
@@ -232,6 +242,22 @@ const sessionsOf = (counts: ScanCounts, sign: Signer): readonly SessionRecord[] 
     }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
+/**
+ * Which two figures in each axis's `detail` are its numerator and denominator.
+ *
+ * Written out per axis because the keys are not shared. Reading axis 2's
+ * `wastedTotal` and `bundleCount` from every axis stored null for the other
+ * four, so four of five snapshots carried a score with nothing underneath it --
+ * and a later window verifying that score has only the score to go on.
+ */
+const SAMPLE_KEYS: Partial<Record<AxisKey, { readonly numerator: string; readonly denominator: string }>> = {
+  wastedMotion: { numerator: 'wastedTotal', denominator: 'bundleCount' },
+  selfVerification: { numerator: 'verifiedIntervals', denominator: 'intervals' },
+  artifactUptake: { numerator: 'reusedArtifacts', denominator: 'artifacts' },
+  environmentMetabolism: { numerator: 'firedAssets', denominator: 'assets' },
+  recurrencePrevention: { numerator: 'distinctSignatures', denominator: 'errors' },
+}
+
 const axesOf = (payloadAxes: Axes, counts: ScanCounts): Record<AxisKey, AxisRecord> => {
   const out = emptyAxes()
   for (const key of AXIS_KEYS) {
@@ -246,9 +272,13 @@ const axesOf = (payloadAxes: Axes, counts: ScanCounts): Record<AxisKey, AxisReco
     out[key] = {
       state: a.availability === 'available' ? 'measured' : 'not-applicable',
       formulaFingerprint: fingerprint,
-      numeratorE4: a.detail?.['wastedTotal'] === undefined ? null : e4(a.detail['wastedTotal']),
-      denominator: a.detail?.['bundleCount'] ?? null,
+      numeratorE4: numeratorOf(key, a.detail),
+      denominator: denominatorOf(key, a.detail),
       scoreE4: a.score === null ? null : e4(a.score),
+      // Read from the axis rather than asserted. `belowMinDenominator: true`
+      // was invented on the read side for every axis, so nothing downstream
+      // could tell a real shortfall from the assumption of one.
+      belowMinDenominator: a.belowMinDenominator,
       sampling: { clusters: int(counts.sessionIds.length) },
       omittedTerms: a.omittedTerms.map((t) => ({
         term: t.term,
@@ -260,17 +290,30 @@ const axesOf = (payloadAxes: Axes, counts: ScanCounts): Record<AxisKey, AxisReco
   return out
 }
 
-const signaturesOf = (counts: ScanCounts): { sets: SignatureSets; members: readonly Hmac128[] } => {
+const numeratorOf = (key: AxisKey, detail: Readonly<Record<string, number>> | null): E4 | null => {
+  const k = SAMPLE_KEYS[key]?.numerator
+  const v = k === undefined ? undefined : detail?.[k]
+  return v === undefined ? null : e4(v)
+}
+
+const denominatorOf = (key: AxisKey, detail: Readonly<Record<string, number>> | null): number | null => {
+  const k = SAMPLE_KEYS[key]?.denominator
+  return k === undefined ? null : (detail?.[k] ?? null)
+}
+
+const signaturesOf = (counts: ScanCounts): { sets: SignatureSets; sidecar: Sidecar } => {
   const members = [...new Set(counts.signatures)].sort()
+  const repeated = [...counts.signaturesRepeated].sort()
   return {
     sets: {
       memberCount: int(members.length),
+      repeatedCount: int(repeated.length),
       errors: int(counts.errorRepeats.errors),
       byFamily: Object.entries(counts.errorRepeats.byFamily)
         .map(([family, count]) => ({ family, count: int(count) }))
         .sort((a, b) => (a.family < b.family ? -1 : 1)),
     },
-    members,
+    sidecar: { members, repeated },
   }
 }
 
@@ -303,11 +346,11 @@ export function buildSnapshot(inputs: BuildInputs): Built {
   const span = spanOf(counts)
   const scan = scanOf(counts, gate, inputs.filesRead)
 
-  const sidecar = signatures?.members ?? null
+  const sidecar = signatures?.sidecar ?? null
   const sidecars =
     signatures === null || sidecar === null
       ? []
-      : [{ kind: 'sig' as const, digest: sidecarHash(sidecar), members: int(sidecar.length) }]
+      : [{ kind: 'sig' as const, digest: sidecarHash(sidecar), members: int(sidecar.members.length) }]
 
   // Checked before the body is hashed. An internally inconsistent snapshot is
   // worse than none, because it will be compared against later.
@@ -316,6 +359,36 @@ export function buildSnapshot(inputs: BuildInputs): Built {
     // A subset relation, not an equality: human-turn days sit inside user-row
     // days and are usually fewer.
     { name: 'day-nesting', relation: 'atMost', left: span.humanTurnDays, right: span.userRowDays },
+    // The attribution partition. `observed` is counted before any attribution
+    // runs, so this compares two quantities that were arrived at separately.
+    {
+      name: 'attribution-closes',
+      relation: 'equal',
+      left: counts.wasted.closure.numerator + counts.wasted.closure.excluded,
+      right: counts.wasted.errorsObserved,
+    },
+    // Axis 3's four buckets against the failures that could have filled them.
+    //
+    // A subset relation, not an equality, and the reason is worth keeping in
+    // front of the code: repeated failures on one target raise that episode's
+    // attempt count rather than opening a second one, so four failures on the
+    // same key settle once. Episodes are therefore at most the failures the
+    // attribution routed here. Writing this as an equality would have made it
+    // fire on every ordinary run.
+    {
+      name: 'repair-split-within-failures',
+      relation: 'atMost',
+      left:
+        counts.verification.selfRepaired +
+        counts.verification.humanRescued +
+        counts.verification.unresolved +
+        counts.verification.repairedNotCounted,
+      right:
+        counts.wasted.attribution.E5 +
+        counts.wasted.attribution.E6 +
+        counts.wasted.attribution.E7 +
+        counts.wasted.attribution.E8_E9,
+    },
   ]
   if (sessions !== null) {
     checks.push({ name: 'sessions-close', relation: 'equal', left: sessions.length, right: counts.sessionIds.length })
@@ -327,7 +400,15 @@ export function buildSnapshot(inputs: BuildInputs): Built {
     })
   }
   if (signatures !== null && sidecar !== null) {
-    checks.push({ name: 'signature-members', relation: 'equal', left: signatures.sets.memberCount, right: sidecar.length })
+    checks.push({ name: 'signature-members', relation: 'equal', left: signatures.sets.memberCount, right: sidecar.members.length })
+    // The repeated set is a subset of the members, by construction. An equality
+    // would fire on every window where any failure happened only once.
+    checks.push({
+      name: 'signature-repeated-within-members',
+      relation: 'atMost',
+      left: sidecar.repeated.length,
+      right: sidecar.members.length,
+    })
   }
   const identities: readonly Identity[] = checkIdentities(checks)
 
@@ -342,12 +423,18 @@ export function buildSnapshot(inputs: BuildInputs): Built {
     chain: inputs.chain,
     key: inputs.key,
     countBasis: inputs.countBasis,
+    compositeE4: inputs.compositeE4,
     completeness: {
       schemaComplete: measured.length === SCORED_AXES.length,
       // A composite over one axis and a composite over six are different
       // quantities. Storing the refusal makes it mechanical rather than
       // remembered.
-      compositeComparable: measured.length === SCORED_AXES.length,
+      // Whether this window can supply a figure at all, not whether the two
+      // windows match: the axis sets are stored beside it and the comparison
+      // decides that by comparing them. Requiring every scored axis meant the
+      // flag was false on every run a five-axis build could produce, and a
+      // stored `false` reads the same as a considered refusal.
+      compositeComparable: typeof inputs.compositeE4 === 'number',
       axesAbsent: axesAbsent as readonly ScoredAxis[],
       evaluatedOver: SCORED_AXES,
       blocksAbsent: absences

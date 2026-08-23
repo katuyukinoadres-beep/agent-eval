@@ -71,6 +71,13 @@ export function classifyPermission(entry: string): PermissionClass {
     // `Bash(python:*)` — the interpreter with nothing constraining what it runs.
     // This is the spec's own example, and the reason the class exists.
     if (named.length === 0) return 'unrestrictedExec'
+    // `Bash(python -c:*)` — the interpreter reading its program from the
+    // argument. It pins nothing at all, and it used to land in `cliWildcard`
+    // because `-c` is a token, is not path-shaped, and fell past both branches.
+    // The recorded positive control only ever exercised the bare `python:*`
+    // shape, which is precisely where the blind spot was not. Same for
+    // `node -e`, `bash -c`, `pwsh -Command` and `perl -e`.
+    if (named.some(isInlineCodeFlag)) return 'unrestrictedExec'
     // `Bash(python scripts/redact.py:*)` — the script is pinned, the arguments
     // are not. That is a different thing from arbitrary code.
     if (named.some(looksLikePath)) return 'scriptPathFixed'
@@ -80,6 +87,16 @@ export function classifyPermission(entry: string): PermissionClass {
   if (named.some(looksLikePath)) return 'scriptPathFixed'
   return inner.endsWith('*') ? 'cliWildcard' : 'exact'
 }
+
+/**
+ * Flags that make an interpreter read its program from the command line.
+ *
+ * Matched case-insensitively because PowerShell writes `-Command` and shells
+ * are inconsistent about it. A miss here reports an open door as a closed one.
+ */
+const INLINE_CODE_FLAGS = new Set(['-c', '-e', '-command', '-encodedcommand', '--command', '--eval', '-ec'])
+
+const isInlineCodeFlag = (token: string): boolean => INLINE_CODE_FLAGS.has(token.toLowerCase())
 
 export interface PermissionTally {
   readonly allow: number

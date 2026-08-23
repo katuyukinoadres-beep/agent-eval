@@ -31,7 +31,14 @@ import { ensureStateDir } from './snapshot/stateDir.js'
 import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
 import { buildSnapshot } from './snapshot/build.js'
-import { defaultSnapshotIo, readHead, readLatestBody, writeSnapshot, type WriteOutcome } from './snapshot/write.js'
+import {
+  defaultSnapshotIo,
+  readHead,
+  readLatestBody,
+  readLatestSidecar,
+  writeSnapshot,
+  type WriteOutcome,
+} from './snapshot/write.js'
 import { compare, type Comparison, type WindowView } from './score/comparison.js'
 
 /** Domain for the basis digest, built without an inline escape. */
@@ -39,7 +46,7 @@ const COUNT_BASIS_DOMAIN = 'agent-eval/count-basis/1' + String.fromCharCode(10)
 import { digestOf } from './snapshot/canonical.js'
 import { verifyChain, type ChainVerdict } from './snapshot/verify.js'
 import { payloadDigest } from './snapshot/canonical.js'
-import { firstLine } from './snapshot/types.js'
+import { filesystemReason } from './snapshot/types.js'
 import { COUNT_BASIS } from './payload/assemble.js'
 import { VERSION } from './version.js'
 import { validate, type Verdict } from './validate/index.js'
@@ -160,7 +167,13 @@ function viewOf(body: Record<string, unknown> | { readonly axes: unknown }): Win
           state: (a['state'] ?? 'not-implemented') as 'measured' | 'not-applicable' | 'not-implemented',
           scoreE4: typeof a['scoreE4'] === 'number' ? a['scoreE4'] : null,
           formulaFingerprint: typeof a['formulaFingerprint'] === 'string' ? a['formulaFingerprint'] : null,
-          belowMinDenominator: true,
+          // Read, not invented. This was hardcoded true for every axis, so a
+          // real shortfall and the assumption of one were the same value and
+          // the rule that depends on it could never fire either way.
+          //
+          // A record that predates the field is treated as short: an old
+          // snapshot cannot say it met a minimum nobody stored.
+          belowMinDenominator: a['belowMinDenominator'] !== false,
         },
       ]),
     ),
@@ -169,7 +182,7 @@ function viewOf(body: Record<string, unknown> | { readonly axes: unknown }): Win
     countBasisDigest: digestOf(COUNT_BASIS_DOMAIN, b['countBasis'] ?? null),
     keyFingerprint: typeof key['fingerprint'] === 'string' ? key['fingerprint'] : '',
     compositeComparable: completeness['compositeComparable'] === true,
-    compositeE4: null,
+    compositeE4: typeof b['compositeE4'] === 'number' ? b['compositeE4'] : null,
   }
 }
 
@@ -216,6 +229,19 @@ export function run(options: RunOptions): RunResult {
     lastMention: counts.lastMention,
   })
 
+  // Read before assembling, because axis 6's rate needs the previous window's
+  // signature set and the axis is scored inside `assemble`. Reading it after
+  // meant the cross-window rate could never be computed at all, so the axis the
+  // product is built on always scored its within-window stand-in.
+  //
+  // The key gates it: MACs made under two different keys are not comparable,
+  // and an empty intersection reads as "no failure recurred".
+  const previousSidecar =
+    store === null || key === null ? null : readLatestSidecar(store.snapshotDir, defaultSnapshotIo)
+  const previousBody = store === null ? null : readLatestBody(store.snapshotDir, defaultSnapshotIo)
+  const previousKey = (previousBody?.['key'] as Record<string, unknown> | undefined)?.['fingerprint']
+  const sameKey = typeof previousKey === 'string' && previousKey === key?.ref.fingerprint
+
   const { payload, gate } = assemble({
     inventory,
     counts,
@@ -231,6 +257,7 @@ export function run(options: RunOptions): RunResult {
     measuredAt: options.measuredAt,
     submissionId: options.submissionId,
     hashProject,
+    previousRepeated: sameKey && previousSidecar !== null ? previousSidecar.repeated : null,
   })
 
   // Round-tripped through JSON first, because that is how a receiver will see
@@ -247,12 +274,14 @@ export function run(options: RunOptions): RunResult {
     try {
       const head = readHead(store.snapshotDir, defaultSnapshotIo)
       // Read before writing: the baseline is the window before this one.
-      const previous = readLatestBody(store.snapshotDir, defaultSnapshotIo)
+      const previous = previousBody
       const built = buildSnapshot({
         counts,
         axes: payload.axes,
         gate,
         countBasis: COUNT_BASIS,
+        compositeE4:
+          payload.composite.score === null ? null : Math.round(payload.composite.score * 10_000),
         chain: { seq: head.seq, prev: head.prev },
         key: key.ref,
         toolVersion: VERSION,
@@ -273,7 +302,7 @@ export function run(options: RunOptions): RunResult {
       snapshot = {
         kind: 'refused',
         reason: 'identity-violation',
-        detail: firstLine(e),
+        detail: filesystemReason(e),
       }
     }
   }

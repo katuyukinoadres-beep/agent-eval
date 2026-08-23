@@ -32,11 +32,11 @@ const KEY = Buffer.alloc(KEY_BYTES, 3)
 const SIGN = signerFor(KEY)
 
 const counts = {
-  linesRead: 100, linesParseFailed: 0, bytesRead: 5_000, mainLines: 60, subLines: 40,
-  toolResultTotal: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
+  linesRead: 100, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 5_000, mainLines: 60, subLines: 40,
+  toolResultTotal: 300, toolUseTotal: 300, toolUseFiltered: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
   attributionSkillRows: 4, attributionSkillDistinct: 2, mcpServerDistinct: 1,
   userRows: 20, originBearingUserRows: 2, humanTurns: 6, originHumanRows: 2,
-  notHumanCounts: {}, denialRows: 2, denialUserRejected: 1,
+  notHumanCounts: {}, denialRows: 2, denialUserRejected: 1, denialKinds: {},
   editedFilesDistinct: 3, editedFilesRepeated: 1,
   stopHookSummaryRows: 2, hookErrorsNonEmpty: 1, sessionIdMismatchRows: 0,
   tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
@@ -47,13 +47,15 @@ const counts = {
   humanTurnDates: ['2026-08-19'],
   perProject: {},
   perSession: {
-    s1: { bundles: 3, failures: 2, writeRepeats: 1, investigationRepeats: 0, timedOut: 0, largeOutput: 0, errors: 2, lines: 60 },
-    s2: { bundles: 2, failures: 1, writeRepeats: 0, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 1, lines: 40 },
+    s1: { intervals: 6, bundles: 3, failures: 2, writeRepeats: 1, investigationRepeats: 0, timedOut: 0, largeOutput: 0, errors: 2, lines: 60 },
+    s2: { intervals: 4, bundles: 2, failures: 1, writeRepeats: 0, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 1, lines: 40 },
   },
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
+  signaturesRepeated: [],
   signaturesSigned: true,
   taskBundles: 5, rootBundles: 0, orphanBundles: 0, toolActivityRows: 50,
-  environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null, referenceTokens: 0,
+  environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null,
+  mentionedElsewhereAfter: () => false, ambiguousBasenames: 0, referenceTokens: 0,
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
   metabolism: {
     skillsListed: [], listingChars: 0, listingTruncated: false,
@@ -64,11 +66,17 @@ const counts = {
   },
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
-    selfRepaired: 2, humanRescued: 1, unresolved: 1,
+    // Three episodes against the three failures the attribution routed to axis
+    // 3's split. The identity is a subset relation and this fixture sits on the
+    // boundary, which is where it is worth pinning.
+    selfRepaired: 2, humanRescued: 1, unresolved: 0, repairedNotCounted: 0,
   },
   wasted: {
     failures: 3, hookOriginated: 0, writeRepeats: 1, investigationRepeats: 1,
     timedOut: 0, largeOutput: 0, callsPerBundle: { b1: 4 },
+    errorsObserved: 3,
+    attribution: { E1: 0, E2: 0, E2b: 0, E3: 0, E4: 0, E7: 0, E6: 0, E5: 0, E8_E9: 3 },
+    closure: { observed: 3, attributed: 3, numerator: 3, excluded: 0, balanced: true },
   },
 }
 
@@ -124,6 +132,20 @@ describe('what a snapshot records', () => {
     const { snapshot } = buildSnapshot(inputs())
     expect(snapshot.completeness.evaluatedOver).toEqual(SCORED_AXES)
     expect(snapshot.completeness.schemaComplete).toBe(false)
+  })
+
+  it('keeps the composite, because nothing else does', () => {
+    // It was stored nowhere and read back as a hardcoded null, so the composite
+    // delta -- the number the product exists to produce -- was structurally
+    // null on every run a comparison could ever make.
+    const { snapshot } = buildSnapshot({ ...inputs(), compositeE4: 543_100 })
+    expect(snapshot.compositeE4).toBe(543_100)
+    expect(snapshot.completeness.compositeComparable).toBe(true)
+  })
+
+  it('says so when there was no composite to keep', () => {
+    const { snapshot } = buildSnapshot({ ...inputs(), compositeE4: null })
+    expect(snapshot.compositeE4).toBeNull()
     expect(snapshot.completeness.compositeComparable).toBe(false)
   })
 })

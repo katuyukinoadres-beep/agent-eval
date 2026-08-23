@@ -43,13 +43,22 @@ export function uuid(s: string): Uuid {
 }
 
 /**
- * A project identifier that cannot be turned back into a path.
+ * A project directory name, hashed.
  *
  * The spec's own §5 example carries `"name": "C--Windows-System32"`, which is a
  * cwd with the separators swapped. Sending that ships the home directory, the OS
  * username and the absolute path of every project on the machine — against §1's
  * own list of what must never leave. Only the hash has a type here; there is no
  * field a raw path could occupy.
+ *
+ * What it is not: a value that cannot be turned back into a path. The hash is
+ * unsalted, deliberately, so the same project hashes alike on two machines and
+ * can be compared -- which leaves the preimage space enumerable over username
+ * and repository lists. That is the same argument this codebase makes for
+ * keying the signature MACs, over a smaller space. A receiver who guesses the
+ * directory name can confirm the guess. Salting per submission key would close
+ * it and would end cross-environment comparison with it; the trade is stated
+ * here rather than described as a guarantee it does not give.
  */
 export function projectId(s: string): ProjectId {
   if (!PROJECT_ID.test(s)) throw new PayloadError(`not a sha256 project id: ${s}`)
@@ -229,6 +238,33 @@ export interface ExternalLog {
   readonly recordRateCalendar: Metric
 }
 
+/**
+ * How the failed tool calls split across the attribution table.
+ *
+ * Reported because §5.2 requires the subtraction to be machine-verified and
+ * because the split is the largest single lever on axis 2: the same 412
+ * failures produce a numerator of 412, 282 or 190 depending on which of them
+ * are charged to the agent.
+ */
+export interface FailureAttribution {
+  /** Failures counted before any attribution ran. */
+  readonly observed: number
+  readonly inAxis2Numerator: number
+  readonly excluded: number
+  /** False means events were lost, and no axis built on them may be emitted. */
+  readonly balanced: boolean
+  /** The per-id split, keyed by the table's ids. */
+  readonly byId: Readonly<Record<string, number>>
+  /**
+   * Every `toolDenialKind` value this machine emitted, with its count.
+   *
+   * The spec names `permission-rule` and `user-rejected`. This machine also
+   * emits `automode-blocked` and `automode-unavailable`, which carry 95 of 412
+   * failures here and none on the machine the spec was written against.
+   */
+  readonly denialKinds: Readonly<Record<string, number>>
+}
+
 export interface ScanManifest {
   readonly parserVersion: '1'
   readonly scope: Scope
@@ -238,6 +274,16 @@ export interface ScanManifest {
   readonly filesRead: number
   readonly linesRead: number
   readonly linesParseFailed: number
+  /**
+   * Files the walk found and the scan could not open.
+   *
+   * `filesRead` counts what was enumerated, so without this the two figures
+   * agree while the lines are missing, and a corpus that failed to open reads
+   * as a quiet month.
+   */
+  readonly filesUnreadable: number
+  /** Files that opened and yielded no usable row. */
+  readonly filesWithoutRows: number
   readonly bytesRead: number
   readonly mainFiles: number
   readonly mainLines: number
@@ -257,6 +303,7 @@ export interface ScanManifest {
    * 1.33x across four published figures, none of which stated its basis.
    */
   readonly countBasis: CountBasis
+  readonly failureAttribution: FailureAttribution
   readonly window: Window
   readonly externalLog: ExternalLog
   readonly measuredAt: Iso8601

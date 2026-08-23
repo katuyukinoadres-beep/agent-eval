@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import type { AttributionTally, Closure } from './attribution.js'
 
 /** v1's investigation set. Everything else is treated as write-or-execute. */
 export const INVESTIGATION_TOOLS = ['Read', 'Grep', 'WebSearch', 'WebFetch'] as const
@@ -54,16 +55,37 @@ export function inputKey(tool: string, input: unknown): string {
 }
 
 export interface WastedCounts {
-  /** Failures charged 1.0, hook-originated ones already removed. */
+  /** Failures charged 1.0, after the attribution table has taken its share out. */
   readonly failures: number
   /**
-   * Failures a hook caused rather than the work.
+   * Failures the attribution table took out of axis 2.
    *
-   * Excluded from numerator and denominator alike and routed to the safety
-   * check: a guardrail firing is the guardrail working. 17 here; v1 measured 29
-   * on the other machine.
+   * Denials of every kind, the network, and the stale reads axis 3 scores
+   * instead. 220 of 407 here.
+   *
+   * The name is historical: this used to hold only failures matching
+   * `(Pre|Post)ToolUse:` in their text, which matched 0 of 407 on this machine
+   * and 35 of 62 denials on the other. The body pattern was fitted to text one
+   * environment happens to emit; `attribution` below is the honest breakdown.
    */
   readonly hookOriginated: number
+  /**
+   * Every failure seen, counted before any attribution ran.
+   *
+   * Kept separately so the closure check has something to compare against that
+   * the tally did not produce. Summing the tally and comparing it with its own
+   * sum is a check that cannot fail.
+   */
+  readonly errorsObserved: number
+  /** How the failures split across the table. */
+  readonly attribution: AttributionTally
+  /**
+   * Whether the partition accounts for every failure.
+   *
+   * When this does not balance the axis value must not be emitted: a lost event
+   * is indistinguishable from an event that never happened.
+   */
+  readonly closure: Closure
   readonly writeRepeats: number
   readonly investigationRepeats: number
   readonly timedOut: number

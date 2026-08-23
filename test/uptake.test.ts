@@ -28,6 +28,7 @@ const artifact = (over: Partial<Artifact> = {}): Artifact => ({
   newLines: 100,
   newLinesKnown: true,
   bundle: 1,
+  lastWrite: '2026-08-19T00:00:00Z',
   ...over,
 })
 
@@ -35,7 +36,7 @@ const base: UptakeInputs = {
   artifacts: [artifact()],
   totalWeight: 1,
   bundles: 20,
-  lastMentionIn: () => null,
+  mentionedElsewhereAfter: () => false,
   manuallyOverwritten: () => false,
   firstWindow: true,
 }
@@ -44,7 +45,7 @@ const at = (over: Partial<UptakeInputs>): UptakeInputs => ({ ...base, ...over })
 
 describe('re-reference', () => {
   it('counts a mention from another bundle', () => {
-    const r = uptake(at({ lastMentionIn: () => ({ at: '2026-08-20T00:00:00Z', bundle: 2 }) }))
+    const r = uptake(at({ mentionedElsewhereAfter: () => true }))
     expect(r.reuse).toBe(1)
     expect(r.reusedArtifacts).toBe(1)
   })
@@ -52,14 +53,26 @@ describe('re-reference', () => {
   it('does not count a read-back inside the same bundle', () => {
     // The attack this closes: reading your own output back to score. Axis 3
     // counts that as verification, and counting it twice would reward it.
-    const r = uptake(at({ lastMentionIn: () => ({ at: '2026-08-20T00:00:00Z', bundle: 1 }) }))
+    const r = uptake(at({ mentionedElsewhereAfter: () => false }))
     expect(r.reuse).toBe(0)
     expect(r.reusedArtifacts).toBe(0)
   })
 
-  it('does not count a mention with no bundle', () => {
-    const r = uptake(at({ lastMentionIn: () => ({ at: '2026-08-20T00:00:00Z', bundle: null }) }))
-    expect(r.reuse).toBe(0)
+  it('asks the index about the writing bundle and the write time, not the latest mention', () => {
+    // The shape that used to be wrong: written in bundle 1, re-used in 2,
+    // written again in 1. The latest mention is then the second write, in the
+    // writing bundle, so the old reading said never re-used -- a file someone
+    // kept maintaining scored as an abandoned one.
+    const seen: Array<{ path: string; bundle: number | null; after: string }> = []
+    uptake(
+      at({
+        mentionedElsewhereAfter: (path, bundle, after) => {
+          seen.push({ path, bundle, after })
+          return true
+        },
+      }),
+    )
+    expect(seen).toEqual([{ path: '/x/a.ts', bundle: 1, after: '2026-08-19T00:00:00Z' }])
   })
 
   it('weighs artifacts rather than counting them', () => {
@@ -69,7 +82,7 @@ describe('re-reference', () => {
       at({
         artifacts: [artifact({ path: '/a', weight: 3 }), artifact({ path: '/b', weight: 1 })],
         totalWeight: 4,
-        lastMentionIn: (p) => (p === '/a' ? { at: '2026-08-20T00:00:00Z', bundle: 9 } : null),
+        mentionedElsewhereAfter: (p) => p === '/a',
       }),
     )
     expect(r.reuse).toBeCloseTo(0.75)
@@ -84,9 +97,9 @@ describe('manual overwrite', () => {
   })
 
   it('lowers the score when it rises', () => {
-    const clean = uptake(at({ lastMentionIn: () => ({ at: 'x', bundle: 2 }) }))
+    const clean = uptake(at({ mentionedElsewhereAfter: () => true }))
     const edited = uptake(
-      at({ lastMentionIn: () => ({ at: 'x', bundle: 2 }), manuallyOverwritten: () => true }),
+      at({ mentionedElsewhereAfter: () => true, manuallyOverwritten: () => true }),
     )
     expect(edited.score).toBeLessThan(clean.score as number)
   })
@@ -136,7 +149,7 @@ describe('the dropped term', () => {
     // sum to 1 again. With everything reused and nothing overwritten the score
     // is 100, which it could not reach if the dropped term still occupied its
     // share.
-    const r = uptake(at({ lastMentionIn: () => ({ at: 'x', bundle: 2 }) }))
+    const r = uptake(at({ mentionedElsewhereAfter: () => true }))
     expect(r.score).toBeCloseTo(100)
     expect(WEIGHT_REUSE + WEIGHT_NOT_OVERWRITTEN).toBeCloseTo(0.7)
   })
@@ -153,7 +166,7 @@ describe('the score', () => {
       for (const edited of [true, false]) {
         const r = uptake(
           at({
-            lastMentionIn: () => (reused ? { at: 'x', bundle: 2 } : null),
+            mentionedElsewhereAfter: () => reused,
             manuallyOverwritten: () => edited,
           }),
         )

@@ -20,6 +20,16 @@ import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
 import { normalisePath, referenceIndex, type Mention, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
+import {
+  IN_AXIS2_NUMERATOR,
+  IN_REPAIR_SPLIT,
+  isExternalTool,
+  SUPPLIES_SIGNATURE,
+  attribute,
+  closure,
+  emptyTally,
+  type AttributionTally,
+} from './attribution.js'
 import { LARGE_OUTPUT_BYTES, isInvestigation, wastedTracker, type WastedCounts, type WastedTracker } from './wasted.js'
 import type { Signer } from '../snapshot/mac.js'
 import type { Hmac128 } from '../snapshot/types.js'
@@ -103,11 +113,30 @@ export const FORBIDDEN_SUBFIELDS = [
 export interface ScanCounts {
   readonly linesRead: number
   readonly linesParseFailed: number
+  /**
+   * Files the walk found and the scan could not open.
+   *
+   * Counted, because the alternative is a total that omits them with nothing
+   * to say so. `filesRead` counts what was enumerated; the difference is here.
+   */
+  readonly filesUnreadable: number
+  /** Files that opened and yielded no usable row. Counted for the same reason. */
+  readonly filesWithoutRows: number
   readonly bytesRead: number
   readonly mainLines: number
   readonly subLines: number
 
   readonly toolResultTotal: number
+  /** Every tool_use block. A reference value, per v2 §3.2. */
+  readonly toolUseTotal: number
+  /**
+   * tool_use blocks after the attribution table's external exclusion.
+   *
+   * The quantity v1 and v2 both name for axis 2's availability. The gate used
+   * to be fed `toolResultTotal`, which is a different block type, unfiltered,
+   * and explicitly designated a reference value.
+   */
+  readonly toolUseFiltered: number
   readonly toolResultWithIsErrorKey: number
   readonly toolResultIsErrorTrue: number
 
@@ -156,6 +185,10 @@ export interface ScanCounts {
   readonly lastMention: (path: string) => string | null
   /** The latest mention with its bundle, for axis 4's cross-bundle rule. */
   readonly lastMentionIn: (path: string) => Mention | null
+  /** Whether a request other than the writing one referred to a path afterwards. */
+  readonly mentionedElsewhereAfter: (path: string, bundle: number | null, after: string) => boolean
+  /** Basenames seen under more than one full path, so the fallback can be sized. */
+  readonly ambiguousBasenames: number
   /** Distinct path-shaped tokens seen, so an empty index reads as empty. */
   readonly referenceTokens: number
   /**
@@ -188,6 +221,14 @@ export interface ScanCounts {
    * things.
    */
   readonly signatures: readonly Hmac128[]
+  /**
+   * Signatures this window saw at least twice.
+   *
+   * v1's `S_t`. The cross-window rate is `|S_t ∩ S_(t-1)| / |S_t|`, and it is
+   * the ≥2 set on purpose: a failure that happened once is not yet a pattern,
+   * and intersecting one-offs would measure coincidence.
+   */
+  readonly signaturesRepeated: readonly Hmac128[]
   readonly signaturesSigned: boolean
   /** Rows carrying a tool_use or tool_result block — axis 2's evidence lines. */
   readonly toolActivityRows: number
@@ -221,6 +262,15 @@ export interface ScanCounts {
 
   readonly denialRows: number
   readonly denialUserRejected: number
+  /**
+   * Every `toolDenialKind` value seen, with its count.
+   *
+   * Emitted rather than folded into a boolean because the spec names two kinds
+   * and this machine produces four. Which values exist decides how 95 of 412
+   * failures are attributed, and an implementation that silently drops the ones
+   * it does not recognise reports a different number without saying so.
+   */
+  readonly denialKinds: Readonly<Record<string, number>>
 
   readonly editedFilesDistinct: number
   readonly editedFilesRepeated: number
@@ -295,6 +345,15 @@ export interface ScanCounts {
  * subagent transcript lands in its parent's cluster.
  */
 export interface SessionTally {
+  /**
+   * Edit intervals this session opened.
+   *
+   * Per session because a cluster is a session with a non-zero denominator
+   * *for that axis*, and the axes do not share a denominator. Counting every
+   * session that produced a line over-counts clusters for every axis, in the
+   * direction that lets a minimum pass.
+   */
+  readonly intervals: number
   readonly bundles: number
   readonly failures: number
   readonly writeRepeats: number
@@ -306,6 +365,7 @@ export interface SessionTally {
 }
 
 interface MutSessionTally {
+  intervals: number
   bundles: number
   failures: number
   writeRepeats: number
@@ -365,12 +425,27 @@ export interface VerificationCounts {
   readonly verifiedIntervals: number
   /** Whether TodoWrite was used at all. v1 deducts five points when it was not. */
   readonly todoWriteUsed: boolean
-  /** Failures that a later success on the same target cleared, with no human turn between. */
+  /**
+   * Failures a later success on the same target cleared, inside three attempts,
+   * with no human turn between, and whose error class was new to the session.
+   *
+   * The last clause is v1's anti-gaming rule: without it, alternating a command
+   * that always fails with one that always succeeds drives the rate to 1.0.
+   */
   readonly selfRepaired: number
   /** Failures where a human turn came before the recovery. */
   readonly humanRescued: number
-  /** Failures nothing cleared. The only third of the split that is deducted for. */
+  /** Failures nothing cleared. The only part of the split that is deducted for. */
   readonly unresolved: number
+  /**
+   * Failures that were cleared but do not count towards the repair rate:
+   * cleared past the third attempt, or of a class the session had already seen.
+   *
+   * They stay in the denominator and enter neither numerator. Booking them as
+   * unresolved would deduct for a failure the agent actually fixed, which is a
+   * penalty for recovering slowly or for recovering from something familiar.
+   */
+  readonly repairedNotCounted: number
 }
 
 export interface ProjectTally {
@@ -391,10 +466,14 @@ interface DateSets {
 interface Mut {
   linesRead: number
   linesParseFailed: number
+  filesUnreadable: number
+  filesWithoutRows: number
   bytesRead: number
   mainLines: number
   subLines: number
   toolResultTotal: number
+  toolUseTotal: number
+  toolUseFiltered: number
   toolResultWithIsErrorKey: number
   toolResultIsErrorTrue: number
   attributionSkillRows: number
@@ -404,6 +483,7 @@ interface Mut {
   originHumanRows: number
   denialRows: number
   denialUserRejected: number
+  denialKinds: Map<string, number>
   sessionIdMismatchRows: number
   taskBundles: number
   toolActivityRows: number
@@ -417,6 +497,7 @@ interface Mut {
   selfRepaired: number
   humanRescued: number
   unresolved: number
+  repairedNotCounted: number
   rootBundles: number
   orphanBundles: number
   environmentNoiseRows: number
@@ -488,9 +569,25 @@ interface MutMetabolism {
   effectiveInputPerCall: number[]
 }
 
+/**
+ * A failure waiting to see whether anything cleared it.
+ *
+ * `firstSeenClass` is v1's anti-gaming clause: S's numerator counts only
+ * failures whose error class was new to the session. Without it, alternating a
+ * command that always fails with one that always succeeds drives S to 1.0.
+ */
+interface PendingFailure {
+  attempts: number
+  humanSince: boolean
+  firstSeenClass: boolean
+}
+
 interface MutWasted {
   failures: number
   hookOriginated: number
+  /** Every is_error seen, counted before any attribution. The closure check needs it. */
+  errorsObserved: number
+  attribution: AttributionTally
   writeRepeats: number
   investigationRepeats: number
   timedOut: number
@@ -515,7 +612,16 @@ const INSPECT_TOOLS = new Set(['Read', 'Grep', 'Bash', 'Glob'])
 /** v1: a failure cleared within three attempts is a repair. */
 const MAX_REPAIR_ATTEMPTS = 3
 
-const HOOK_ORIGINATED = /(Pre|Post)ToolUse:/
+
+/** The MACs seen at least twice, sorted. v1's `S_t`. */
+const repeatedOf = (macs: readonly Hmac128[]): readonly Hmac128[] => {
+  const seen = new Map<string, number>()
+  for (const mac of macs) seen.set(mac, (seen.get(mac) ?? 0) + 1)
+  return [...seen.entries()]
+    .filter(([, n]) => n >= 2)
+    .map(([mac]) => mac as Hmac128)
+    .sort()
+}
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -538,6 +644,7 @@ function reduceLine(
   st: MutSessionTally,
   notHuman: Map<string, number>,
   bundles: BundleTracker,
+  subBundle: number | null,
   paths: Map<string, MutPathTally>,
   refs: ReferenceIndex,
   toolOf: Map<string, { name: string; target: string }>,
@@ -549,7 +656,8 @@ function reduceLine(
   met: MutMetabolism,
   manual: MutManualEdits,
   openEdits: Map<string, boolean>,
-  pending: Map<string, { attempts: number; humanSince: boolean }>,
+  pending: Map<string, PendingFailure>,
+  seenClasses: Set<string>,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -653,10 +761,19 @@ function reduceLine(
     met.mcpFirings.set(server, (met.mcpFirings.get(server) ?? 0) + 1)
   }
 
+  // Row level, not inside toolUseResult. The other machine measured 0 against
+  // the nested path and 62 against the row; a path nobody writes down is a path
+  // each implementation guesses differently.
   const denial = row['toolDenialKind']
-  if (typeof denial === 'string') {
+  const denialKind = typeof denial === 'string' && denial.length > 0 ? denial : null
+  if (denialKind !== null) {
     m.denialRows += 1
-    if (denial === 'user-rejected') m.denialUserRejected += 1
+    if (denialKind === 'user-rejected') m.denialUserRejected += 1
+    // Kept by name. The spec's union has two members and this machine emits
+    // four; the two extra carry 95 of 412 failures here and none at all on the
+    // machine the spec was written against. A value nobody enumerated is how an
+    // environment-specific figure gets read as an environment difference.
+    m.denialKinds.set(denialKind, (m.denialKinds.get(denialKind) ?? 0) + 1)
   }
 
   let human = false
@@ -683,10 +800,15 @@ function reduceLine(
     }
   }
 
-  // P5 — every row joins a bundle, so a later stage can group by it. Only main
-  // transcripts carry the chain; a subagent file is work inside one bundle, not
-  // a sequence of requests.
-  const bundle = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : null
+  // P5 — every row joins a bundle, so a later stage can group by it.
+  //
+  // Main transcripts carry the parentUuid chain. A subagent file does not: it
+  // is work inside one request rather than a sequence of them, and every row in
+  // it belongs to the delegation that spawned it. Giving them all `null`
+  // collapsed 294 files into one pseudo-bundle, which put every subagent
+  // artifact the machine ever produced under a single three-per-bundle cap and
+  // made repeat detection compare unrelated agents with each other.
+  const bundle = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : subBundle
 
   // P6 — a write's landing place and size, from the result rather than the
   // call: the call says where, the result says how much.
@@ -760,47 +882,98 @@ function reduceLine(
         if (block['is_error'] !== true && typeof okId === 'string') {
           const okCall = toolOf.get(okId)
           const okKey = `${okCall?.name ?? 'unknown'} ${okCall?.target ?? ''}`
-          const st = pending.get(okKey)
-          if (st !== undefined) {
-            // Within three attempts and with no human turn in between is a
-            // repair. With a human turn it is a rescue, which v1 counts apart
-            // and deducts for neither.
-            if (st.humanSince) m.humanRescued += 1
-            else if (st.attempts <= MAX_REPAIR_ATTEMPTS) m.selfRepaired += 1
-            else m.unresolved += 1
+          const settled = pending.get(okKey)
+          if (settled !== undefined) {
+            // v1's three-way split, plus the bucket its two clauses imply.
+            //
+            // A human turn in between makes it a rescue, which v1 counts apart
+            // and deducts for neither. Within three attempts, no human turn and
+            // a class new to the session is a self-repair. Everything else was
+            // still cleared, so it cannot be called unresolved -- that term is
+            // the only one the score deducts for, and deducting for a failure
+            // the agent fixed would be a penalty for recovering slowly or for
+            // recovering from something familiar.
+            if (settled.humanSince) m.humanRescued += 1
+            else if (settled.attempts <= MAX_REPAIR_ATTEMPTS && settled.firstSeenClass) {
+              m.selfRepaired += 1
+            } else m.repairedNotCounted += 1
             pending.delete(okKey)
           }
         }
         if (block['is_error'] === true) {
           m.toolResultIsErrorTrue += 1
+          w.errorsObserved += 1
           const text = resultText(block)
-          // A guardrail firing is the guardrail working, not wasted motion.
-          // Excluded from numerator and denominator both, per v1.
-          if (HOOK_ORIGINATED.test(text)) w.hookOriginated += 1
-          else {
-            w.failures += 1
-            st.failures += 1
-          }
-          st.errors += 1
           // Joined to the call by tool_use_id. Without the join the class is
           // known and the tool is not, and (class, target) alone collapses a
           // Bash failure and an Edit failure into one signature.
-          const id = block['tool_use_id']
-          const call = typeof id === 'string' ? toolOf.get(id) : undefined
-          // The plaintext tuple stays in this frame. `repeatRate` reads it
-          // below; only the MAC and the aggregates come out.
-          const tuple: readonly [string, ErrorClass, string] = [
-            call?.name ?? 'unknown',
-            classifyError(text),
-            call?.target ?? '',
-          ]
-          tuples.push(tuple)
-          if (sign !== null) macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+          const errId = block['tool_use_id']
+          const call = typeof errId === 'string' ? toolOf.get(errId) : undefined
+          const errorClass = classifyError(text)
+
+          // One event, one axis, decided before anything is charged. A call a
+          // permission rule refused used to be charged to the agent as wasted
+          // motion *and* credited to the environment as a guardrail working.
+          // 407 failures here attribute to 187.
+          const attributed = attribute({
+            denialKind,
+            text,
+            tool: call?.name ?? null,
+            errorClass,
+          })
+          w.attribution[attributed] += 1
+
+          if (IN_AXIS2_NUMERATOR[attributed]) {
+            w.failures += 1
+            st.failures += 1
+          } else {
+            // Everything the table takes out of axis 2: denials of every kind,
+            // the network, and the stale reads axis 3 scores instead.
+            w.hookOriginated += 1
+          }
+          st.errors += 1
+
+          // Only what axis 2 charged supplies a signature. A refused call in the
+          // recurrence set would make one guardrail firing twice look like the
+          // same failure coming back.
+          // Axis 3's split. Only failures the work produced: a denied call
+          // never ran, so there is nothing for anyone to recover from.
+          if (IN_REPAIR_SPLIT[attributed]) {
+            const key = `${call?.name ?? 'unknown'} ${call?.target ?? ''}`
+            const open = pending.get(key)
+            if (open === undefined) {
+              pending.set(key, {
+                attempts: 1,
+                humanSince: false,
+                firstSeenClass: !seenClasses.has(errorClass),
+              })
+            } else {
+              open.attempts += 1
+            }
+            seenClasses.add(errorClass)
+          }
+
+          if (SUPPLIES_SIGNATURE[attributed]) {
+            // The plaintext tuple stays in this frame. `repeatRate` reads it
+            // below; only the MAC and the aggregates come out.
+            const tuple: readonly [string, ErrorClass, string] = [
+              call?.name ?? 'unknown',
+              errorClass,
+              call?.target ?? '',
+            ]
+            tuples.push(tuple)
+            if (sign !== null) macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+          }
         }
       }
     } else if (block['type'] === 'tool_use') {
       const id = block['id']
       const toolName = block['name']
+      m.toolUseTotal += 1
+      // Axis 2's availability is defined on filtered tool_use. The network is
+      // not the environment under test, so it does not count towards having
+      // enough evidence to judge one.
+      if (typeof toolName !== 'string' || !isExternalTool(toolName)) m.toolUseFiltered += 1
       if (typeof id === 'string' && typeof toolName === 'string') {
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
       }
@@ -815,6 +988,7 @@ function reduceLine(
             const wasVerified = openEdits.get(key)
             if (wasVerified !== undefined) {
               m.intervals += 1
+              st.intervals += 1
               if (wasVerified) m.verifiedIntervals += 1
             }
             openEdits.set(key, false)
@@ -890,12 +1064,12 @@ export function scan(
   sign: Signer | null = null,
 ): ScanCounts {
   const m: Mut = {
-    linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
-    toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
+    linesRead: 0, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 0, mainLines: 0, subLines: 0,
+    toolResultTotal: 0, toolUseTotal: 0, toolUseFiltered: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
+    denialRows: 0, denialUserRejected: 0, denialKinds: new Map<string, number>(), sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
     intervals: 0, verifiedIntervals: 0, todoWriteUsed: false,
-    selfRepaired: 0, humanRescued: 0, unresolved: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    selfRepaired: 0, humanRescued: 0, unresolved: 0, repairedNotCounted: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -912,6 +1086,8 @@ export function scan(
   const tuples: Array<readonly [string, ErrorClass, string]> = []
   const macs: Hmac128[] = []
   const perSession = new Map<string, MutSessionTally>()
+  const seenClassBySession = new Map<string, Set<string>>()
+  const subBundles = new Map<string, number>()
   const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
@@ -922,13 +1098,33 @@ export function scan(
   }
   const wasted = wastedTracker()
   const w: MutWasted = {
-    failures: 0, hookOriginated: 0, writeRepeats: 0, investigationRepeats: 0,
+    failures: 0, hookOriginated: 0, errorsObserved: 0, attribution: emptyTally(),
+    writeRepeats: 0, investigationRepeats: 0,
     timedOut: 0, largeOutput: 0, callsPerBundle: new Map<string, number>(),
   }
   let bundleSeq = 0
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
 
   for (const file of inv.files) {
+    // Read first, and count a failure.
+    //
+    // The read used to sit after the bytes were added and after a per-session
+    // entry had been created, and its catch incremented nothing. An unreadable
+    // transcript then left `filesRead` counting it, `linesParseFailed` at zero,
+    // the gate green, and every count short together so the identities still
+    // closed -- indistinguishable from a quiet month. Worse, the orphaned
+    // session entry broke `sessions-close` and refused the whole snapshot, so
+    // one zero-byte file cost every later window its baseline for as long as
+    // it existed.
+    let text = ''
+    try {
+      text = (read ?? ((p: string) => readFileSync(p, 'utf8')))(file.path)
+    } catch {
+      m.filesUnreadable += 1
+      continue
+    }
+    m.bytesRead += file.bytes
+
     let proj = perProject.get(file.project)
     if (proj === undefined) {
       proj = { lines: 0, subLines: 0, humanRows: 0 }
@@ -936,38 +1132,65 @@ export function scan(
     }
     const bundles = bundleTracker(nextBundleId)
     const openEdits = new Map<string, boolean>()
-    const pending = new Map<string, { attempts: number; humanSince: boolean }>()
+    const pending = new Map<string, PendingFailure>()
+    // Per session, not per file: v1 says "first seen in that session", and a
+    // session is one main transcript plus the subagent files hanging off it.
+    let seenClasses = seenClassBySession.get(file.sessionId)
+    if (seenClasses === undefined) {
+      seenClasses = new Set<string>()
+      seenClassBySession.set(file.sessionId, seenClasses)
+    }
     let st = perSession.get(file.sessionId)
     if (st === undefined) {
       st = {
-        bundles: 0, failures: 0, writeRepeats: 0, investigationRepeats: 0,
+        intervals: 0, bundles: 0, failures: 0, writeRepeats: 0, investigationRepeats: 0,
         timedOut: 0, largeOutput: 0, errors: 0, lines: 0,
       }
       perSession.set(file.sessionId, st)
     }
-    m.bytesRead += file.bytes
-    let text = ''
-    try {
-      text = (read ?? ((p: string) => readFileSync(p, 'utf8')))(file.path)
-    } catch {
-      // Unreadable file: every one of its lines is unaccounted for, and saying
-      // so is better than a total that silently omits them.
-      continue
+    // One bundle per delegation, shared by every agent transcript under it, and
+    // allocated once so a second file in the same group joins rather than opens
+    // its own. Counted against the parent session, which is where the request
+    // that made the delegation came from.
+    let subBundle: number | null = null
+    if (file.kind === 'sub' && file.group !== null) {
+      const existing = subBundles.get(file.group)
+      if (existing === undefined) {
+        subBundle = nextBundleId()
+        subBundles.set(file.group, subBundle)
+        m.taskBundles += 1
+        st.bundles += 1
+      } else {
+        subBundle = existing
+      }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
     // missing one.
     for (const verified of openEdits.values()) {
       m.intervals += 1
+      st.intervals += 1
       if (verified) m.verifiedIntervals += 1
     }
     // Failures nothing ever cleared.
     m.unresolved += pending.size
-    st.bundles += bundles.opened()
-    m.taskBundles += bundles.opened()
+    // Every bundle that exists, not only the ones a human turn opened. A chain
+    // root and an orphan are bundles: their calls are charged to axis 2's
+    // numerator, so leaving them out of the denominator raises W by counting
+    // work against fewer requests than actually happened.
+    // A file that opened and produced nothing leaves no session behind. The
+    // per-session entry is created before the lines are read, and an orphaned
+    // one breaks `sessions-close` and refuses the entire snapshot.
+    if (!sessions.has(file.sessionId) && st.lines === 0) {
+      perSession.delete(file.sessionId)
+      m.filesWithoutRows += 1
+    }
+    const opened = bundles.opened() + bundles.roots() + bundles.orphans()
+    st.bundles += opened
+    m.taskBundles += opened
     m.rootBundles += bundles.roots()
     m.orphanBundles += bundles.orphans()
   }
@@ -978,10 +1201,14 @@ export function scan(
   return {
     linesRead: m.linesRead,
     linesParseFailed: m.linesParseFailed,
+    filesUnreadable: m.filesUnreadable,
+    filesWithoutRows: m.filesWithoutRows,
     bytesRead: m.bytesRead,
     mainLines: m.mainLines,
     subLines: m.subLines,
     toolResultTotal: m.toolResultTotal,
+    toolUseTotal: m.toolUseTotal,
+    toolUseFiltered: m.toolUseFiltered,
     toolResultWithIsErrorKey: m.toolResultWithIsErrorKey,
     toolResultIsErrorTrue: m.toolResultIsErrorTrue,
     attributionSkillRows: m.attributionSkillRows,
@@ -1016,6 +1243,7 @@ export function scan(
       selfRepaired: m.selfRepaired,
       humanRescued: m.humanRescued,
       unresolved: m.unresolved,
+      repairedNotCounted: m.repairedNotCounted,
     },
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,
@@ -1023,11 +1251,16 @@ export function scan(
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
     lastMentionIn: refs.lastMentionIn,
+    mentionedElsewhereAfter: refs.mentionedElsewhereAfter,
+    ambiguousBasenames: refs.ambiguousBasenames(),
     referenceTokens: refs.size(),
     errorRepeats: repeatRate(tuples),
     wasted: {
       failures: w.failures,
       hookOriginated: w.hookOriginated,
+      errorsObserved: w.errorsObserved,
+      attribution: { ...w.attribution },
+      closure: closure(w.attribution, w.errorsObserved),
       writeRepeats: w.writeRepeats,
       investigationRepeats: w.investigationRepeats,
       timedOut: w.timedOut,
@@ -1036,9 +1269,11 @@ export function scan(
     },
     perSession: Object.fromEntries([...perSession.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     signatures: macs,
+    signaturesRepeated: repeatedOf(macs),
     signaturesSigned: sign !== null,
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
+    denialKinds: Object.fromEntries([...m.denialKinds.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     editedFilesDistinct: edits.size,
     editedFilesRepeated: repeated,
     stopHookSummaryRows: m.stopHookSummaryRows,

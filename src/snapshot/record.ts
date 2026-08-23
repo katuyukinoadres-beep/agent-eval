@@ -108,11 +108,12 @@ export interface Completeness {
   /** True only when every scored axis is measured. False for a long time yet. */
   readonly schemaComplete: boolean
   /**
-   * Whether this snapshot may supply a `compositeThen` to a later comparison.
+   * Whether this snapshot produced a composite at all.
    *
-   * A composite over one axis and a composite over six are different
-   * quantities, and comparing them measures the change in the axis set. Making
-   * the refusal a stored flag rather than a remembered rule is the point.
+   * Whether two composites may be *compared* is a separate question, decided by
+   * the comparison from the axis sets stored beside this flag: a composite over
+   * four axes and one over six are different quantities. Folding both questions
+   * into one boolean made it false on every run.
    */
   readonly compositeComparable: boolean
   /** Scored axes with no measurement. In SCORED_AXES order. */
@@ -188,6 +189,14 @@ export interface AxisRecord {
   readonly numeratorE4: E4 | null
   readonly denominator: number | null
   readonly scoreE4: E4 | null
+  /**
+   * Whether this axis missed one of the three minimum conditions.
+   *
+   * Stored rather than re-derived, and read from the axis rather than assumed:
+   * a comparison uses it to decide whether a delta may be named, and asserting
+   * it made every axis look short whether it was or not.
+   */
+  readonly belowMinDenominator: boolean
   readonly sampling: AxisSampling | null
   readonly omittedTerms: readonly OmittedTerm[]
 }
@@ -197,9 +206,23 @@ export interface SignatureFamily {
   readonly count: number
 }
 
+/**
+ * What the sidecar holds, beside the body it is committed to.
+ *
+ * `members` is every distinct signature; `repeated` is v1's `S_t`, the ones
+ * seen at least twice. The cross-window rate intersects `repeated` sets, and
+ * it has to be stored because a later window cannot recover this one's.
+ */
+export interface Sidecar {
+  readonly members: readonly Hmac128[]
+  readonly repeated: readonly Hmac128[]
+}
+
 export interface SignatureSets {
   /** Distinct signature MACs. The members live in the sidecar. */
   readonly memberCount: number
+  /** Of those, the ones seen at least twice. v1's `S_t`. */
+  readonly repeatedCount: number
   readonly errors: number
   readonly byFamily: readonly SignatureFamily[]
 }
@@ -216,6 +239,12 @@ export interface Snapshot {
   readonly chain: ChainLink
   readonly key: KeyRef
   readonly countBasis: CountBasis
+  /**
+   * The composite, in ten-thousandths, or null when it was withheld.
+   *
+   * A later window needs this to take a delta, and nothing else keeps it.
+   */
+  readonly compositeE4: number | null
   readonly completeness: Completeness
   readonly span: ObservedSpan
   readonly scan: ScanRecord
@@ -246,6 +275,11 @@ export const IDENTITY_NAMES = [
   'day-nesting',
   'signature-members',
   'axis-denominator-close',
+  'signature-repeated-within-members',
+  // The attribution partition against the failures counted before it ran.
+  'attribution-closes',
+  // Axis 3's four buckets against the failures the attribution routed to them.
+  'repair-split-within-failures',
 ] as const
 
 export type IdentityName = (typeof IDENTITY_NAMES)[number]
@@ -343,6 +377,10 @@ export const emptyAxisRecord = (): AxisRecord => ({
   numeratorE4: null,
   denominator: null,
   scoreE4: null,
+  // An axis with no formula has no denominator to be short of, and `true` is
+  // the reading that refuses to name a change rather than the one that allows
+  // it.
+  belowMinDenominator: true,
   sampling: null,
   omittedTerms: [],
 })

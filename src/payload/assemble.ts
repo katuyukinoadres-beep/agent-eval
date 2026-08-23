@@ -87,6 +87,34 @@ export interface AssembleInputs {
   readonly submissionId: string
   /** Hashes project directory names. Injected so the test does not need a real digest. */
   readonly hashProject: (name: string) => string
+  /**
+   * The previous window's repeated-signature set, or null.
+   *
+   * Null on a first window, when no store is open, and when the key changed --
+   * the MACs mean nothing across a key change, and intersecting them would
+   * produce an empty set that reads as a perfect score.
+   */
+  readonly previousRepeated: readonly string[] | null
+}
+
+/**
+ * v1's `r_cross`: the share of this window's repeated signatures that the last
+ * window also repeated.
+ *
+ * Null rather than zero whenever there is nothing to divide by or nothing to
+ * compare against. An empty intersection over an empty set is 0/0, and
+ * reporting it as 0 reads as "no failure recurred" -- the flattering direction,
+ * arrived at by accident.
+ */
+export function crossWindowRate(
+  now: readonly string[],
+  previous: readonly string[] | null,
+): number | null {
+  if (previous === null || now.length === 0) return null
+  const before = new Set(previous)
+  let carried = 0
+  for (const mac of now) if (before.has(mac)) carried += 1
+  return carried / now.length
 }
 
 export interface Assembled {
@@ -124,10 +152,14 @@ function rateOrNull(
  * is not built.
  */
 function axisReasons(clusters: number, gated: boolean): Readonly<Record<string, readonly UnavailableReason[]>> {
-  // Only the cluster term. The denominator and numerator terms of the minimum
-  // are real conditions, but no axis has computed a denominator yet, and
-  // reporting a shortfall against a figure that was never measured invents a
-  // finding. `definition-pending` is what is true about those axes.
+  // Only the cluster term, and only for the axes this map serves.
+  //
+  // The denominator and numerator terms are real conditions, but the axes
+  // reached from here have not computed a denominator, and reporting a
+  // shortfall against a figure that was never measured invents a finding --
+  // eleven of them were reported that way once. `definition-pending` is what is
+  // true about these axes. The four axes that do compute a denominator take
+  // their verdict from their own measured values instead, above.
   const short = meetsMinimum({ clusters, denominator: MIN_DENOMINATOR, numerator: MIN_NUMERATOR })
   const sample: readonly UnavailableReason[] = gated
     ? ['environment-gated', ...short.reasons]
@@ -176,8 +208,19 @@ export function assemble(inputs: AssembleInputs): Assembled {
     activeDays: window.window.activeDays,
   })
 
-  // Clusters are sessions, which is what the spec's bootstrap resamples over.
+  // Clusters are sessions, which is what the spec's bootstrap resamples over --
+  // but a cluster is a session with a non-zero denominator *for that axis*, and
+  // the axes do not share a denominator. Counting every session that produced a
+  // line over-counts clusters on every axis at once, in the direction that lets
+  // a minimum pass.
+  const sessions = Object.values(counts.perSession)
+  const clustersWith = (has: (t: (typeof sessions)[number]) => boolean): number =>
+    sessions.filter(has).length
+  /** Sessions at all. The fallback where no per-session denominator exists. */
   const clusters = counts.sessionIds.length
+  const clustersByBundle = clustersWith((t) => t.bundles > 0)
+  const clustersByInterval = clustersWith((t) => t.intervals > 0)
+  const clustersByError = clustersWith((t) => t.errors > 0)
   const reasons = axisReasons(clusters, !verdict.totalAllowed)
 
   // Axis 2 is available on its own condition -- filtered tool_use of at least
@@ -186,7 +229,10 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // question from whether the rate exists. Conflating them reported a machine
   // with 8,502 tool calls as having nothing to measure.
   const motion = wastedMotion(counts.wasted, counts.errorRepeats.rIn, counts.taskBundles)
-  const toolCalls = counts.toolResultTotal
+  // Filtered tool_use, which is what v1 and v2 both name. It used to be fed
+  // `toolResultTotal` -- a different block type, unfiltered, and designated a
+  // reference value by the same spec that sets this threshold.
+  const toolCalls = counts.toolUseFiltered
   const axis2Available = toolCalls >= MIN_FILTERED_CALLS && motion.score !== null
 
   const axisFor = (key: string): Axis => ({
@@ -204,7 +250,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
   })
 
   const minimum = meetsMinimum({
-    clusters,
+    clusters: clustersByBundle,
     denominator: motion.bundles,
     numerator: Math.floor(motion.numerator),
   })
@@ -279,10 +325,17 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // snapshot that omitted them would lose them for good.
     score: null,
     confidenceInterval: null,
+    // Measured values, not clamped ones. Passing `Math.max(measured, MIN)` and
+    // then testing `< MIN` is a condition that cannot fail: it reported every
+    // denominator as sufficient however small it was, which let a delta be
+    // called an improvement off twelve artifacts.
+    //
+    // Axis 5's denominator is assets, which are defined machine-wide rather
+    // than per session, so this keeps the session count and says so.
     belowMinDenominator: !meetsMinimum({
       clusters,
-      denominator: Math.max(met.assets, MIN_DENOMINATOR),
-      numerator: Math.max(met.firedAssets, MIN_NUMERATOR),
+      denominator: met.assets,
+      numerator: met.firedAssets,
     }).meetsMinimum,
     unavailableReasons: ['definition-pending'],
     omittedTerms: met.omitted.map(
@@ -312,7 +365,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     artifacts: inputs.artifacts.artifacts,
     totalWeight: inputs.artifacts.totalWeight,
     bundles: counts.taskBundles,
-    lastMentionIn: counts.lastMentionIn,
+    mentionedElsewhereAfter: counts.mentionedElsewhereAfter,
     manuallyOverwritten: (p) => stale.has(p) || editedNames.has(basename(p)),
     firstWindow: true,
   })
@@ -327,10 +380,12 @@ export function assemble(inputs: AssembleInputs): Assembled {
     metric: null,
     score: up.score === null ? null : Math.round(up.score * 100) / 100,
     confidenceInterval: null,
+    // Artifacts are keyed by bundle, and a bundle belongs to a session, so the
+    // sessions that opened a bundle are the ones that could hold one.
     belowMinDenominator: !meetsMinimum({
-      clusters,
-      denominator: Math.max(up.artifacts, MIN_DENOMINATOR),
-      numerator: Math.max(up.reusedArtifacts, MIN_NUMERATOR),
+      clusters: clustersByBundle,
+      denominator: up.artifacts,
+      numerator: up.reusedArtifacts,
     }).meetsMinimum,
     unavailableReasons:
       up.unavailable === null
@@ -348,6 +403,10 @@ export function assemble(inputs: AssembleInputs): Assembled {
       reuseE4: Math.round((up.reuse ?? 0) * 10_000),
       overwrittenE4: Math.round((up.overwritten ?? 0) * 10_000),
       bundles: up.bundles,
+      // Sizes the bare-filename fallback. A mention of a name shared by two
+      // paths is not evidence about either, and this says how much of the log
+      // is in that state.
+      ambiguousBasenames: counts.ambiguousBasenames,
     },
   }
 
@@ -359,6 +418,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     selfRepaired: counts.verification.selfRepaired,
     humanRescued: counts.verification.humanRescued,
     unresolved: counts.verification.unresolved,
+    repairedNotCounted: counts.verification.repairedNotCounted,
     todoWriteUsed: counts.verification.todoWriteUsed,
     firstWindow: true,
   })
@@ -374,9 +434,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     score: ver.score === null ? null : Math.round(ver.score * 100) / 100,
     confidenceInterval: null,
     belowMinDenominator: !meetsMinimum({
-      clusters,
-      denominator: Math.max(ver.intervals, MIN_DENOMINATOR),
-      numerator: Math.max(counts.verification.verifiedIntervals, MIN_NUMERATOR),
+      clusters: clustersByInterval,
+      denominator: ver.intervals,
+      numerator: counts.verification.verifiedIntervals,
     }).meetsMinimum,
     unavailableReasons: ver.unavailable === null ? [] : ['insufficient-edit-intervals'],
     omittedTerms: ver.omitted.map(
@@ -394,6 +454,10 @@ export function assemble(inputs: AssembleInputs): Assembled {
       selfRepaired: counts.verification.selfRepaired,
       humanRescued: counts.verification.humanRescued,
       unresolved: counts.verification.unresolved,
+      // The fourth bucket. Without it the four numbers here do not sum to
+      // `failures`, and a reader checking the arithmetic finds a gap with no
+      // name -- which is how a term gets assumed to be zero.
+      repairedNotCounted: counts.verification.repairedNotCounted,
       todoWriteUsed: counts.verification.todoWriteUsed ? 1 : 0,
     },
   }
@@ -403,8 +467,12 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // two windows must never be compared across that switch.
   const rec = recurrence({
     rIn: counts.errorRepeats.rIn,
+    rCross: crossWindowRate(counts.signaturesRepeated, inputs.previousRepeated),
+    // Two runs over an all-time count are the same corpus twice, so every
+    // repeated signature carries over and r_cross is 1.0 by construction.
+    periodsDiffer: COUNT_BASIS.period !== 'allTime',
     errors: counts.errorRepeats.errors,
-    firstWindow: true,
+    firstWindow: inputs.previousRepeated === null,
     hasExternalHookLog: false,
   })
 
@@ -419,9 +487,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     score: rec.score === null ? null : Math.round(rec.score * 100) / 100,
     confidenceInterval: null,
     belowMinDenominator: !meetsMinimum({
-      clusters,
-      denominator: Math.max(rec.errors, MIN_DENOMINATOR),
-      numerator: Math.max(counts.errorRepeats.distinctSignatures, MIN_NUMERATOR),
+      clusters: clustersByError,
+      denominator: rec.errors,
+      numerator: counts.errorRepeats.distinctSignatures,
     }).meetsMinimum,
     unavailableReasons: rec.unavailable === null ? [] : ['no-external-log'],
     omittedTerms: rec.omitted.map(
@@ -490,6 +558,8 @@ export function assemble(inputs: AssembleInputs): Assembled {
     filesRead: inventory.files.length,
     linesRead,
     linesParseFailed: counts.linesParseFailed,
+    filesUnreadable: counts.filesUnreadable,
+    filesWithoutRows: counts.filesWithoutRows,
     bytesRead: counts.bytesRead,
     mainFiles: inventory.files.filter((f) => f.kind === 'main').length,
     mainLines: counts.mainLines,
@@ -507,6 +577,14 @@ export function assemble(inputs: AssembleInputs): Assembled {
       sourceField: 'origin.kind',
     }),
     countBasis: COUNT_BASIS,
+    failureAttribution: {
+      observed: counts.wasted.errorsObserved,
+      inAxis2Numerator: counts.wasted.closure.numerator,
+      excluded: counts.wasted.closure.excluded,
+      balanced: counts.wasted.closure.balanced,
+      byId: counts.wasted.attribution,
+      denialKinds: counts.denialKinds,
+    },
     window: window.window,
     externalLog: {
       exists: window.externalRows > 0,

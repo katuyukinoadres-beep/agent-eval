@@ -46,6 +46,19 @@ export interface FileEntry {
    * only place the relationship is recorded once you stop trusting isSidechain.
    */
   readonly sessionId: string
+  /**
+   * For a subagent transcript, the directory holding it. Null for a main one.
+   *
+   * The layout is `<session>/subagents/workflows/wf_<id>/agent-N.jsonl`, and
+   * `wf_<id>` is one delegation: the agents under it were spawned by a single
+   * request. It is the closest thing in the tree to the bundle a subagent
+   * transcript belongs to, and both alternatives are worse -- the parent
+   * session lumps every delegation it ever made into one bundle, and the file
+   * itself splits one request into as many bundles as it spawned agents.
+   *
+   * Measured here: 294 subagent files, 31 delegations, 8 parent sessions.
+   */
+  readonly group: string | null
   readonly bytes: number
 }
 
@@ -53,6 +66,14 @@ export interface ProjectInventory {
   readonly project: string
   readonly mainFiles: number
   readonly subFiles: number
+  /**
+   * Archived sessions, counted apart from `mainFiles`.
+   *
+   * They are main transcripts and are walked as such, but a figure that moves
+   * when a client archives a session has to be visible as its own number, or
+   * the next window's change gets read as the environment moving.
+   */
+  readonly archivedFiles: number
   readonly bytes: number
 }
 
@@ -64,8 +85,28 @@ export interface Inventory {
 
 export const MAIN_GLOB = 'projects/*/*.jsonl'
 export const SUB_GLOB = 'projects/*/*/subagents/**/*.jsonl'
+/**
+ * Sessions the client moved aside. Still transcripts, still this environment.
+ *
+ * Missing this glob costs nothing visible: nothing fails to parse, no counter
+ * moves, and the manifest truthfully reports the two roots that were walked.
+ * The other machine keeps 2 files, 7,990 lines and 27 failures here — 5.9% of
+ * its corpus — and this machine keeps none, which is why it took a second
+ * environment to notice. A directory that happens to be empty on the machine
+ * you develop on is indistinguishable from one you never open.
+ */
+export const ARCHIVED_GLOB = 'projects/*/archived/*.jsonl'
+
+/** The directory the client archives sessions into. */
+const ARCHIVED_DIR = 'archived'
 
 const isJsonl = (name: string): boolean => name.endsWith('.jsonl')
+
+/** The directory a path sits in. Either separator, because this runs on both. */
+const SEPARATORS = ['/', String.fromCharCode(92)] as const
+const dirOf = (path: string): string =>
+  path.slice(0, Math.max(...SEPARATORS.map((sep) => path.lastIndexOf(sep))))
+
 const stripExt = (name: string): string => name.slice(0, -'.jsonl'.length)
 
 function dirsIn(path: string): string[] {
@@ -117,11 +158,13 @@ export function walkProjects(projectsRoot: string): Inventory {
   const projects: ProjectInventory[] = []
   let mainMatches = 0
   let subMatches = 0
+  let archivedMatches = 0
 
   for (const project of dirsIn(projectsRoot).sort()) {
     const projectDir = join(projectsRoot, project)
     let mainFiles = 0
     let subFiles = 0
+    let archivedFiles = 0
     let bytes = 0
 
     // main: projects/<project>/<session>.jsonl
@@ -129,33 +172,60 @@ export function walkProjects(projectsRoot: string): Inventory {
       if (!isJsonl(name)) continue
       const path = join(projectDir, name)
       const size = sizeOf(path)
-      files.push({ path, kind: 'main', project, sessionId: stripExt(name), bytes: size })
+      files.push({ path, kind: 'main', project, sessionId: stripExt(name), group: null, bytes: size })
       mainFiles += 1
       bytes += size
       mainMatches += 1
     }
 
+    // archived: projects/<project>/archived/<session>.jsonl
+    //
+    // Walked as main transcripts, because that is what they are: an archived
+    // session carries the same parentUuid chain and the same failures as one
+    // that was never moved. Only the tally is kept apart.
+    const archivedDir = join(projectDir, ARCHIVED_DIR)
+    for (const name of filesIn(archivedDir).sort()) {
+      if (!isJsonl(name)) continue
+      const path = join(archivedDir, name)
+      const size = sizeOf(path)
+      files.push({ path, kind: 'main', project, sessionId: stripExt(name), group: null, bytes: size })
+      archivedFiles += 1
+      bytes += size
+      archivedMatches += 1
+    }
+
     // sub: projects/<project>/<session>/subagents/**/*.jsonl
     for (const sessionId of dirsIn(projectDir).sort()) {
+      // Already walked above, and its children are session files rather than a
+      // subagents tree. Descending would double-count them.
+      if (sessionId === ARCHIVED_DIR) continue
       const subagents = join(projectDir, sessionId, 'subagents')
       for (const path of jsonlBelow(subagents).sort()) {
         const size = sizeOf(path)
         // sessionId is the directory the subagents tree hangs off, so a
         // subagent transcript keeps the parent it belongs to.
-        files.push({ path, kind: 'sub', project, sessionId, bytes: size })
+        files.push({
+          path,
+          kind: 'sub',
+          project,
+          sessionId,
+          group: dirOf(path),
+          bytes: size,
+        })
         subFiles += 1
         bytes += size
         subMatches += 1
       }
     }
 
-    projects.push({ project, mainFiles, subFiles, bytes })
+    projects.push({ project, mainFiles, subFiles, archivedFiles, bytes })
   }
 
   return {
     rootsWalked: [
       { glob: MAIN_GLOB, matchCount: mainMatches },
       { glob: SUB_GLOB, matchCount: subMatches },
+      { glob: ARCHIVED_GLOB, matchCount: archivedMatches },
     ],
     files,
     projects,

@@ -163,18 +163,23 @@ export function compare(now: WindowView, then: WindowView | null): Comparison {
     .sort((x, y) => (x.axis < y.axis ? -1 : 1))
 
   // A composite over one axis set and a composite over another are different
-  // quantities. Either window declining to supply one withholds the pair.
+  // quantities, so both windows must supply one *and* have measured the same
+  // axes. The flag alone is not enough: it says a figure exists, not that the
+  // two figures are the same quantity.
+  const sameAxisSet =
+    measuredNow.length === measuredThen.length && measuredNow.every((k) => measuredThen.includes(k))
   const compositeThen =
-    now.compositeComparable && then.compositeComparable && then.compositeE4 !== null
+    sameAxisSet && now.compositeComparable && then.compositeComparable && then.compositeE4 !== null
       ? then.compositeE4 / 10_000
       : null
   const compositeNow = now.compositeE4 === null ? null : now.compositeE4 / 10_000
 
   return {
-    basis:
-      measuredNow.length === measuredThen.length && excludedByFingerprint.length === 0
-        ? 'identical'
-        : 'intersection',
+    // Decided by the sets, not by their sizes. Two windows measuring four axes
+    // each, one of them a different four, are not the same basis -- and
+    // `identical` is the word a reader takes to mean nothing moved but the
+    // environment.
+    basis: sameAxisSet && excludedByFingerprint.length === 0 ? 'identical' : 'intersection',
     axes: comparable.sort((a, b) => (a < b ? -1 : 1)),
     perAxis,
     compositeNow,

@@ -26,7 +26,10 @@ export const WEIGHT_EXPLANATION = 0.3
 /** Where the explanation-repetition term saturates. */
 export const L3_TARGET = 0.25
 
-export type RecurrenceOmission = 'axis6-explanation-repetition' | 'axis6-external-hook-log'
+export type RecurrenceOmission =
+  | 'axis6-explanation-repetition'
+  | 'axis6-external-hook-log'
+  | 'axis6-all-time-basis'
 
 /**
  * What is not computed, and which way each moves the score.
@@ -45,11 +48,36 @@ export type RecurrenceOmission = 'axis6-explanation-repetition' | 'axis6-externa
 export const RECURRENCE_OMISSION_LEANINGS: Readonly<Record<RecurrenceOmission, 'high' | 'low'>> = {
   'axis6-explanation-repetition': 'high',
   'axis6-external-hook-log': 'high',
+  // r_in over one window against r_cross over two: within-window repetition is
+  // rarer than carry-over, so standing in for it reads high.
+  'axis6-all-time-basis': 'high',
 }
 
 export interface RecurrenceInputs {
   /** Within-window repeat rate, from axis 2. Stands in for r_cross on a first window. */
   readonly rIn: number
+  /**
+   * The cross-window rate: the share of this window's repeated signatures that
+   * were also repeated in the last one. Null when there is no comparable
+   * previous set.
+   *
+   * This is the rate the axis is *for*. r_in stands in only because a first
+   * window has nothing to intersect with, and the two answer different
+   * questions -- a window scored on one must never be compared with a window
+   * scored on the other, which is what `rateKind` records.
+   */
+  readonly rCross: number | null
+  /**
+   * Whether the two windows actually cover different periods.
+   *
+   * They do not yet. The scan counts over all time, so two consecutive runs see
+   * the same corpus a few minutes apart and every repeated signature carries
+   * over by construction -- measured r_cross of 1.0 and a score of zero, which
+   * is a fact about the counting basis and not about the environment. Scoring
+   * it would be the plainest possible case of reporting a property of the
+   * method as a property of the thing measured.
+   */
+  readonly periodsDiffer: boolean
   /** Failures the rate was computed over. Zero means nothing to divide by. */
   readonly errors: number
   /** Whether a previous window's signature set was available. */
@@ -78,7 +106,16 @@ export function recurrence(inputs: RecurrenceInputs): Recurrence {
   const omitted: RecurrenceOmission[] = ['axis6-explanation-repetition']
   if (!inputs.hasExternalHookLog) omitted.push('axis6-external-hook-log')
 
-  const rateKind = inputs.firstWindow ? 'within-window' : 'cross-window'
+  // Cross-window whenever a previous set was comparable, within-window
+  // otherwise. Driven by whether the rate exists rather than by a flag: a
+  // `firstWindow: false` with no usable previous set would otherwise label an
+  // r_in as an r_cross and let two incomparable windows be differenced.
+  const useCross = inputs.rCross !== null && inputs.periodsDiffer
+  if (!inputs.periodsDiffer) omitted.push('axis6-all-time-basis')
+  const rateKind = useCross ? 'cross-window' : 'within-window'
+  // Follows `useCross`, not the presence of the value: a measured r_cross that
+  // the basis forbids scoring must not slip in through the coalesce.
+  const rate = useCross && inputs.rCross !== null ? inputs.rCross : inputs.rIn
 
   if (inputs.errors === 0) {
     // No failures is not a perfect recurrence score. There is nothing to
@@ -89,7 +126,7 @@ export function recurrence(inputs: RecurrenceInputs): Recurrence {
       rateKind,
       score: null,
       errors: 0,
-      baselineOnly: inputs.firstWindow,
+      baselineOnly: !useCross,
       omitted,
       unavailable: 'no-failures',
     }
@@ -97,14 +134,16 @@ export function recurrence(inputs: RecurrenceInputs): Recurrence {
 
   // Renormalised over the surviving term, per the rule for convex-combination
   // axes. With only the recurrence term left, its coefficient becomes 1.
-  const score = 100 * (1 - inputs.rIn)
+  const score = 100 * (1 - rate)
 
   return {
-    rate: inputs.rIn,
+    rate,
     rateKind,
     score: Math.max(0, Math.min(100, score)),
     errors: inputs.errors,
-    baselineOnly: inputs.firstWindow,
+    // A window scored on r_in registered a baseline; it did not earn a result.
+    // The two are different claims and the report has to make that one.
+    baselineOnly: !useCross,
     omitted,
     unavailable: null,
   }

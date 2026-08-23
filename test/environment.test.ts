@@ -243,3 +243,33 @@ describe('counting MCP servers', () => {
     expect(got).toContain('/h/.claude.json')
   })
 })
+
+describe('an interpreter told to read its program from the argument', () => {
+  /**
+   * `-c` is a token, is not path-shaped, and used to fall past both interpreter
+   * branches into `cliWildcard` -- the class for a command whose *arguments*
+   * are open. It pins nothing at all.
+   *
+   * The recorded control for this classifier only ever exercised the bare
+   * `Bash(python:*)` shape, which is exactly where the blind spot was not.
+   */
+  it('is unrestricted, whichever interpreter it is', () => {
+    for (const entry of [
+      'Bash(python -c:*)',
+      'Bash(python3 -c:*)',
+      'Bash(node -e:*)',
+      'Bash(bash -c:*)',
+      'Bash(sh -c:*)',
+      'Bash(perl -e:*)',
+      'Bash(pwsh -Command:*)',
+    ]) {
+      expect(classifyPermission(entry), entry).toBe('unrestrictedExec')
+    }
+  })
+
+  it('still separates a pinned script from an open interpreter', () => {
+    // The distinction the class exists to draw, and it must survive the fix.
+    expect(classifyPermission('Bash(python:*)')).toBe('unrestrictedExec')
+    expect(classifyPermission('Bash(python scripts/redact.py:*)')).toBe('scriptPathFixed')
+  })
+})

@@ -122,7 +122,15 @@ function comparisonLine(result: ReturnType<typeof runScan>): string {
     c.excludedByFingerprint.length === 0
       ? ''
       : ` — ${c.excludedByFingerprint.length} axis(es) excluded, formula changed`
-  return `${c.basis}, ${c.axes.length} axes: ${parts}${gap}${excluded}`
+  // The composite delta, or the reason there is not one. It was structurally
+  // null for the whole of the first build because nothing stored the previous
+  // window's figure, and a missing line reads as "no change".
+  const INDENT = '\n           '
+  const total =
+    c.delta === null
+      ? `${INDENT}composite: withheld — the two windows did not measure the same axes`
+      : `${INDENT}composite: ${c.compositeThen} → ${c.compositeNow} (${c.delta >= 0 ? '+' : ''}${c.delta})`
+  return `${c.basis}, ${c.axes.length} axes: ${parts}${gap}${excluded}${total}`
 }
 
 /** The total, or why there is not one, plus which way it leans. */
@@ -154,6 +162,9 @@ function summarise(result: ReturnType<typeof runScan>): string {
     `agent-eval ${VERSION} — ${m.measuredAt}`,
     '',
     `scanned    ${m.filesRead} files, ${m.linesRead} lines, ${m.linesParseFailed} unparsed`,
+    // Printed even at zero. A file that failed to open leaves every total short
+    // together, so the identities still close and the gate still passes.
+    `           ${m.filesUnreadable} unreadable, ${m.filesWithoutRows} with no rows`,
     `           main ${m.mainLines} / sub ${m.subLines} (share ${m.subLineRatio})`,
     `projects   ${payload.environment.projectCount}`,
     `versions   ${m.toolVersionDistinct}`,
@@ -163,7 +174,9 @@ function summarise(result: ReturnType<typeof runScan>): string {
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`,
     '',
-    `store      ${result.stateDir ?? 'not opened (--store to open it)'}`,
+    // The path is not printed. It is `<home>/.agent-eval`, so it carries the
+    // OS username, and this output is meant to be pasteable into an issue.
+    `store      ${result.stateDir === null ? 'not opened (--store to open it)' : 'opened'}`,
     // Always printed. A snapshot that silently failed to write is discovered a
     // window later, when the comparison it existed for cannot be made.
     `snapshot   ${snapshotLine(result)}`,

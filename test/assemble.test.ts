@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { assemble, type AssembleInputs } from '@/payload/assemble.js'
+import { meetsMinimum } from '@/score/minimum.js'
+import { UPTAKE_REFERENCED } from '@/score/artifact.js'
+import { crossWindowRate, assemble, type AssembleInputs } from '@/payload/assemble.js'
 import { validate } from '@/validate/index.js'
 import { assembleWindow } from '@/collect/window.js'
 import { AXIS_KEYS } from '@/payload/types.js'
@@ -30,16 +32,23 @@ const window = assembleWindow({
 })
 
 const counts = {
-  linesRead: 1_000, linesParseFailed: 0, bytesRead: 5_000, mainLines: 600, subLines: 400,
-  toolResultTotal: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
+  linesRead: 1_000, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 5_000, mainLines: 600, subLines: 400,
+  toolResultTotal: 300, toolUseTotal: 300, toolUseFiltered: 300, toolResultWithIsErrorKey: 200, toolResultIsErrorTrue: 10,
   attributionSkillRows: 40, attributionSkillDistinct: 3, mcpServerDistinct: 3,
   userRows: 500, originBearingUserRows: 20, humanTurns: 15,
-  denialRows: 8, denialUserRejected: 2,
+  denialRows: 8, denialUserRejected: 2, denialKinds: {},
   editedFilesDistinct: 30, editedFilesRepeated: 9,
   stopHookSummaryRows: 12, hookErrorsNonEmpty: 1,
   tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
   toolVersions: { '2.1.233': 1_000 },
   sessionIds: ['a', 'b'],
+  // Per-axis clusters are counted from here, not from sessionIds: a cluster is
+  // a session with a non-zero denominator for that axis, and the axes do not
+  // share one.
+  perSession: {
+    a: { intervals: 60, bundles: 25, failures: 6, writeRepeats: 2, investigationRepeats: 6, timedOut: 0, largeOutput: 0, errors: 6, lines: 600 },
+    b: { intervals: 40, bundles: 15, failures: 4, writeRepeats: 2, investigationRepeats: 4, timedOut: 0, largeOutput: 0, errors: 4, lines: 400 },
+  },
   dates: ['2026-08-16'],
   userRowDates: ['2026-08-16'],
   humanTurnDates: ['2026-08-16'],
@@ -51,9 +60,14 @@ const counts = {
   environmentNoiseRows: 0,
   editedPaths: {},
   lastMention: () => null, lastMentionIn: () => null,
+  mentionedElsewhereAfter: () => false,
+  ambiguousBasenames: 0,
   referenceTokens: 0,
   toolActivityRows: 200,
   errorRepeats: { errors: 10, distinctSignatures: 5, rIn: 0.5, byFamily: { timeout: 10 } },
+  signatures: [],
+  signaturesSigned: false,
+  signaturesRepeated: [],
   metabolism: {
     skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
     skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},
@@ -64,11 +78,14 @@ const counts = {
   },
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
-    selfRepaired: 2, humanRescued: 1, unresolved: 1,
+    selfRepaired: 2, humanRescued: 1, unresolved: 1, repairedNotCounted: 0,
   },
   wasted: {
     failures: 10,
     hookOriginated: 0,
+    errorsObserved: 10,
+    attribution: { E1: 0, E2: 0, E2b: 0, E3: 0, E4: 0, E7: 0, E6: 0, E5: 0, E8_E9: 10 },
+    closure: { observed: 10, attributed: 10, numerator: 10, excluded: 0, balanced: true },
     writeRepeats: 4,
     investigationRepeats: 10,
     timedOut: 0,
@@ -254,5 +271,110 @@ describe('projects', () => {
     const { payload } = assemble(inputs)
     expect(JSON.stringify(payload.environment.projects)).not.toContain('p1')
     expect(payload.environment.projects[0]?.id.startsWith('sha256:')).toBe(true)
+  })
+})
+
+describe('the minimum denominator', () => {
+  /**
+   * Twenty-five sessions, so the cluster term passes and the other two are the
+   * only things that can decide the verdict.
+   *
+   * This is the shape the old code could not express. It passed
+   * `Math.max(measured, MIN)` into a test for `< MIN`, so the denominator and
+   * numerator conditions held whatever the measurement was, and the verdict was
+   * the cluster count wearing three names. On a machine with enough sessions
+   * that meant a delta could be called an improvement off twelve artifacts.
+   */
+  const manySessions = Object.fromEntries(
+    Array.from({ length: 25 }, (_, i) => [
+      `s${i}`,
+      {
+        intervals: 40,
+        bundles: 20,
+        failures: 4,
+        writeRepeats: 1,
+        investigationRepeats: 2,
+        timedOut: 0,
+        largeOutput: 0,
+        errors: 4,
+        lines: 100,
+      },
+    ]),
+  )
+
+  const artifactsOf = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      path: `f${i}.ts`,
+      weight: 1,
+      uptake: UPTAKE_REFERENCED,
+      newLines: 60,
+      newLinesKnown: true,
+      bundle: (i % 25) + 1,
+      lastWrite: '2026-08-20T09:00:00.000Z',
+    }))
+
+  const withSessions = (artifactCount: number) =>
+    assemble({
+      ...inputs,
+      counts: {
+        ...inputs.counts,
+        sessionIds: Object.keys(manySessions),
+        perSession: manySessions,
+        // Every artifact referred to again from a different bundle, so the
+        // numerator condition is satisfied and the denominator is the only
+        // thing left that can decide the verdict.
+        mentionedElsewhereAfter: () => true,
+      },
+      artifacts: {
+        ...inputs.artifacts,
+        artifacts: artifactsOf(artifactCount),
+        totalWeight: artifactCount,
+        consideredPaths: artifactCount,
+      },
+    }).payload
+
+  it('fails on a small denominator even when there are clusters enough', () => {
+    // Axis 4's denominator is artifacts. Twelve is the number from the report
+    // that prompted this: plenty of sessions, far too few artifacts.
+    expect(withSessions(12).axes.artifactUptake.belowMinDenominator).toBe(true)
+  })
+
+  it('passes when the denominator is genuinely large', () => {
+    // The other half of the control. Without a case that comes out false, the
+    // test above would also pass against a check hardcoded to true -- which is
+    // exactly what the clamped version was.
+    expect(withSessions(300).axes.artifactUptake.belowMinDenominator).toBe(false)
+  })
+
+  it('names both conditions rather than folding them into the cluster count', () => {
+    // `denominator-below-minimum` and `numerator-below-minimum` were
+    // unreachable strings: nothing could produce either, because both were
+    // tested against a value clamped to the threshold first.
+    expect(meetsMinimum({ clusters: 25, denominator: 12, numerator: 3 }).reasons).toEqual([
+      'denominator-below-minimum',
+      'numerator-below-minimum',
+    ])
+    expect(meetsMinimum({ clusters: 25, denominator: 300, numerator: 40 }).reasons).toEqual([])
+  })
+})
+
+describe('the cross-window recurrence rate', () => {
+  /**
+   * v1's `r_cross`: the share of this window's repeated signatures that the
+   * last window also repeated. It is the rate axis 6 exists for -- r_in only
+   * stands in while there is nothing to intersect with.
+   */
+  it('is the carried share of the repeated set', () => {
+    expect(crossWindowRate(['a', 'b', 'c', 'd'], ['b', 'd', 'z'])).toBeCloseTo(0.5)
+    expect(crossWindowRate(['a', 'b'], ['a', 'b'])).toBe(1)
+    expect(crossWindowRate(['a', 'b'], ['x'])).toBe(0)
+  })
+
+  it('is absent rather than zero when there is nothing to compare against', () => {
+    // An empty intersection reads as "no failure recurred", which is a perfect
+    // score arrived at by accident. Absence has to stay absence.
+    expect(crossWindowRate(['a'], null)).toBeNull()
+    expect(crossWindowRate([], ['a'])).toBeNull()
+    expect(crossWindowRate([], null)).toBeNull()
   })
 })
