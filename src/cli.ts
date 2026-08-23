@@ -28,6 +28,8 @@ const HELP = [
   '  --repo <path>          take commit dates from this repository (repeatable)',
   '  --external-log <path>  CSV whose `date` column records closing entries',
   '  --at <iso8601>         the measurement timestamp to stamp (default: now)',
+  '  --store                open ~/.agent-eval, so signatures are MAC-signed',
+  '  --state-dir <path>     put the store somewhere else',
   '',
   'No scores yet — the rate-to-score formula is unresolved. See docs/PHASE0_PLAN.md.',
 ].join('\n')
@@ -37,6 +39,8 @@ interface Parsed {
   readonly externalLog: string | null
   readonly at: string | null
   readonly summary: boolean
+  readonly store: boolean
+  readonly stateDir: string | null
   readonly error: string | null
 }
 
@@ -45,25 +49,33 @@ function parseScanArgs(argv: readonly string[]): Parsed {
   let externalLog: string | null = null
   let at: string | null = null
   let summary = false
+  let store = false
+  let stateDir: string | null = null
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]
     if (a === '--summary') summary = true
-    else if (a === '--repo' || a === '--external-log' || a === '--at') {
+    else if (a === '--store') store = true
+    else if (a === '--repo' || a === '--external-log' || a === '--at' || a === '--state-dir') {
       const v = argv[i + 1]
       // An option whose value is missing takes the next flag as its value and
       // then reports a clean run over the wrong inputs.
       if (v === undefined || v.startsWith('--')) {
-        return { repos, externalLog, at, summary, error: `${a} needs a value` }
+        return { repos, externalLog, at, summary, store, stateDir, error: `${a} needs a value` }
       }
       if (a === '--repo') repos.push(v)
       else if (a === '--external-log') externalLog = v
+      else if (a === '--state-dir') stateDir = v
       else at = v
       i += 1
     } else {
-      return { repos, externalLog, at, summary, error: `unknown scan option: ${a}` }
+      return { repos, externalLog, at, summary, store, stateDir, error: `unknown scan option: ${a}` }
     }
   }
-  return { repos, externalLog, at, summary, error: null }
+  // --state-dir without --store would silently do nothing.
+  if (stateDir !== null && !store) {
+    return { repos, externalLog, at, summary, store, stateDir, error: '--state-dir needs --store' }
+  }
+  return { repos, externalLog, at, summary, store, stateDir, error: null }
 }
 
 /** A short report, so the common case does not require reading 300 lines of JSON. */
@@ -88,6 +100,9 @@ function summarise(result: ReturnType<typeof runScan>): string {
     `window     ${w.activeDays} human-turn days, ${w.userRowDays} user-row days, ${w.windowSource}`,
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`,
+    '',
+    `store      ${result.stateDir ?? 'not opened (--store to open it)'}`,
+    `signatures ${result.signaturesSigned ? 'signed' : 'unsigned — the set is empty, not the environment'}`,
     '',
     `gate       ${gateReasons.length === 0 ? 'passed' : gateReasons.join(', ')}`,
     `axes       ${axes.filter(([, a]) => a.availability === 'available').length}/${axes.length} available`,
@@ -123,6 +138,8 @@ export function run(argv: readonly string[]): { readonly code: number; readonly 
     const options = defaultOptions({
       repos: parsed.repos,
       closingLogPath: parsed.externalLog,
+      useStore: parsed.store,
+      stateDir: parsed.stateDir,
       ...(parsed.at === null ? {} : { measuredAt: parsed.at }),
     })
     const result = runScan(options)
