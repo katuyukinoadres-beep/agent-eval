@@ -41,6 +41,7 @@ import { gate, type GateVerdict } from '../score/gate.js'
 import { MIN_DENOMINATOR, MIN_NUMERATOR, meetsMinimum } from '../score/minimum.js'
 import { wastedMotion, OMITTED_TERM_LEANINGS, type OmittedTermName } from '../score/wastedMotion.js'
 import { composite, type AxisInput, type OmittedTerm, type SuppressedReason } from '../score/composite.js'
+import { METABOLISM_OMISSION_LEANINGS, metabolism } from '../score/metabolism.js'
 import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
 
     // This submission's counts, stated as they are rather than as the spec's
@@ -243,8 +244,55 @@ export function assemble(inputs: AssembleInputs): Assembled {
     },
   }
 
+  // Axis 5. Its own availability condition is having a tax to measure at all;
+  // the asset multiplier is skipped when nothing is owned rather than set to
+  // its worst value.
+  const met = metabolism({
+    effectiveInputPerCall: counts.metabolism.effectiveInputPerCall,
+    skillsListed: counts.metabolism.skillsListed,
+    skillFirings: counts.metabolism.skillFirings,
+    hookFirings: counts.metabolism.hookFirings,
+    mcpFirings: counts.metabolism.mcpFirings,
+    mcpServersDefined: mcp.servers,
+    listingTruncated: counts.metabolism.listingTruncated,
+  })
+
+  const metabolismAxis: Axis = {
+    availability: met.score === null ? 'not_applicable' : 'available',
+    lineStates: {
+      available: met.score === null ? 0 : counts.toolActivityRows,
+      not_applicable: met.score === null ? linesRead : linesRead - counts.toolActivityRows,
+      parse_failed: 0,
+    },
+    metric: null,
+    score: met.score === null ? null : Math.round(met.score * 100) / 100,
+    confidenceInterval: null,
+    belowMinDenominator: !meetsMinimum({
+      clusters,
+      denominator: Math.max(met.assets, MIN_DENOMINATOR),
+      numerator: Math.max(met.firedAssets, MIN_NUMERATOR),
+    }).meetsMinimum,
+    unavailableReasons: met.score === null ? ['definition-pending'] : [],
+    omittedTerms: met.omitted.map(
+      (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: METABOLISM_OMISSION_LEANINGS[term] }),
+    ),
+    detail: {
+      contextTaxPerCall: met.fc ?? 0,
+      trapezoidE2: Math.round((met.trapezoidScore ?? 0) * 100),
+      assets: met.assets,
+      firedAssets: met.firedAssets,
+      utilisationE4: Math.round((met.u ?? 0) * 10_000),
+      // A tax past the ceiling pins the trapezoid to its floor, and an axis on
+      // its floor cannot respond to anything the environment does.
+      saturated: met.saturated ? 1 : 0,
+    },
+  }
+
   const axes = Object.fromEntries(
-    AXIS_KEYS.map((k) => [k, k === 'wastedMotion' ? wastedAxis : axisFor(k)]),
+    AXIS_KEYS.map((k) => [
+      k,
+      k === 'wastedMotion' ? wastedAxis : k === 'environmentMetabolism' ? metabolismAxis : axisFor(k),
+    ]),
   ) as Axes
 
   const projects: ProjectSummary[] = inventory.projects.map((p) => {

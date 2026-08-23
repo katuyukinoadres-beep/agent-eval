@@ -49,6 +49,9 @@ export const READ_KEYS = [
   'parentUuid',
   // P3 — a bad connection is not low quality work.
   'isApiErrorMessage',
+  // Axis 5 — skill_listing carries the asset set and hook_success the hook
+  // firings. Only names, counts and lengths are taken from either.
+  'attachment',
   // P6 — where a write landed and how large it was. Only `filePath`,
   // `structuredPatch[].newLines` and `file.numLines` are touched inside it; see
   // FORBIDDEN_SUBFIELDS.
@@ -186,6 +189,15 @@ export interface ScanCounts {
   readonly signaturesSigned: boolean
   /** Rows carrying a tool_use or tool_result block — axis 2's evidence lines. */
   readonly toolActivityRows: number
+  /**
+   * Axis 5's asset set and its firings.
+   *
+   * Assets come from `skill_listing.names` rather than from disk: a skill moved
+   * to a neighbouring directory disappears from a disk count and takes its
+   * unfired status with it, so hiding and tidying up would score alike. What is
+   * listed is what was loaded.
+   */
+  readonly metabolism: MetabolismCounts
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -284,6 +296,31 @@ interface MutSessionTally {
   lines: number
 }
 
+export interface MetabolismCounts {
+  /** Skill names that appeared in a skill_listing. */
+  readonly skillsListed: readonly string[]
+  /** Largest skill_listing seen, in characters. The denominator of the dead-weight ratio. */
+  readonly listingChars: number
+  /** True when a listing hit the 20,001-character cap, so the upper side is unmeasurable. */
+  readonly listingTruncated: boolean
+  /** Firings per skill name, from attributionSkill. */
+  readonly skillFirings: Readonly<Record<string, number>>
+  /** Firings per hook, from hook_success attachments. */
+  readonly hookFirings: Readonly<Record<string, number>>
+  /** Calls per MCP server, from attributionMcpServer. */
+  readonly mcpFirings: Readonly<Record<string, number>>
+  /**
+   * Effective input tokens per assistant call: input plus cache reads.
+   *
+   * Per call, not summed per bundle. The trapezoid's thresholds are context
+   * sizes, and a bundle with a hundred calls re-reads the same cached context a
+   * hundred times -- summing gives 5.3M here against 415k per call. Both land on
+   * the floor on this machine, so the reading does not change the verdict, but
+   * it would on a lighter one.
+   */
+  readonly effectiveInputPerCall: readonly number[]
+}
+
 export interface ProjectTally {
   readonly lines: number
   readonly subLines: number
@@ -318,6 +355,8 @@ interface Mut {
   sessionIdMismatchRows: number
   taskBundles: number
   toolActivityRows: number
+  listingChars: number
+  listingTruncated: boolean
   rootBundles: number
   orphanBundles: number
   environmentNoiseRows: number
@@ -376,6 +415,14 @@ export function targetOf(toolName: string, input: unknown): string {
 // machine-local key -- 8 hex over a space of file extensions and command names
 // is small enough to enumerate, and the tuple MAC covers the target anyway.
 
+interface MutMetabolism {
+  skillsListed: Set<string>
+  skillFirings: Map<string, number>
+  hookFirings: Map<string, number>
+  mcpFirings: Map<string, number>
+  effectiveInputPerCall: number[]
+}
+
 interface MutWasted {
   failures: number
   hookOriginated: number
@@ -395,6 +442,9 @@ interface MutWasted {
 const SIG_SEPARATOR = String.fromCharCode(0)
 
 /** A failure a hook produced. 17 here; v1 measured 29 on the other machine. */
+/** Where the other machine's skill_listing sat exactly, so past it is a truncation. */
+const LISTING_CAP = 20_001
+
 const HOOK_ORIGINATED = /(Pre|Post)ToolUse:/
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -426,6 +476,7 @@ function reduceLine(
   sign: Signer | null,
   wasted: WastedTracker,
   w: MutWasted,
+  met: MutMetabolism,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -489,10 +540,38 @@ function reduceLine(
   if (typeof skill === 'string' && skill.length > 0) {
     m.attributionSkillRows += 1
     skills.add(skill)
+    met.skillFirings.set(skill, (met.skillFirings.get(skill) ?? 0) + 1)
+  }
+
+  // Axis 5's asset set. `names` is on the attachment already, so the listing's
+  // text is only measured, never parsed for names.
+  const attachment = row['attachment']
+  if (isObj(attachment)) {
+    if (attachment['type'] === 'skill_listing') {
+      const names = attachment['names']
+      if (Array.isArray(names)) {
+        for (const n of names) if (typeof n === 'string') met.skillsListed.add(n)
+      }
+      const content = attachment['content']
+      if (typeof content === 'string') {
+        if (content.length > m.listingChars) m.listingChars = content.length
+        // The cap the other machine's listing sat exactly on. Past it the
+        // upper side of the dead-weight ratio cannot be measured at all.
+        if (content.length >= LISTING_CAP) m.listingTruncated = true
+      }
+    } else if (attachment['type'] === 'hook_success') {
+      const name = attachment['hookName']
+      if (typeof name === 'string' && name.length > 0) {
+        met.hookFirings.set(name, (met.hookFirings.get(name) ?? 0) + 1)
+      }
+    }
   }
 
   const server = row['attributionMcpServer']
-  if (typeof server === 'string' && server.length > 0) mcp.add(server)
+  if (typeof server === 'string' && server.length > 0) {
+    mcp.add(server)
+    met.mcpFirings.set(server, (met.mcpFirings.get(server) ?? 0) + 1)
+  }
 
   const denial = row['toolDenialKind']
   if (typeof denial === 'string') {
@@ -568,6 +647,8 @@ function reduceLine(
     m.output += n('output_tokens')
     m.cacheRead += n('cache_read_input_tokens')
     m.cacheCreation += n('cache_creation_input_tokens')
+    const effective = n('input_tokens') + n('cache_read_input_tokens')
+    if (effective > 0) met.effectiveInputPerCall.push(effective)
   }
 
   const content = message['content']
@@ -666,7 +747,7 @@ export function scan(
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -683,6 +764,13 @@ export function scan(
   const tuples: Array<readonly [string, ErrorClass, string]> = []
   const macs: Hmac128[] = []
   const perSession = new Map<string, MutSessionTally>()
+  const met: MutMetabolism = {
+    skillsListed: new Set(),
+    skillFirings: new Map(),
+    hookFirings: new Map(),
+    mcpFirings: new Map(),
+    effectiveInputPerCall: [],
+  }
   const wasted = wastedTracker()
   const w: MutWasted = {
     failures: 0, hookOriginated: 0, writeRepeats: 0, investigationRepeats: 0,
@@ -716,7 +804,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met)
     }
     st.bundles += bundles.opened()
     m.taskBundles += bundles.opened()
@@ -746,6 +834,15 @@ export function scan(
     notHumanCounts: Object.fromEntries([...notHuman.entries()].sort()),
     taskBundles: m.taskBundles,
     toolActivityRows: m.toolActivityRows,
+    metabolism: {
+      skillsListed: [...met.skillsListed].sort(),
+      listingChars: m.listingChars,
+      listingTruncated: m.listingTruncated,
+      skillFirings: Object.fromEntries([...met.skillFirings.entries()].sort()),
+      hookFirings: Object.fromEntries([...met.hookFirings.entries()].sort()),
+      mcpFirings: Object.fromEntries([...met.mcpFirings.entries()].sort()),
+      effectiveInputPerCall: met.effectiveInputPerCall,
+    },
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,
     environmentNoiseRows: m.environmentNoiseRows,
