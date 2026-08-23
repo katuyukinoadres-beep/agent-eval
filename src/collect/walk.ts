@@ -46,6 +46,19 @@ export interface FileEntry {
    * only place the relationship is recorded once you stop trusting isSidechain.
    */
   readonly sessionId: string
+  /**
+   * For a subagent transcript, the directory holding it. Null for a main one.
+   *
+   * The layout is `<session>/subagents/workflows/wf_<id>/agent-N.jsonl`, and
+   * `wf_<id>` is one delegation: the agents under it were spawned by a single
+   * request. It is the closest thing in the tree to the bundle a subagent
+   * transcript belongs to, and both alternatives are worse -- the parent
+   * session lumps every delegation it ever made into one bundle, and the file
+   * itself splits one request into as many bundles as it spawned agents.
+   *
+   * Measured here: 294 subagent files, 31 delegations, 8 parent sessions.
+   */
+  readonly group: string | null
   readonly bytes: number
 }
 
@@ -88,6 +101,12 @@ export const ARCHIVED_GLOB = 'projects/*/archived/*.jsonl'
 const ARCHIVED_DIR = 'archived'
 
 const isJsonl = (name: string): boolean => name.endsWith('.jsonl')
+
+/** The directory a path sits in. Either separator, because this runs on both. */
+const SEPARATORS = ['/', String.fromCharCode(92)] as const
+const dirOf = (path: string): string =>
+  path.slice(0, Math.max(...SEPARATORS.map((sep) => path.lastIndexOf(sep))))
+
 const stripExt = (name: string): string => name.slice(0, -'.jsonl'.length)
 
 function dirsIn(path: string): string[] {
@@ -153,7 +172,7 @@ export function walkProjects(projectsRoot: string): Inventory {
       if (!isJsonl(name)) continue
       const path = join(projectDir, name)
       const size = sizeOf(path)
-      files.push({ path, kind: 'main', project, sessionId: stripExt(name), bytes: size })
+      files.push({ path, kind: 'main', project, sessionId: stripExt(name), group: null, bytes: size })
       mainFiles += 1
       bytes += size
       mainMatches += 1
@@ -169,7 +188,7 @@ export function walkProjects(projectsRoot: string): Inventory {
       if (!isJsonl(name)) continue
       const path = join(archivedDir, name)
       const size = sizeOf(path)
-      files.push({ path, kind: 'main', project, sessionId: stripExt(name), bytes: size })
+      files.push({ path, kind: 'main', project, sessionId: stripExt(name), group: null, bytes: size })
       archivedFiles += 1
       bytes += size
       archivedMatches += 1
@@ -185,7 +204,14 @@ export function walkProjects(projectsRoot: string): Inventory {
         const size = sizeOf(path)
         // sessionId is the directory the subagents tree hangs off, so a
         // subagent transcript keeps the parent it belongs to.
-        files.push({ path, kind: 'sub', project, sessionId, bytes: size })
+        files.push({
+          path,
+          kind: 'sub',
+          project,
+          sessionId,
+          group: dirOf(path),
+          bytes: size,
+        })
         subFiles += 1
         bytes += size
         subMatches += 1

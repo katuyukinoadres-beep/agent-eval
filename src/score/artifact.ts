@@ -44,6 +44,15 @@ export interface Artifact {
   readonly newLines: number
   readonly newLinesKnown: boolean
   readonly bundle: number | null
+  /**
+   * When it was last written.
+   *
+   * Carried so uptake can ask whether a *later* request referred to it. Taking
+   * the latest mention and comparing bundles instead answers a different
+   * question, and answers it wrong for a file that was written again after
+   * being re-used.
+   */
+  readonly lastWrite: string
 }
 
 export interface ArtifactSet {
@@ -154,6 +163,7 @@ export function settleArtifacts(inputs: SettleInputs): ArtifactSet {
       newLines: tally.newLines,
       newLinesKnown: tally.newLinesKnown,
       bundle: tally.bundle,
+      lastWrite: tally.lastWrite,
     })
   }
 

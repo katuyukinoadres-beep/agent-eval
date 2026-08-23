@@ -60,6 +60,8 @@ const counts = {
   environmentNoiseRows: 0,
   editedPaths: {},
   lastMention: () => null, lastMentionIn: () => null,
+  mentionedElsewhereAfter: () => false,
+  ambiguousBasenames: 0,
   referenceTokens: 0,
   toolActivityRows: 200,
   errorRepeats: { errors: 10, distinctSignatures: 5, rIn: 0.5, byFamily: { timeout: 10 } },
@@ -305,6 +307,7 @@ describe('the minimum denominator', () => {
       newLines: 60,
       newLinesKnown: true,
       bundle: (i % 25) + 1,
+      lastWrite: '2026-08-20T09:00:00.000Z',
     }))
 
   const withSessions = (artifactCount: number) =>
@@ -317,7 +320,7 @@ describe('the minimum denominator', () => {
         // Every artifact referred to again from a different bundle, so the
         // numerator condition is satisfied and the denominator is the only
         // thing left that can decide the verdict.
-        lastMentionIn: () => ({ bundle: 9_999, at: '2026-08-20T12:00:00.000Z' }),
+        mentionedElsewhereAfter: () => true,
       },
       artifacts: {
         ...inputs.artifacts,

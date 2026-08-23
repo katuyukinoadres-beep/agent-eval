@@ -57,8 +57,16 @@ export interface UptakeInputs {
   /** Total weight of the artifact set, for the denominator of (a). */
   readonly totalWeight: number
   readonly bundles: number
-  /** The latest mention of a path, with the bundle it happened in. */
-  readonly lastMentionIn: (path: string) => Mention | null
+  /**
+   * Whether a request other than the writing one referred to the path after it
+   * was written.
+   *
+   * Not "the latest mention was elsewhere": a write records its own path as a
+   * mention in its own bundle, so a file written, re-used, then edited again
+   * had its last mention overwritten by that final write and scored as never
+   * re-used. A file someone kept maintaining scored as an abandoned one.
+   */
+  readonly mentionedElsewhereAfter: (path: string, bundle: number | null, after: string) => boolean
   /** Paths a person edited by hand, already normalised for comparison. */
   readonly manuallyOverwritten: (path: string) => boolean
   /** Whether this is the first window, so next-window survival cannot count. */
@@ -106,11 +114,9 @@ export function uptake(inputs: UptakeInputs): Uptake {
   let overwritten = 0
 
   for (const a of artifacts) {
-    const mention = inputs.lastMentionIn(a.path)
     // A different bundle, and after the write. Same-bundle read-back is
     // verification, not uptake.
-    const elsewhere =
-      mention !== null && mention.bundle !== null && a.bundle !== null && mention.bundle !== a.bundle
+    const elsewhere = inputs.mentionedElsewhereAfter(a.path, a.bundle, a.lastWrite)
     if (elsewhere) {
       reusedWeight += a.weight
       reused += 1

@@ -334,7 +334,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     artifacts: inputs.artifacts.artifacts,
     totalWeight: inputs.artifacts.totalWeight,
     bundles: counts.taskBundles,
-    lastMentionIn: counts.lastMentionIn,
+    mentionedElsewhereAfter: counts.mentionedElsewhereAfter,
     manuallyOverwritten: (p) => stale.has(p) || editedNames.has(basename(p)),
     firstWindow: true,
   })
@@ -372,6 +372,10 @@ export function assemble(inputs: AssembleInputs): Assembled {
       reuseE4: Math.round((up.reuse ?? 0) * 10_000),
       overwrittenE4: Math.round((up.overwritten ?? 0) * 10_000),
       bundles: up.bundles,
+      // Sizes the bare-filename fallback. A mention of a name shared by two
+      // paths is not evidence about either, and this says how much of the log
+      // is in that state.
+      ambiguousBasenames: counts.ambiguousBasenames,
     },
   }
 

@@ -165,6 +165,10 @@ export interface ScanCounts {
   readonly lastMention: (path: string) => string | null
   /** The latest mention with its bundle, for axis 4's cross-bundle rule. */
   readonly lastMentionIn: (path: string) => Mention | null
+  /** Whether a request other than the writing one referred to a path afterwards. */
+  readonly mentionedElsewhereAfter: (path: string, bundle: number | null, after: string) => boolean
+  /** Basenames seen under more than one full path, so the fallback can be sized. */
+  readonly ambiguousBasenames: number
   /** Distinct path-shaped tokens seen, so an empty index reads as empty. */
   readonly referenceTokens: number
   /**
@@ -598,6 +602,7 @@ function reduceLine(
   st: MutSessionTally,
   notHuman: Map<string, number>,
   bundles: BundleTracker,
+  subBundle: number | null,
   paths: Map<string, MutPathTally>,
   refs: ReferenceIndex,
   toolOf: Map<string, { name: string; target: string }>,
@@ -753,10 +758,15 @@ function reduceLine(
     }
   }
 
-  // P5 — every row joins a bundle, so a later stage can group by it. Only main
-  // transcripts carry the chain; a subagent file is work inside one bundle, not
-  // a sequence of requests.
-  const bundle = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : null
+  // P5 — every row joins a bundle, so a later stage can group by it.
+  //
+  // Main transcripts carry the parentUuid chain. A subagent file does not: it
+  // is work inside one request rather than a sequence of them, and every row in
+  // it belongs to the delegation that spawned it. Giving them all `null`
+  // collapsed 294 files into one pseudo-bundle, which put every subagent
+  // artifact the machine ever produced under a single three-per-bundle cap and
+  // made repeat detection compare unrelated agents with each other.
+  const bundle = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : subBundle
 
   // P6 — a write's landing place and size, from the result rather than the
   // call: the call says where, the result says how much.
@@ -1030,6 +1040,7 @@ export function scan(
   const macs: Hmac128[] = []
   const perSession = new Map<string, MutSessionTally>()
   const seenClassBySession = new Map<string, Set<string>>()
+  const subBundles = new Map<string, number>()
   const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
@@ -1071,6 +1082,22 @@ export function scan(
       }
       perSession.set(file.sessionId, st)
     }
+    // One bundle per delegation, shared by every agent transcript under it, and
+    // allocated once so a second file in the same group joins rather than opens
+    // its own. Counted against the parent session, which is where the request
+    // that made the delegation came from.
+    let subBundle: number | null = null
+    if (file.kind === 'sub' && file.group !== null) {
+      const existing = subBundles.get(file.group)
+      if (existing === undefined) {
+        subBundle = nextBundleId()
+        subBundles.set(file.group, subBundle)
+        m.taskBundles += 1
+        st.bundles += 1
+      } else {
+        subBundle = existing
+      }
+    }
     m.bytesRead += file.bytes
     let text = ''
     try {
@@ -1081,7 +1108,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
@@ -1093,8 +1120,13 @@ export function scan(
     }
     // Failures nothing ever cleared.
     m.unresolved += pending.size
-    st.bundles += bundles.opened()
-    m.taskBundles += bundles.opened()
+    // Every bundle that exists, not only the ones a human turn opened. A chain
+    // root and an orphan are bundles: their calls are charged to axis 2's
+    // numerator, so leaving them out of the denominator raises W by counting
+    // work against fewer requests than actually happened.
+    const opened = bundles.opened() + bundles.roots() + bundles.orphans()
+    st.bundles += opened
+    m.taskBundles += opened
     m.rootBundles += bundles.roots()
     m.orphanBundles += bundles.orphans()
   }
@@ -1151,6 +1183,8 @@ export function scan(
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
     lastMentionIn: refs.lastMentionIn,
+    mentionedElsewhereAfter: refs.mentionedElsewhereAfter,
+    ambiguousBasenames: refs.ambiguousBasenames(),
     referenceTokens: refs.size(),
     errorRepeats: repeatRate(tuples),
     wasted: {
