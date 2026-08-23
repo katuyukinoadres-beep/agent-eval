@@ -14,6 +14,7 @@
  */
 
 import type { Artifact } from './artifact.js'
+import type { Leaning } from './composite.js'
 import type { Mention } from '../collect/reference.js'
 
 /** v1's weights over the three terms. They sum to 1. */
@@ -24,7 +25,10 @@ export const WEIGHT_NOT_OVERWRITTEN = 0.15
 /** Below this many bundles in the window, the axis has nothing to judge. */
 export const MIN_BUNDLES = 10
 
-export type UptakeOmission = 'axis4-abandonment' | 'axis4-next-window-survival'
+export type UptakeOmission =
+  | 'axis4-abandonment'
+  | 'axis4-next-window-survival'
+  | 'axis4-manual-overwrite'
 
 /**
  * What is not computed, and which way each moves the score.
@@ -41,15 +45,40 @@ export type UptakeOmission = 'axis4-abandonment' | 'axis4-next-window-survival'
  *
  * Dropping `(1 - A)` removes a term that is at most 1, so the renormalised
  * score is whatever the other two say. On an environment that abandons a lot,
- * that reads **high**.
+ * and the direction that follows is not one this build can know. The axis is a
+ * convex combination renormalised over its survivors, so dropping the (b) term
+ * raises the score exactly when the abandonment rate is below the renormalised
+ * score -- a comparison against a value that is not computed. `high` was
+ * asserting the answer to the question the omission exists to record.
  *
  * `axis4-next-window-survival` is one of the four ways (a) can be satisfied and
  * needs a previous window, so a first window cannot have it. Omitting a way to
  * satisfy a numerator makes the score read **low**.
  */
-export const UPTAKE_OMISSION_LEANINGS: Readonly<Record<UptakeOmission, 'high' | 'low'>> = {
-  'axis4-abandonment': 'high',
+export const UPTAKE_OMISSION_LEANINGS: Readonly<Record<UptakeOmission, Leaning>> = {
+  'axis4-abandonment': 'unknown',
   'axis4-next-window-survival': 'low',
+  // Overridden per window by `leaningOf`, which compares the refused value
+  // against the score that survived without it. This entry is the fallback for
+  // a reader that does not look at `overwriteLeaning`.
+  'axis4-manual-overwrite': 'unknown',
+}
+
+/** Below this numerator a term is dropped and the rest renormalised. v2 §6.2. */
+export const MIN_TERM_NUMERATOR = 5
+
+/**
+ * Which way dropping a term of known value moved the score.
+ *
+ * For a convex combination renormalised over its survivors, dropping term k
+ * raises the score exactly when x_k sits below the renormalised result. When
+ * x_k was computed and then refused for want of a denominator, that comparison
+ * is available and the direction is a fact rather than a guess.
+ */
+export function leaningOf(droppedValue: number, survivingScore: number): Leaning {
+  const surviving = survivingScore / 100
+  if (Math.abs(droppedValue - surviving) < 1e-9) return 'none'
+  return droppedValue < surviving ? 'high' : 'low'
 }
 
 export interface UptakeInputs {
@@ -84,6 +113,15 @@ export interface Uptake {
   readonly overwrittenArtifacts: number
   readonly bundles: number
   readonly omitted: readonly UptakeOmission[]
+  /**
+   * Which way dropping the (c) term moved this window's score, or null when it
+   * was not dropped.
+   *
+   * Decided per window rather than declared in the leanings table: the value
+   * was computed and then refused for want of a denominator, so the comparison
+   * against the surviving score is available and the direction is a fact.
+   */
+  readonly overwriteLeaning: Leaning | null
   /** Why there is no score, when there is none. */
   readonly unavailable: 'no-artifacts' | 'too-few-bundles' | null
 }
@@ -104,6 +142,7 @@ export function uptake(inputs: UptakeInputs): Uptake {
     overwrittenArtifacts: 0,
     bundles,
     omitted,
+    overwriteLeaning: null,
   } as const
 
   if (artifacts.length === 0) return { ...empty, unavailable: 'no-artifacts' }
@@ -127,12 +166,23 @@ export function uptake(inputs: UptakeInputs): Uptake {
   const reuse = inputs.totalWeight > 0 ? reusedWeight / inputs.totalWeight : 0
   const overwrittenShare = overwritten / artifacts.length
 
-  // Renormalised over the terms that were computed, per the rule for
+  // (c) needs its own numerator to clear the minimum. Four hand-overwritten
+  // artifacts is not a rate, and carrying it anyway put `1 - 0.018` into the
+  // combination on the strength of four observations -- worth 10.65 points on
+  // this axis and 2.71 on the composite.
+  const keepOverwrite = overwritten >= MIN_TERM_NUMERATOR
+  if (!keepOverwrite) omitted.push('axis4-manual-overwrite')
+
+  // Renormalised over the terms that survive, per the rule for
   // convex-combination axes: the coefficients of the survivors are scaled until
   // they sum to 1 again. Nothing is credited and nothing is docked.
-  const surviving = WEIGHT_REUSE + WEIGHT_NOT_OVERWRITTEN
-  const score =
-    100 * ((WEIGHT_REUSE / surviving) * reuse + (WEIGHT_NOT_OVERWRITTEN / surviving) * (1 - overwrittenShare))
+  const surviving = WEIGHT_REUSE + (keepOverwrite ? WEIGHT_NOT_OVERWRITTEN : 0)
+  const score = keepOverwrite
+    ? 100 * ((WEIGHT_REUSE / surviving) * reuse + (WEIGHT_NOT_OVERWRITTEN / surviving) * (1 - overwrittenShare))
+    : 100 * reuse
+
+  // Known, not guessed: the value was computed before it was refused.
+  const overwriteLeaning = keepOverwrite ? null : leaningOf(1 - overwrittenShare, score)
 
   return {
     reuse,
@@ -143,6 +193,7 @@ export function uptake(inputs: UptakeInputs): Uptake {
     overwrittenArtifacts: overwritten,
     bundles,
     omitted,
+    overwriteLeaning,
     unavailable: null,
   }
 }

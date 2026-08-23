@@ -98,8 +98,26 @@ export const SUPPRESSED_REASONS = [
 
 export type SuppressedReason = (typeof SUPPRESSED_REASONS)[number]
 
-/** Which way a missing term moves the score it was left out of. */
-export type Leaning = 'high' | 'low'
+/**
+ * Which way a missing term moves the score it was left out of.
+ *
+ * Four values, because two were not enough to say anything true.
+ *
+ * `high` and `low` are for a term whose direction the formula fixes: a positive
+ * numerator term left out makes the score read high, a subtractive one makes it
+ * read low.
+ *
+ * `none` is for a term whose absence does not move the score at all — an
+ * optional layer on top, not a term inside the combination. Recording it as a
+ * direction was a contradiction of the same file's own justification for it.
+ *
+ * `unknown` is the one that matters most. For a convex-combination axis
+ * renormalised over its survivors, dropping term k *raises* the score exactly
+ * when x_k is below the renormalised score — so the direction depends on a
+ * value the build did not compute. Asserting `high` there is asserting the
+ * answer to the question the omission exists to record. Two axes did it.
+ */
+export type Leaning = 'high' | 'low' | 'none' | 'unknown'
 
 /**
  * Why a term is missing.
@@ -160,16 +178,31 @@ export function tierOf(score: number): Tier {
 export function aggregateLeaning(axes: readonly AxisInput[]): CompositeLeaning | null {
   let high = false
   let low = false
+  let any = false
   for (const axis of axes) {
     for (const term of axis.omittedTerms) {
+      // Explicit per value. The previous form was `if high else low`, which
+      // read every value that was not `high` as `low` -- so a term whose
+      // direction is unknown would have been reported as a known one, in the
+      // one field that exists to say a direction is known.
       if (term.leans === 'high') high = true
-      else low = true
+      else if (term.leans === 'low') low = true
+      else if (term.leans === 'unknown') {
+        // Could be either, so the total cannot be called in either direction.
+        high = true
+        low = true
+      }
+      // 'none' moves nothing and contributes nothing.
+      any = true
     }
   }
   if (high && low) return 'mixed'
   if (high) return 'high'
   if (low) return 'low'
-  return null
+  // Terms were dropped and not one of them moves the score. That is a different
+  // fact from "no term was dropped", and V-24 refuses a null here -- correctly,
+  // because a null would leave a reader unable to tell the two apart.
+  return any ? 'none' : null
 }
 
 /** A weighted mean over a subset, renormalised to 100. Null when the subset is empty. */

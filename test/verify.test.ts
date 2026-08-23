@@ -59,7 +59,7 @@ const counts = {
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
   metabolism: {
     skillsListed: [], listingChars: 0, listingTruncated: false,
-    skillFirings: {}, hookFirings: {}, mcpFirings: {}, effectiveInputPerCall: [],
+    skillFirings: {}, hookFirings: {}, mcpFirings: {}, effectiveInputPerCall: [], peakInputPerBundle: [], effectiveInputPerBundle: [], inputPerBundleWithoutCache: [],
   },
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,

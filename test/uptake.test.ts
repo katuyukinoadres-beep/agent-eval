@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  leaningOf,
   MIN_BUNDLES,
   UPTAKE_OMISSION_LEANINGS,
   WEIGHT_NOT_OVERWRITTEN,
@@ -90,6 +91,10 @@ describe('re-reference', () => {
 })
 
 describe('manual overwrite', () => {
+  /** Enough artifacts for the (c) term's own numerator to clear the minimum. */
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => artifact({ path: `/x/a${i}.ts` }))
+
   it('counts an artifact a person edited', () => {
     const r = uptake(at({ manuallyOverwritten: () => true }))
     expect(r.overwritten).toBe(1)
@@ -97,11 +102,57 @@ describe('manual overwrite', () => {
   })
 
   it('lowers the score when it rises', () => {
-    const clean = uptake(at({ mentionedElsewhereAfter: () => true }))
-    const edited = uptake(
-      at({ mentionedElsewhereAfter: () => true, manuallyOverwritten: () => true }),
-    )
+    const base10 = { artifacts: many(10), totalWeight: 10, mentionedElsewhereAfter: () => true }
+    const clean = uptake(at(base10))
+    const edited = uptake(at({ ...base10, manuallyOverwritten: () => true }))
     expect(edited.score).toBeLessThan(clean.score as number)
+  })
+
+  it('drops the term when fewer than five artifacts were overwritten', () => {
+    // v2 §3.4: a window whose (c) numerator misses the minimum drops the term
+    // and renormalises. It was never gated: four hand-overwritten artifacts on
+    // this machine put `1 - 0.018` into the combination on four observations,
+    // worth 10.65 points on the axis.
+    const four = Array.from({ length: 100 }, (_, i) => artifact({ path: `/x/a${i}.ts` }))
+    const r = uptake(
+      at({
+        artifacts: four,
+        totalWeight: 100,
+        mentionedElsewhereAfter: () => true,
+        manuallyOverwritten: (p) => ['/x/a0.ts', '/x/a1.ts', '/x/a2.ts', '/x/a3.ts'].includes(p),
+      }),
+    )
+    expect(r.overwrittenArtifacts).toBe(4)
+    expect(r.omitted).toContain('axis4-manual-overwrite')
+    // Only (a) survives, renormalised to the whole: everything was re-used.
+    expect(r.score).toBeCloseTo(100)
+  })
+
+  it('keeps it at five', () => {
+    // The other direction. A boundary tested on one side only passes against a
+    // gate that never opens.
+    const hundred = Array.from({ length: 100 }, (_, i) => artifact({ path: `/x/a${i}.ts` }))
+    const r = uptake(
+      at({
+        artifacts: hundred,
+        totalWeight: 100,
+        mentionedElsewhereAfter: () => true,
+        manuallyOverwritten: (p) =>
+          ['/x/a0.ts', '/x/a1.ts', '/x/a2.ts', '/x/a3.ts', '/x/a4.ts'].includes(p),
+      }),
+    )
+    expect(r.overwrittenArtifacts).toBe(5)
+    expect(r.omitted).not.toContain('axis4-manual-overwrite')
+    expect(r.score).toBeLessThan(100)
+  })
+
+  it('records which way dropping it moved the score, from the value it refused', () => {
+    // The one omission here whose direction is a fact: the value was computed
+    // and then refused for want of a denominator, so it can be compared against
+    // the score that survived.
+    expect(leaningOf(0.98, 68)).toBe('low')
+    expect(leaningOf(0.4, 68)).toBe('high')
+    expect(leaningOf(0.68, 68)).toBe('none')
   })
 })
 
@@ -131,9 +182,15 @@ describe('the dropped term', () => {
     // alone would call every question-and-answer bundle abandoned -- 70 of 427
     // on this machine made no tool call at all. That is not a conservative
     // approximation, it is a wrong one.
+    //
+    // And the direction it moves the score is not one this build can know:
+    // dropping a term from a convex combination renormalised over its
+    // survivors raises the score exactly when that term is below the
+    // renormalised score, which is a comparison against a value that is not
+    // computed.
     const r = uptake(base)
     expect(r.omitted).toContain('axis4-abandonment')
-    expect(UPTAKE_OMISSION_LEANINGS['axis4-abandonment']).toBe('high')
+    expect(UPTAKE_OMISSION_LEANINGS['axis4-abandonment']).toBe('unknown')
   })
 
   it('names next-window survival on a first window, and says it reads low', () => {

@@ -75,13 +75,25 @@ describe('a window with no failures', () => {
 })
 
 describe('what it does not compute', () => {
-  it('names the explanation-repetition term and says it reads high', () => {
+  it('names the explanation-repetition term, and refuses to guess its direction', () => {
     // L3 needs MinHash over 3-grams at 0.75 plus a co-occurrence Jaccard at
     // 0.6 for the cases where someone says "that file" instead of naming it.
-    // It enters as a deduction, so dropping it reads high.
+    //
+    // The axis is a convex combination renormalised over its survivors, so
+    // dropping this term raises the score exactly when L3 is below the
+    // renormalised score -- a comparison against a value that is not computed.
+    // It was marked `high`, which asserts the answer to the question the
+    // omission exists to record. Near L3 = 0 the omission costs about 16 points.
     const r = recurrence(base)
     expect(r.omitted).toContain('axis6-explanation-repetition')
-    expect(RECURRENCE_OMISSION_LEANINGS['axis6-explanation-repetition']).toBe('high')
+    expect(RECURRENCE_OMISSION_LEANINGS['axis6-explanation-repetition']).toBe('unknown')
+  })
+
+  it('gives the optional external log no direction at all', () => {
+    // Layer B sits on top rather than inside the combination, so its absence
+    // leaves the score exactly where layer A puts it. The paragraph above the
+    // table said so while the table said `high`.
+    expect(RECURRENCE_OMISSION_LEANINGS['axis6-external-hook-log']).toBe('none')
   })
 
   it('names the external hook log only when there is none', () => {

@@ -392,13 +392,24 @@ export interface MetabolismCounts {
   /**
    * Effective input tokens per assistant call: input plus cache reads.
    *
-   * Per call, not summed per bundle. The trapezoid's thresholds are context
-   * sizes, and a bundle with a hundred calls re-reads the same cached context a
-   * hundred times -- summing gives 5.3M here against 415k per call. Both land on
-   * the floor on this machine, so the reading does not change the verdict, but
-   * it would on a lighter one.
+   * Kept as a reference figure. v1 §8 and v2 §3.5 both define the context tax
+   * as `median(per task bundle)`, and the two differ by an order of magnitude,
+   * so the per-call series is reported and the per-bundle one is scored.
+   *
+   * The comment that used to defend the per-call reading argued from the
+   * main-only median of 415k against a 120k ceiling -- "both land on the floor,
+   * so the reading does not change the verdict". The tool runs at scope `all`,
+   * where the per-call median is 114,635 and the trapezoid gives 70.1 while the
+   * per-bundle sum is past the ceiling and gives 20. It changed the verdict by
+   * 50 points on the axis it was defending.
    */
   readonly effectiveInputPerCall: readonly number[]
+  /** Effective input summed per task bundle. */
+  readonly effectiveInputPerBundle: readonly number[]
+  /** The largest effective input any one call in the bundle saw. A context size. */
+  readonly peakInputPerBundle: readonly number[]
+  /** The same without cache reads. v2 §3.5(b) requires both. */
+  readonly inputPerBundleWithoutCache: readonly number[]
 }
 
 export interface ManualEditCounts {
@@ -567,6 +578,9 @@ interface MutMetabolism {
   hookFirings: Map<string, number>
   mcpFirings: Map<string, number>
   effectiveInputPerCall: number[]
+  effectiveInputPerBundle: Map<number, number>
+  peakInputPerBundle: Map<number, number>
+  inputPerBundleWithoutCache: Map<number, number>
 }
 
 /**
@@ -864,6 +878,22 @@ function reduceLine(
     m.cacheCreation += n('cache_creation_input_tokens')
     const effective = n('input_tokens') + n('cache_read_input_tokens')
     if (effective > 0) met.effectiveInputPerCall.push(effective)
+    // Per bundle, which is what the axis is defined on. A row with no bundle
+    // belongs to no request, so it is left out rather than pooled -- pooling it
+    // would make one synthetic bundle carry every unattributable row.
+    if (bundle !== null) {
+      if (effective > 0) {
+        met.effectiveInputPerBundle.set(bundle, (met.effectiveInputPerBundle.get(bundle) ?? 0) + effective)
+        // The largest context this request ever operated at. Summing counts the
+        // same cached context once per call inside the bundle; the peak is the
+        // size, and size is what the trapezoid's thresholds are in.
+        met.peakInputPerBundle.set(bundle, Math.max(met.peakInputPerBundle.get(bundle) ?? 0, effective))
+      }
+      const plain = n('input_tokens')
+      if (plain > 0) {
+        met.inputPerBundleWithoutCache.set(bundle, (met.inputPerBundleWithoutCache.get(bundle) ?? 0) + plain)
+      }
+    }
   }
 
   const content = message['content']
@@ -1095,6 +1125,9 @@ export function scan(
     hookFirings: new Map(),
     mcpFirings: new Map(),
     effectiveInputPerCall: [],
+    effectiveInputPerBundle: new Map<number, number>(),
+    peakInputPerBundle: new Map<number, number>(),
+    inputPerBundleWithoutCache: new Map<number, number>(),
   }
   const wasted = wastedTracker()
   const w: MutWasted = {
@@ -1229,6 +1262,9 @@ export function scan(
       hookFirings: Object.fromEntries([...met.hookFirings.entries()].sort()),
       mcpFirings: Object.fromEntries([...met.mcpFirings.entries()].sort()),
       effectiveInputPerCall: met.effectiveInputPerCall,
+      effectiveInputPerBundle: [...met.effectiveInputPerBundle.values()],
+      peakInputPerBundle: [...met.peakInputPerBundle.values()],
+      inputPerBundleWithoutCache: [...met.inputPerBundleWithoutCache.values()],
     },
     manualEdits: {
       editedNames: [...manual.editedNames].sort(),

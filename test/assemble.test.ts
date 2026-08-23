@@ -71,7 +71,7 @@ const counts = {
   metabolism: {
     skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
     skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},
-    effectiveInputPerCall: [30_000, 30_000],
+    effectiveInputPerCall: [30_000, 30_000], peakInputPerBundle: [], effectiveInputPerBundle: [], inputPerBundleWithoutCache: [],
   },
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,

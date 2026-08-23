@@ -301,12 +301,15 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // the asset multiplier is skipped when nothing is owned rather than set to
   // its worst value.
   const met = metabolism({
-    effectiveInputPerCall: counts.metabolism.effectiveInputPerCall,
+    peakInputPerBundle: counts.metabolism.peakInputPerBundle,
+    effectiveInputPerBundle: counts.metabolism.effectiveInputPerBundle,
+    inputPerBundleWithoutCache: counts.metabolism.inputPerBundleWithoutCache,
     skillsListed: counts.metabolism.skillsListed,
     skillFirings: counts.metabolism.skillFirings,
     hookFirings: counts.metabolism.hookFirings,
     mcpFirings: counts.metabolism.mcpFirings,
     mcpServersDefined: mcp.servers,
+    hooksDefined: inputs.hooks.total,
     listingTruncated: counts.metabolism.listingTruncated,
   })
 
@@ -342,7 +345,16 @@ export function assemble(inputs: AssembleInputs): Assembled {
       (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: METABOLISM_OMISSION_LEANINGS[term] }),
     ),
     detail: {
-      contextTaxPerCall: met.fc ?? 0,
+      // Named for what it is. v2 §3.5(b) requires both figures and forbids
+      // scoring on one: cache reads are 94.7% of all tokens measured, so the
+      // with-cache figure mostly measures how long a session ran.
+      // The peak context a request reached, which is the figure the trapezoid
+      // grades. The other two are reported beside it because the spec's two
+      // lines disagree about which is meant, and the three differ by four
+      // orders of magnitude.
+      contextTaxPeakPerBundle: met.fc ?? 0,
+      contextTaxSummedPerBundle: met.fcSummed ?? 0,
+      contextTaxPerBundleWithoutCache: met.fcWithoutCache ?? 0,
       trapezoidE2: Math.round((met.trapezoidScore ?? 0) * 100),
       assets: met.assets,
       firedAssets: met.firedAssets,
@@ -393,9 +405,15 @@ export function assemble(inputs: AssembleInputs): Assembled {
         : up.unavailable === 'no-artifacts'
           ? ['insufficient-assets']
           : ['definition-pending'],
-    omittedTerms: up.omitted.map(
-      (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: UPTAKE_OMISSION_LEANINGS[term] }),
-    ),
+    omittedTerms: up.omitted.map((term): OmittedTerm => {
+      // (c) is dropped for want of data in this window, not because the build
+      // never implemented it — and its direction was measured before it was
+      // refused, so it is a fact rather than the table's fallback.
+      if (term === 'axis4-manual-overwrite') {
+        return { term, cause: 'below-minimum', leans: up.overwriteLeaning ?? UPTAKE_OMISSION_LEANINGS[term] }
+      }
+      return { term, cause: 'not-implemented', leans: UPTAKE_OMISSION_LEANINGS[term] }
+    }),
     detail: {
       artifacts: up.artifacts,
       reusedArtifacts: up.reusedArtifacts,
