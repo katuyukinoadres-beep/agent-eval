@@ -54,6 +54,11 @@ const counts = {
   referenceTokens: 0,
   toolActivityRows: 200,
   errorRepeats: { errors: 10, distinctSignatures: 5, rIn: 0.5, byFamily: { timeout: 10 } },
+  metabolism: {
+    skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
+    skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},
+    effectiveInputPerCall: [30_000, 30_000],
+  },
   wasted: {
     failures: 10,
     hookOriginated: 0,
@@ -149,10 +154,10 @@ describe('a denominator of zero is an absence, not a one', () => {
 })
 
 describe('no axis carries a score', () => {
-  it('leaves every score null except the one axis that is built', () => {
+  it('leaves every score null except the axes that are built', () => {
     const { payload } = assemble(inputs)
     for (const key of AXIS_KEYS) {
-      if (key === 'wastedMotion') continue
+      if (key === 'wastedMotion' || key === 'environmentMetabolism') continue
       expect(payload.axes[key].score, key).toBeNull()
       expect(payload.axes[key].metric, key).toBeNull()
     }

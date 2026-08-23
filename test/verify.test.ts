@@ -56,6 +56,10 @@ const counts = {
   taskBundles: 5, rootBundles: 0, orphanBundles: 0, toolActivityRows: 50,
   environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, referenceTokens: 0,
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
+  metabolism: {
+    skillsListed: [], listingChars: 0, listingTruncated: false,
+    skillFirings: {}, hookFirings: {}, mcpFirings: {}, effectiveInputPerCall: [],
+  },
   wasted: {
     failures: 3, hookOriginated: 0, writeRepeats: 1, investigationRepeats: 1,
     timedOut: 0, largeOutput: 0, callsPerBundle: { b1: 4 },
