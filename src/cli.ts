@@ -100,6 +100,21 @@ function snapshotLine(result: ReturnType<typeof runScan>): string {
   return `wrote #${s.seq} (${s.hash.slice(7, 19)})${chain}${absent}`
 }
 
+/** The total, or why there is not one, plus which way it leans. */
+function compositeLine(c: ReturnType<typeof runScan>['payload']['composite']): string {
+  if (c.score === null) return `none — ${c.suppressedReason ?? 'unstated'}`
+  const leaning =
+    c.leans === null
+      ? ''
+      : ` — leans ${c.leans}${c.leans === 'mixed' ? ' (both directions, so neither can be told)' : ''}`
+  const parts = [
+    `${c.score} (${c.tier ?? '?'}) over ${c.axesUsed.length} axes`,
+    c.outcomeScore === null ? null : `outcome ${c.outcomeScore}`,
+    c.designScore === null ? null : `design ${c.designScore}`,
+  ].filter((x): x is string => x !== null)
+  return `${parts.join(', ')}${leaning}`
+}
+
 /** A short report, so the common case does not require reading 300 lines of JSON. */
 function summarise(result: ReturnType<typeof runScan>): string {
   const { payload, validation, gateReasons } = result
@@ -131,6 +146,15 @@ function summarise(result: ReturnType<typeof runScan>): string {
     '',
     `gate       ${gateReasons.length === 0 ? 'passed' : gateReasons.join(', ')}`,
     `axes       ${axes.filter(([, a]) => a.availability === 'available').length}/${axes.length} available`,
+    ...axes
+      .filter(([, a]) => a.score !== null)
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([k, a]) => `           ${k.padEnd(22)} ${String(a.score).padStart(6)}`),
+    '',
+    // The total comes after the breakdown, not before it. The first release
+    // does not lead with one number, and a total with no leaning beside it
+    // reads as a plain measurement when its parts dropped terms.
+    `composite  ${compositeLine(payload.composite)}`,
     ...[...reasons.entries()].sort().map(([r, n]) => `           ${n} × ${r}`),
     '',
     `validation ${validation.ok ? 'passed' : 'REFUSED'} (${validation.violations.length} violations, ${validation.flags.length} flags)`,

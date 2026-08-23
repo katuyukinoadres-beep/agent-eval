@@ -62,6 +62,10 @@ const counts = {
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
+  verification: {
+    intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
+    selfRepaired: 2, humanRescued: 1, unresolved: 1,
+  },
   wasted: {
     failures: 10,
     hookOriginated: 0,
@@ -108,6 +112,14 @@ const inputs: AssembleInputs = {
 } as unknown as AssembleInputs
 
 const over = (o: Partial<AssembleInputs>): AssembleInputs => ({ ...inputs, ...o })
+
+/** The axes that carry a formula today. The rest are still not-implemented. */
+const BUILT_AXES = new Set<string>([
+  'wastedMotion',
+  'environmentMetabolism',
+  'artifactUptake',
+  'selfVerification',
+])
 
 describe('the payload it builds passes its own rules', () => {
   it('validates, in the shape it ships in', () => {
@@ -165,7 +177,7 @@ describe('no axis carries a score', () => {
   it('leaves every score null except the axes that are built', () => {
     const { payload } = assemble(inputs)
     for (const key of AXIS_KEYS) {
-      if (key === 'wastedMotion' || key === 'environmentMetabolism') continue
+      if (BUILT_AXES.has(key)) continue
       expect(payload.axes[key].score, key).toBeNull()
       expect(payload.axes[key].metric, key).toBeNull()
     }
@@ -200,8 +212,8 @@ describe('no axis carries a score', () => {
     // `too-few-clusters` is measured. `definition-pending` is not about this
     // environment at all — it is about a formula the repository does not have.
     const { payload } = assemble(inputs)
-    expect(payload.axes.selfVerification.unavailableReasons).toContain('too-few-clusters')
-    expect(payload.axes.selfVerification.unavailableReasons).toContain('definition-pending')
+    expect(payload.axes.firstPassLanding.unavailableReasons).toContain('too-few-clusters')
+    expect(payload.axes.firstPassLanding.unavailableReasons).toContain('definition-pending')
     // Axis 4 is built now, and says its own reason: no artifacts in this
     // fixture rather than a small environment.
     expect(payload.axes.artifactUptake.unavailableReasons).toEqual(['insufficient-assets'])

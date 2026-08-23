@@ -43,6 +43,7 @@ import { wastedMotion, OMITTED_TERM_LEANINGS, type OmittedTermName } from '../sc
 import { composite, type AxisInput, type OmittedTerm, type SuppressedReason } from '../score/composite.js'
 import { METABOLISM_OMISSION_LEANINGS, metabolism } from '../score/metabolism.js'
 import { UPTAKE_OMISSION_LEANINGS, uptake } from '../score/uptake.js'
+import { VERIFICATION_OMISSION_LEANINGS, verification } from '../score/verification.js'
 import type { ArtifactSet } from '../score/artifact.js'
 import { basename, normalisePath } from '../collect/reference.js'
 import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
@@ -341,6 +342,53 @@ export function assemble(inputs: AssembleInputs): Assembled {
     },
   }
 
+  // Axis 3. Condition (ii) needs a past window's command set, so a first window
+  // drops it -- which makes verification easier to earn and reads high.
+  const ver = verification({
+    intervals: counts.verification.intervals,
+    verifiedIntervals: counts.verification.verifiedIntervals,
+    selfRepaired: counts.verification.selfRepaired,
+    humanRescued: counts.verification.humanRescued,
+    unresolved: counts.verification.unresolved,
+    todoWriteUsed: counts.verification.todoWriteUsed,
+    firstWindow: true,
+  })
+
+  const verificationAxis: Axis = {
+    availability: ver.score === null ? 'not_applicable' : 'available',
+    lineStates: {
+      available: ver.score === null ? 0 : counts.toolActivityRows,
+      not_applicable: ver.score === null ? linesRead : linesRead - counts.toolActivityRows,
+      parse_failed: 0,
+    },
+    metric: null,
+    score: ver.score === null ? null : Math.round(ver.score * 100) / 100,
+    confidenceInterval: null,
+    belowMinDenominator: !meetsMinimum({
+      clusters,
+      denominator: Math.max(ver.intervals, MIN_DENOMINATOR),
+      numerator: Math.max(counts.verification.verifiedIntervals, MIN_NUMERATOR),
+    }).meetsMinimum,
+    unavailableReasons: ver.unavailable === null ? [] : ['insufficient-edit-intervals'],
+    omittedTerms: ver.omitted.map(
+      (term): OmittedTerm => ({
+        term,
+        cause: term === 'axis3-command-history' ? 'below-minimum' : 'not-implemented',
+        leans: VERIFICATION_OMISSION_LEANINGS[term],
+      }),
+    ),
+    detail: {
+      intervals: ver.intervals,
+      verifiedIntervals: counts.verification.verifiedIntervals,
+      verifiedE4: Math.round((ver.v ?? 0) * 10_000),
+      failures: ver.failures,
+      selfRepaired: counts.verification.selfRepaired,
+      humanRescued: counts.verification.humanRescued,
+      unresolved: counts.verification.unresolved,
+      todoWriteUsed: counts.verification.todoWriteUsed ? 1 : 0,
+    },
+  }
+
   const axes = Object.fromEntries(
     AXIS_KEYS.map((k) => [
       k,
@@ -350,7 +398,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
           ? metabolismAxis
           : k === 'artifactUptake'
             ? uptakeAxis
-            : axisFor(k),
+            : k === 'selfVerification'
+              ? verificationAxis
+              : axisFor(k),
     ]),
   ) as Axes
 

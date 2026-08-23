@@ -18,7 +18,7 @@ import type { FileEntry, Inventory } from './walk.js'
 import { notHumanBecause, userText } from './humanTurn.js'
 import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.js'
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
-import { referenceIndex, type Mention, type ReferenceIndex } from './reference.js'
+import { normalisePath, referenceIndex, type Mention, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
 import { LARGE_OUTPUT_BYTES, isInvestigation, wastedTracker, type WastedCounts, type WastedTracker } from './wasted.js'
 import type { Signer } from '../snapshot/mac.js'
@@ -216,6 +216,8 @@ export interface ScanCounts {
    * down.
    */
   readonly manualEdits: ManualEditCounts
+  /** Axis 3's raw counts: edit intervals, the ones a verification touched, and repair. */
+  readonly verification: VerificationCounts
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -349,6 +351,28 @@ export interface ManualEditCounts {
   readonly userModifiedTrue: number
 }
 
+export interface VerificationCounts {
+  /**
+   * Edit intervals: from a write to a path until the next write to the same
+   * path, or the end of the transcript.
+   *
+   * Not cut at human turns. 945 of 1,108 sessions on the machine v1 measured
+   * had exactly one human turn, so cutting there collapses most sessions into
+   * a single interval and leaves the denominator at 1.
+   */
+  readonly intervals: number
+  /** Intervals where the edited path, or its parent, later appeared in a tool argument. */
+  readonly verifiedIntervals: number
+  /** Whether TodoWrite was used at all. v1 deducts five points when it was not. */
+  readonly todoWriteUsed: boolean
+  /** Failures that a later success on the same target cleared, with no human turn between. */
+  readonly selfRepaired: number
+  /** Failures where a human turn came before the recovery. */
+  readonly humanRescued: number
+  /** Failures nothing cleared. The only third of the split that is deducted for. */
+  readonly unresolved: number
+}
+
 export interface ProjectTally {
   readonly lines: number
   readonly subLines: number
@@ -387,6 +411,12 @@ interface Mut {
   listingTruncated: boolean
   userModifiedPresent: number
   userModifiedTrue: number
+  intervals: number
+  verifiedIntervals: number
+  todoWriteUsed: boolean
+  selfRepaired: number
+  humanRescued: number
+  unresolved: number
   rootBundles: number
   orphanBundles: number
   environmentNoiseRows: number
@@ -480,6 +510,11 @@ const SIG_SEPARATOR = String.fromCharCode(0)
 /** Where the other machine's skill_listing sat exactly, so past it is a truncation. */
 const LISTING_CAP = 20_001
 
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
+const INSPECT_TOOLS = new Set(['Read', 'Grep', 'Bash', 'Glob'])
+/** v1: a failure cleared within three attempts is a repair. */
+const MAX_REPAIR_ATTEMPTS = 3
+
 const HOOK_ORIGINATED = /(Pre|Post)ToolUse:/
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -513,6 +548,8 @@ function reduceLine(
   w: MutWasted,
   met: MutMetabolism,
   manual: MutManualEdits,
+  openEdits: Map<string, boolean>,
+  pending: Map<string, { attempts: number; humanSince: boolean }>,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -636,6 +673,9 @@ function reduceLine(
     if (why === null) {
       human = true
       m.humanTurns += 1
+      // A human turn between a failure and its recovery makes the recovery a
+      // rescue rather than a repair. v1 splits the two and deducts for neither.
+      for (const st of pending.values()) st.humanSince = true
       proj.humanRows += 1
       if (day !== null) dates.humanTurn.add(day)
     } else {
@@ -716,6 +756,21 @@ function reduceLine(
       m.toolResultTotal += 1
       if ('is_error' in block) {
         m.toolResultWithIsErrorKey += 1
+        const okId = block['tool_use_id']
+        if (block['is_error'] !== true && typeof okId === 'string') {
+          const okCall = toolOf.get(okId)
+          const okKey = `${okCall?.name ?? 'unknown'} ${okCall?.target ?? ''}`
+          const st = pending.get(okKey)
+          if (st !== undefined) {
+            // Within three attempts and with no human turn in between is a
+            // repair. With a human turn it is a rescue, which v1 counts apart
+            // and deducts for neither.
+            if (st.humanSince) m.humanRescued += 1
+            else if (st.attempts <= MAX_REPAIR_ATTEMPTS) m.selfRepaired += 1
+            else m.unresolved += 1
+            pending.delete(okKey)
+          }
+        }
         if (block['is_error'] === true) {
           m.toolResultIsErrorTrue += 1
           const text = resultText(block)
@@ -749,15 +804,43 @@ function reduceLine(
       if (typeof id === 'string' && typeof toolName === 'string') {
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
       }
-      if (typeof toolName === 'string') {
+      if (toolName === 'TodoWrite') m.todoWriteUsed = true
+      if (typeof toolName === 'string' && isObj(block['input'])) {
+        const input = block['input'] as Record<string, unknown>
+        if (EDIT_TOOLS.has(toolName)) {
+          const path = input['file_path'] ?? input['notebook_path']
+          if (typeof path === 'string' && path.length > 0) {
+            const key = normalisePath(path)
+            // A second write to the same path closes the first interval.
+            const wasVerified = openEdits.get(key)
+            if (wasVerified !== undefined) {
+              m.intervals += 1
+              if (wasVerified) m.verifiedIntervals += 1
+            }
+            openEdits.set(key, false)
+          }
+        } else if (INSPECT_TOOLS.has(toolName)) {
+          // The path itself or its parent directory appearing in any argument.
+          // No command dictionary: v1 dropped one because most Bash calls on the
+          // machine it was fitted to were python invocations, so the next piece
+          // of work after an edit counted as verification of it.
+          const args = Object.values(input)
+            .filter((v): v is string => typeof v === 'string')
+            .join(' ')
+          const haystack = normalisePath(args)
+          for (const [key] of openEdits) {
+            const parent = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : ''
+            if (haystack.includes(key) || (parent !== '' && haystack.includes(parent))) {
+              openEdits.set(key, true)
+            }
+          }
+        }
+
         // A tool's arguments count as a reference too: v1 names Read, Grep and
         // Bash arguments alongside human text.
-        const input = block['input']
-        if (isObj(input)) {
-          for (const v of Object.values(input)) {
-            if (typeof v === 'string' && v.length > 0) {
-              refs.note(v, typeof ts === 'string' ? ts : null, bundle)
-            }
+        for (const v of Object.values(input)) {
+          if (typeof v === 'string' && v.length > 0) {
+            refs.note(v, typeof ts === 'string' ? ts : null, bundle)
           }
         }
         const key = bundle === null ? 'none' : String(bundle)
@@ -810,7 +893,9 @@ export function scan(
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
+    intervals: 0, verifiedIntervals: 0, todoWriteUsed: false,
+    selfRepaired: 0, humanRescued: 0, unresolved: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -850,6 +935,8 @@ export function scan(
       perProject.set(file.project, proj)
     }
     const bundles = bundleTracker(nextBundleId)
+    const openEdits = new Map<string, boolean>()
+    const pending = new Map<string, { attempts: number; humanSince: boolean }>()
     let st = perSession.get(file.sessionId)
     if (st === undefined) {
       st = {
@@ -868,8 +955,17 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending)
     }
+    // Intervals still open when the transcript ends are closed here: a write
+    // whose file was never touched again is an unverified interval, not a
+    // missing one.
+    for (const verified of openEdits.values()) {
+      m.intervals += 1
+      if (verified) m.verifiedIntervals += 1
+    }
+    // Failures nothing ever cleared.
+    m.unresolved += pending.size
     st.bundles += bundles.opened()
     m.taskBundles += bundles.opened()
     m.rootBundles += bundles.roots()
@@ -912,6 +1008,14 @@ export function scan(
       staleRecoveredPaths: [...manual.staleRecoveredPaths].sort(),
       userModifiedPresent: m.userModifiedPresent,
       userModifiedTrue: m.userModifiedTrue,
+    },
+    verification: {
+      intervals: m.intervals,
+      verifiedIntervals: m.verifiedIntervals,
+      todoWriteUsed: m.todoWriteUsed,
+      selfRepaired: m.selfRepaired,
+      humanRescued: m.humanRescued,
+      unresolved: m.unresolved,
     },
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,

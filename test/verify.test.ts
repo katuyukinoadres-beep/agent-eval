@@ -63,6 +63,10 @@ const counts = {
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
+  verification: {
+    intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
+    selfRepaired: 2, humanRescued: 1, unresolved: 1,
+  },
   wasted: {
     failures: 3, hookOriginated: 0, writeRepeats: 1, investigationRepeats: 1,
     timedOut: 0, largeOutput: 0, callsPerBundle: { b1: 4 },
