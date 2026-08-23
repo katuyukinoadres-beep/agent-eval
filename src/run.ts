@@ -26,6 +26,9 @@ import {
   type ScopeDocument,
 } from './collect/environment.js'
 import { assemble } from './payload/assemble.js'
+import { ensureStateDir } from './snapshot/stateDir.js'
+import { loadKey } from './snapshot/key.js'
+import { signerFor } from './snapshot/mac.js'
 import { validate, type Verdict } from './validate/index.js'
 import type { Payload } from './payload/types.js'
 
@@ -41,12 +44,26 @@ export interface RunOptions {
   readonly measuredAt: string
   readonly submissionId: string
   readonly windowDays: number
+  /** Where the store lives, when it is not under home. Surfaced as --state-dir. */
+  readonly stateDir: string | null
+  /**
+   * Whether to touch the state directory at all.
+   *
+   * Off by default for now: creating a key and a store is a side effect on the
+   * user's machine, and a scan that only prints should not have one until the
+   * snapshot it exists for is being written.
+   */
+  readonly useStore: boolean
 }
 
 export interface RunResult {
   readonly payload: Payload
   readonly validation: Verdict
   readonly gateReasons: readonly string[]
+  /** Where the store is, when one was opened. Null when --store was not asked for. */
+  readonly stateDir: string | null
+  /** True when signatures were MAC'd. False means the set is empty for want of a key. */
+  readonly signaturesSigned: boolean
 }
 
 /**
@@ -87,12 +104,25 @@ export function defaultOptions(overrides: Partial<RunOptions> = {}): RunOptions 
     measuredAt: overrides.measuredAt ?? new Date().toISOString(),
     submissionId: overrides.submissionId ?? crypto.randomUUID(),
     windowDays: overrides.windowDays ?? 10,
+    stateDir: overrides.stateDir ?? null,
+    useStore: overrides.useStore ?? false,
   }
 }
 
 export function run(options: RunOptions): RunResult {
   const inventory = walkProjects(join(options.home, '.claude', 'projects'))
-  const counts = scan(inventory)
+
+  // The signer is built here and handed down. The reducer never holds the key,
+  // and the plaintext signature tuples never come back out of it.
+  let sign = null as ReturnType<typeof signerFor> | null
+  let store: { readonly stateDir: string; readonly snapshotDir: string } | null = null
+  if (options.useStore) {
+    const dirs = ensureStateDir(options.home, options.stateDir)
+    store = { stateDir: dirs.stateDir, snapshotDir: dirs.snapshotDir }
+    sign = signerFor(loadKey(options.home, dirs.stateDir).master)
+  }
+
+  const counts = scan(inventory, undefined, sign)
 
   const git = gitCommitDates(options.repos)
   const log = readClosingLog(options.closingLogPath)
@@ -137,5 +167,7 @@ export function run(options: RunOptions): RunResult {
     payload,
     validation,
     gateReasons: gate.reasons.map(String),
+    stateDir: store?.stateDir ?? null,
+    signaturesSigned: counts.signaturesSigned,
   }
 }

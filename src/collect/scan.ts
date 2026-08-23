@@ -21,6 +21,8 @@ import { readWrite, recordWrite, type MutPathTally, type PathTally } from './art
 import { referenceIndex, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
 import { LARGE_OUTPUT_BYTES, isInvestigation, wastedTracker, type WastedCounts, type WastedTracker } from './wasted.js'
+import type { Signer } from '../snapshot/mac.js'
+import type { Hmac128 } from '../snapshot/types.js'
 
 /**
  * Every jsonl key this reducer is allowed to look at.
@@ -158,6 +160,30 @@ export interface ScanCounts {
   readonly errorRepeats: RepeatRate
   /** Axis 2's numerator terms, before weighting. */
   readonly wasted: WastedCounts
+  /**
+   * The same terms again, split by session cluster.
+   *
+   * The bootstrap resamples sessions and recomputes a ratio estimator from the
+   * members it drew, so it needs each session's numerator and denominator
+   * separately. An aggregate cannot be resampled: there is one of it. Without
+   * this no interval is computable, and the raw logs it would have to be
+   * recomputed from are pruned.
+   */
+  readonly perSession: Readonly<Record<string, SessionTally>>
+  /**
+   * Error signatures, MAC'd.
+   *
+   * The plaintext tuple never leaves this function. `repeatRate` is computed
+   * from the tuples in scope here and only the aggregates and these MACs come
+   * out, which is what makes the set safe to persist: cross-window recurrence
+   * is a set intersection and needs equality, nothing more.
+   *
+   * Empty when no signer was supplied, with `signaturesSigned` saying so — an
+   * empty set and an unsigned run produce the same array and mean opposite
+   * things.
+   */
+  readonly signatures: readonly Hmac128[]
+  readonly signaturesSigned: boolean
   /** Rows carrying a tool_use or tool_result block — axis 2's evidence lines. */
   readonly toolActivityRows: number
 
@@ -228,6 +254,34 @@ export interface ScanCounts {
    * project for exactly that reason, and it needs these.
    */
   readonly perProject: Readonly<Record<string, ProjectTally>>
+}
+
+/**
+ * One session cluster's contribution to axis 2.
+ *
+ * Keyed by the session the file belongs to, folded from the path, so a
+ * subagent transcript lands in its parent's cluster.
+ */
+export interface SessionTally {
+  readonly bundles: number
+  readonly failures: number
+  readonly writeRepeats: number
+  readonly investigationRepeats: number
+  readonly timedOut: number
+  readonly largeOutput: number
+  readonly errors: number
+  readonly lines: number
+}
+
+interface MutSessionTally {
+  bundles: number
+  failures: number
+  writeRepeats: number
+  investigationRepeats: number
+  timedOut: number
+  largeOutput: number
+  errors: number
+  lines: number
 }
 
 export interface ProjectTally {
@@ -316,8 +370,11 @@ export function targetOf(toolName: string, input: unknown): string {
   return at <= 0 ? '' : base.slice(at + 1).toLowerCase()
 }
 
-const hashTarget = (target: string): string =>
-  target === '' ? '' : createHash('sha256').update(target, 'utf8').digest('hex').slice(0, 8)
+// hashTarget was here: an unsalted 8-hex sha256 of the target, defended on the
+// ground that it never left this process. That defence held until a snapshot
+// wrote a file. It is replaced by a MAC over the whole signature tuple under a
+// machine-local key -- 8 hex over a space of file extensions and command names
+// is small enough to enumerate, and the tuple MAC covers the target anyway.
 
 interface MutWasted {
   failures: number
@@ -328,6 +385,14 @@ interface MutWasted {
   largeOutput: number
   callsPerBundle: Map<string, number>
 }
+
+/**
+ * What joins a signature's three parts before it is MAC'd.
+ *
+ * A character that cannot occur in a tool name, an error class or a target, so
+ * `("a", "b:c", "")` and `("a:b", "c", "")` cannot collapse into one signature.
+ */
+const SIG_SEPARATOR = String.fromCharCode(0)
 
 /** A failure a hook produced. 17 here; v1 measured 29 on the other machine. */
 const HOOK_ORIGINATED = /(Pre|Post)ToolUse:/
@@ -350,12 +415,15 @@ function reduceLine(
   edits: EditTally,
   proj: MutProjectTally,
   fileSession: string,
+  st: MutSessionTally,
   notHuman: Map<string, number>,
   bundles: BundleTracker,
   paths: Map<string, MutPathTally>,
   refs: ReferenceIndex,
   toolOf: Map<string, { name: string; target: string }>,
-  signatures: Array<readonly [string, ErrorClass, string]>,
+  tuples: Array<readonly [string, ErrorClass, string]>,
+  macs: Hmac128[],
+  sign: Signer | null,
   wasted: WastedTracker,
   w: MutWasted,
 ): void {
@@ -364,6 +432,7 @@ function reduceLine(
 
   m.linesRead += 1
   proj.lines += 1
+  st.lines += 1
   if (kind === 'main') m.mainLines += 1
   else {
     m.subLines += 1
@@ -461,9 +530,15 @@ function reduceLine(
   // call: the call says where, the result says how much.
   const result = row['toolUseResult']
   if (isObj(result)) {
-    if (result['timedOutAfterMs'] !== undefined && result['timedOutAfterMs'] !== null) w.timedOut += 1
+    if (result['timedOutAfterMs'] !== undefined && result['timedOutAfterMs'] !== null) {
+      w.timedOut += 1
+      st.timedOut += 1
+    }
     const size = result['persistedOutputSize']
-    if (typeof size === 'number' && size > LARGE_OUTPUT_BYTES) w.largeOutput += 1
+    if (typeof size === 'number' && size > LARGE_OUTPUT_BYTES) {
+      w.largeOutput += 1
+      st.largeOutput += 1
+    }
   }
 
   const write = readWrite(row['toolUseResult'])
@@ -513,17 +588,25 @@ function reduceLine(
           // A guardrail firing is the guardrail working, not wasted motion.
           // Excluded from numerator and denominator both, per v1.
           if (HOOK_ORIGINATED.test(text)) w.hookOriginated += 1
-          else w.failures += 1
+          else {
+            w.failures += 1
+            st.failures += 1
+          }
+          st.errors += 1
           // Joined to the call by tool_use_id. Without the join the class is
           // known and the tool is not, and (class, target) alone collapses a
           // Bash failure and an Edit failure into one signature.
           const id = block['tool_use_id']
           const call = typeof id === 'string' ? toolOf.get(id) : undefined
-          signatures.push([
+          // The plaintext tuple stays in this frame. `repeatRate` reads it
+          // below; only the MAC and the aggregates come out.
+          const tuple: readonly [string, ErrorClass, string] = [
             call?.name ?? 'unknown',
             classifyError(text),
-            hashTarget(call?.target ?? ''),
-          ])
+            call?.target ?? '',
+          ]
+          tuples.push(tuple)
+          if (sign !== null) macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
         }
       }
     } else if (block['type'] === 'tool_use') {
@@ -536,8 +619,13 @@ function reduceLine(
         const key = bundle === null ? 'none' : String(bundle)
         w.callsPerBundle.set(key, (w.callsPerBundle.get(key) ?? 0) + 1)
         if (wasted.call(bundle, toolName, block['input'])) {
-          if (isInvestigation(toolName)) w.investigationRepeats += 1
-          else w.writeRepeats += 1
+          if (isInvestigation(toolName)) {
+            w.investigationRepeats += 1
+            st.investigationRepeats += 1
+          } else {
+            w.writeRepeats += 1
+            st.writeRepeats += 1
+          }
         }
       }
       const name = block['name']
@@ -565,7 +653,14 @@ function reduceLine(
  */
 export function scan(
   inv: Inventory,
-  read: (path: string) => string = (p) => readFileSync(p, 'utf8'),
+  read: ((path: string) => string) | undefined = undefined,
+  /**
+   * Injected, so the key never enters this function and the plaintext tuple
+   * never leaves it. Null means no signer was available: signatures come back
+   * empty and `signaturesSigned` says why, because an empty set and an unsigned
+   * run are the same array and opposite facts.
+   */
+  sign: Signer | null = null,
 ): ScanCounts {
   const m: Mut = {
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
@@ -585,7 +680,9 @@ export function scan(
   const paths = new Map<string, MutPathTally>()
   const refs = referenceIndex()
   const toolOf = new Map<string, { name: string; target: string }>()
-  const signatures: Array<readonly [string, ErrorClass, string]> = []
+  const tuples: Array<readonly [string, ErrorClass, string]> = []
+  const macs: Hmac128[] = []
+  const perSession = new Map<string, MutSessionTally>()
   const wasted = wastedTracker()
   const w: MutWasted = {
     failures: 0, hookOriginated: 0, writeRepeats: 0, investigationRepeats: 0,
@@ -601,18 +698,27 @@ export function scan(
       perProject.set(file.project, proj)
     }
     const bundles = bundleTracker(nextBundleId)
+    let st = perSession.get(file.sessionId)
+    if (st === undefined) {
+      st = {
+        bundles: 0, failures: 0, writeRepeats: 0, investigationRepeats: 0,
+        timedOut: 0, largeOutput: 0, errors: 0, lines: 0,
+      }
+      perSession.set(file.sessionId, st)
+    }
     m.bytesRead += file.bytes
     let text = ''
     try {
-      text = read(file.path)
+      text = (read ?? ((p: string) => readFileSync(p, 'utf8')))(file.path)
     } catch {
       // Unreadable file: every one of its lines is unaccounted for, and saying
       // so is better than a total that silently omits them.
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, notHuman, bundles, paths, refs, toolOf, signatures, wasted, w)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, paths, refs, toolOf, tuples, macs, sign, wasted, w)
     }
+    st.bundles += bundles.opened()
     m.taskBundles += bundles.opened()
     m.rootBundles += bundles.roots()
     m.orphanBundles += bundles.orphans()
@@ -646,7 +752,7 @@ export function scan(
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
     referenceTokens: refs.size(),
-    errorRepeats: repeatRate(signatures),
+    errorRepeats: repeatRate(tuples),
     wasted: {
       failures: w.failures,
       hookOriginated: w.hookOriginated,
@@ -656,6 +762,9 @@ export function scan(
       largeOutput: w.largeOutput,
       callsPerBundle: Object.fromEntries(w.callsPerBundle),
     },
+    perSession: Object.fromEntries([...perSession.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
+    signatures: macs,
+    signaturesSigned: sign !== null,
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,
     editedFilesDistinct: edits.size,
