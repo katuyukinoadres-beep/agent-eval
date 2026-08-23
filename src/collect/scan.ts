@@ -221,6 +221,14 @@ export interface ScanCounts {
    * things.
    */
   readonly signatures: readonly Hmac128[]
+  /**
+   * Signatures this window saw at least twice.
+   *
+   * v1's `S_t`. The cross-window rate is `|S_t ∩ S_(t-1)| / |S_t|`, and it is
+   * the ≥2 set on purpose: a failure that happened once is not yet a pattern,
+   * and intersecting one-offs would measure coincidence.
+   */
+  readonly signaturesRepeated: readonly Hmac128[]
   readonly signaturesSigned: boolean
   /** Rows carrying a tool_use or tool_result block — axis 2's evidence lines. */
   readonly toolActivityRows: number
@@ -604,6 +612,16 @@ const INSPECT_TOOLS = new Set(['Read', 'Grep', 'Bash', 'Glob'])
 /** v1: a failure cleared within three attempts is a repair. */
 const MAX_REPAIR_ATTEMPTS = 3
 
+
+/** The MACs seen at least twice, sorted. v1's `S_t`. */
+const repeatedOf = (macs: readonly Hmac128[]): readonly Hmac128[] => {
+  const seen = new Map<string, number>()
+  for (const mac of macs) seen.set(mac, (seen.get(mac) ?? 0) + 1)
+  return [...seen.entries()]
+    .filter(([, n]) => n >= 2)
+    .map(([mac]) => mac as Hmac128)
+    .sort()
+}
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -1251,6 +1269,7 @@ export function scan(
     },
     perSession: Object.fromEntries([...perSession.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     signatures: macs,
+    signaturesRepeated: repeatedOf(macs),
     signaturesSigned: sign !== null,
     denialRows: m.denialRows,
     denialUserRejected: m.denialUserRejected,

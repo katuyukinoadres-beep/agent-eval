@@ -206,9 +206,23 @@ export interface SignatureFamily {
   readonly count: number
 }
 
+/**
+ * What the sidecar holds, beside the body it is committed to.
+ *
+ * `members` is every distinct signature; `repeated` is v1's `S_t`, the ones
+ * seen at least twice. The cross-window rate intersects `repeated` sets, and
+ * it has to be stored because a later window cannot recover this one's.
+ */
+export interface Sidecar {
+  readonly members: readonly Hmac128[]
+  readonly repeated: readonly Hmac128[]
+}
+
 export interface SignatureSets {
   /** Distinct signature MACs. The members live in the sidecar. */
   readonly memberCount: number
+  /** Of those, the ones seen at least twice. v1's `S_t`. */
+  readonly repeatedCount: number
   readonly errors: number
   readonly byFamily: readonly SignatureFamily[]
 }
@@ -261,6 +275,7 @@ export const IDENTITY_NAMES = [
   'day-nesting',
   'signature-members',
   'axis-denominator-close',
+  'signature-repeated-within-members',
   // The attribution partition against the failures counted before it ran.
   'attribution-closes',
   // Axis 3's four buckets against the failures the attribution routed to them.

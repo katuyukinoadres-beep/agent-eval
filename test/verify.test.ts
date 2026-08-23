@@ -52,6 +52,7 @@ const counts = {
     s1: { intervals: 10, bundles: 5, failures: 3, writeRepeats: 1, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 3, lines: 100 },
   },
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
+  signaturesRepeated: [],
   signaturesSigned: true,
   taskBundles: 5, rootBundles: 0, orphanBundles: 0, toolActivityRows: 50,
   environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null, referenceTokens: 0,

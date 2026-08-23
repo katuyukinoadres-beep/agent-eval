@@ -87,6 +87,34 @@ export interface AssembleInputs {
   readonly submissionId: string
   /** Hashes project directory names. Injected so the test does not need a real digest. */
   readonly hashProject: (name: string) => string
+  /**
+   * The previous window's repeated-signature set, or null.
+   *
+   * Null on a first window, when no store is open, and when the key changed --
+   * the MACs mean nothing across a key change, and intersecting them would
+   * produce an empty set that reads as a perfect score.
+   */
+  readonly previousRepeated: readonly string[] | null
+}
+
+/**
+ * v1's `r_cross`: the share of this window's repeated signatures that the last
+ * window also repeated.
+ *
+ * Null rather than zero whenever there is nothing to divide by or nothing to
+ * compare against. An empty intersection over an empty set is 0/0, and
+ * reporting it as 0 reads as "no failure recurred" -- the flattering direction,
+ * arrived at by accident.
+ */
+export function crossWindowRate(
+  now: readonly string[],
+  previous: readonly string[] | null,
+): number | null {
+  if (previous === null || now.length === 0) return null
+  const before = new Set(previous)
+  let carried = 0
+  for (const mac of now) if (before.has(mac)) carried += 1
+  return carried / now.length
 }
 
 export interface Assembled {
@@ -439,8 +467,12 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // two windows must never be compared across that switch.
   const rec = recurrence({
     rIn: counts.errorRepeats.rIn,
+    rCross: crossWindowRate(counts.signaturesRepeated, inputs.previousRepeated),
+    // Two runs over an all-time count are the same corpus twice, so every
+    // repeated signature carries over and r_cross is 1.0 by construction.
+    periodsDiffer: COUNT_BASIS.period !== 'allTime',
     errors: counts.errorRepeats.errors,
-    firstWindow: true,
+    firstWindow: inputs.previousRepeated === null,
     hasExternalHookLog: false,
   })
 

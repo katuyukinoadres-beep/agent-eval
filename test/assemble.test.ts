@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { meetsMinimum } from '@/score/minimum.js'
 import { UPTAKE_REFERENCED } from '@/score/artifact.js'
-import { assemble, type AssembleInputs } from '@/payload/assemble.js'
+import { crossWindowRate, assemble, type AssembleInputs } from '@/payload/assemble.js'
 import { validate } from '@/validate/index.js'
 import { assembleWindow } from '@/collect/window.js'
 import { AXIS_KEYS } from '@/payload/types.js'
@@ -65,6 +65,9 @@ const counts = {
   referenceTokens: 0,
   toolActivityRows: 200,
   errorRepeats: { errors: 10, distinctSignatures: 5, rIn: 0.5, byFamily: { timeout: 10 } },
+  signatures: [],
+  signaturesSigned: false,
+  signaturesRepeated: [],
   metabolism: {
     skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
     skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},
@@ -352,5 +355,26 @@ describe('the minimum denominator', () => {
       'numerator-below-minimum',
     ])
     expect(meetsMinimum({ clusters: 25, denominator: 300, numerator: 40 }).reasons).toEqual([])
+  })
+})
+
+describe('the cross-window recurrence rate', () => {
+  /**
+   * v1's `r_cross`: the share of this window's repeated signatures that the
+   * last window also repeated. It is the rate axis 6 exists for -- r_in only
+   * stands in while there is nothing to intersect with.
+   */
+  it('is the carried share of the repeated set', () => {
+    expect(crossWindowRate(['a', 'b', 'c', 'd'], ['b', 'd', 'z'])).toBeCloseTo(0.5)
+    expect(crossWindowRate(['a', 'b'], ['a', 'b'])).toBe(1)
+    expect(crossWindowRate(['a', 'b'], ['x'])).toBe(0)
+  })
+
+  it('is absent rather than zero when there is nothing to compare against', () => {
+    // An empty intersection reads as "no failure recurred", which is a perfect
+    // score arrived at by accident. Absence has to stay absence.
+    expect(crossWindowRate(['a'], null)).toBeNull()
+    expect(crossWindowRate([], ['a'])).toBeNull()
+    expect(crossWindowRate([], null)).toBeNull()
   })
 })

@@ -31,7 +31,14 @@ import { ensureStateDir } from './snapshot/stateDir.js'
 import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
 import { buildSnapshot } from './snapshot/build.js'
-import { defaultSnapshotIo, readHead, readLatestBody, writeSnapshot, type WriteOutcome } from './snapshot/write.js'
+import {
+  defaultSnapshotIo,
+  readHead,
+  readLatestBody,
+  readLatestSidecar,
+  writeSnapshot,
+  type WriteOutcome,
+} from './snapshot/write.js'
 import { compare, type Comparison, type WindowView } from './score/comparison.js'
 
 /** Domain for the basis digest, built without an inline escape. */
@@ -222,6 +229,19 @@ export function run(options: RunOptions): RunResult {
     lastMention: counts.lastMention,
   })
 
+  // Read before assembling, because axis 6's rate needs the previous window's
+  // signature set and the axis is scored inside `assemble`. Reading it after
+  // meant the cross-window rate could never be computed at all, so the axis the
+  // product is built on always scored its within-window stand-in.
+  //
+  // The key gates it: MACs made under two different keys are not comparable,
+  // and an empty intersection reads as "no failure recurred".
+  const previousSidecar =
+    store === null || key === null ? null : readLatestSidecar(store.snapshotDir, defaultSnapshotIo)
+  const previousBody = store === null ? null : readLatestBody(store.snapshotDir, defaultSnapshotIo)
+  const previousKey = (previousBody?.['key'] as Record<string, unknown> | undefined)?.['fingerprint']
+  const sameKey = typeof previousKey === 'string' && previousKey === key?.ref.fingerprint
+
   const { payload, gate } = assemble({
     inventory,
     counts,
@@ -237,6 +257,7 @@ export function run(options: RunOptions): RunResult {
     measuredAt: options.measuredAt,
     submissionId: options.submissionId,
     hashProject,
+    previousRepeated: sameKey && previousSidecar !== null ? previousSidecar.repeated : null,
   })
 
   // Round-tripped through JSON first, because that is how a receiver will see
@@ -253,7 +274,7 @@ export function run(options: RunOptions): RunResult {
     try {
       const head = readHead(store.snapshotDir, defaultSnapshotIo)
       // Read before writing: the baseline is the window before this one.
-      const previous = readLatestBody(store.snapshotDir, defaultSnapshotIo)
+      const previous = previousBody
       const built = buildSnapshot({
         counts,
         axes: payload.axes,

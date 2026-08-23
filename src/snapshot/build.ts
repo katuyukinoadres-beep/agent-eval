@@ -56,6 +56,7 @@ import {
   type ObservedSpan,
   type ScanRecord,
   type SessionRecord,
+  type Sidecar,
   type SignatureSets,
   type Snapshot,
   type ScoredAxis,
@@ -163,7 +164,7 @@ export interface BuildInputs {
 export interface Built {
   readonly snapshot: Snapshot
   /** The distinct signature MACs, committed to by the body and stored beside it. */
-  readonly sidecar: readonly Hmac128[] | null
+  readonly sidecar: Sidecar | null
 }
 
 const osOf = (platform: string): 'win32' | 'darwin' | 'linux' | 'other' =>
@@ -300,17 +301,19 @@ const denominatorOf = (key: AxisKey, detail: Readonly<Record<string, number>> | 
   return k === undefined ? null : (detail?.[k] ?? null)
 }
 
-const signaturesOf = (counts: ScanCounts): { sets: SignatureSets; members: readonly Hmac128[] } => {
+const signaturesOf = (counts: ScanCounts): { sets: SignatureSets; sidecar: Sidecar } => {
   const members = [...new Set(counts.signatures)].sort()
+  const repeated = [...counts.signaturesRepeated].sort()
   return {
     sets: {
       memberCount: int(members.length),
+      repeatedCount: int(repeated.length),
       errors: int(counts.errorRepeats.errors),
       byFamily: Object.entries(counts.errorRepeats.byFamily)
         .map(([family, count]) => ({ family, count: int(count) }))
         .sort((a, b) => (a.family < b.family ? -1 : 1)),
     },
-    members,
+    sidecar: { members, repeated },
   }
 }
 
@@ -343,11 +346,11 @@ export function buildSnapshot(inputs: BuildInputs): Built {
   const span = spanOf(counts)
   const scan = scanOf(counts, gate, inputs.filesRead)
 
-  const sidecar = signatures?.members ?? null
+  const sidecar = signatures?.sidecar ?? null
   const sidecars =
     signatures === null || sidecar === null
       ? []
-      : [{ kind: 'sig' as const, digest: sidecarHash(sidecar), members: int(sidecar.length) }]
+      : [{ kind: 'sig' as const, digest: sidecarHash(sidecar), members: int(sidecar.members.length) }]
 
   // Checked before the body is hashed. An internally inconsistent snapshot is
   // worse than none, because it will be compared against later.
@@ -397,7 +400,15 @@ export function buildSnapshot(inputs: BuildInputs): Built {
     })
   }
   if (signatures !== null && sidecar !== null) {
-    checks.push({ name: 'signature-members', relation: 'equal', left: signatures.sets.memberCount, right: sidecar.length })
+    checks.push({ name: 'signature-members', relation: 'equal', left: signatures.sets.memberCount, right: sidecar.members.length })
+    // The repeated set is a subset of the members, by construction. An equality
+    // would fire on every window where any failure happened only once.
+    checks.push({
+      name: 'signature-repeated-within-members',
+      relation: 'atMost',
+      left: sidecar.repeated.length,
+      right: sidecar.members.length,
+    })
   }
   const identities: readonly Identity[] = checkIdentities(checks)
 

@@ -19,6 +19,8 @@ import {
 
 const base: RecurrenceInputs = {
   rIn: 0.5,
+  rCross: null,
+  periodsDiffer: true,
   errors: 300,
   firstWindow: true,
   hasExternalHookLog: false,
@@ -36,15 +38,28 @@ describe('the recurrence rate', () => {
   it('says which rate it used', () => {
     // r_in and r_cross answer different questions, and a window scored on one
     // must never be compared with a window scored on the other.
-    expect(recurrence(at({ firstWindow: true })).rateKind).toBe('within-window')
-    expect(recurrence(at({ firstWindow: false })).rateKind).toBe('cross-window')
+    expect(recurrence(at({ rCross: null })).rateKind).toBe('within-window')
+    expect(recurrence(at({ rCross: 0.2 })).rateKind).toBe('cross-window')
   })
 
-  it('marks a first window as a baseline rather than a result', () => {
+  it('decides that on the rate it has, not on a flag', () => {
+    // `firstWindow: false` with no comparable previous set would otherwise
+    // label an r_in as an r_cross, and two incomparable windows would be
+    // differenced as though they measured the same thing.
+    expect(recurrence(at({ firstWindow: false, rCross: null })).rateKind).toBe('within-window')
+  })
+
+  it('scores the cross-window rate when it has one', () => {
+    // The rate this axis is actually for. r_in only stands in.
+    expect(recurrence(at({ rIn: 0.9, rCross: 0.1 })).rate).toBeCloseTo(0.1)
+    expect(recurrence(at({ rIn: 0.9, rCross: 0.1 })).score).toBeCloseTo(90)
+  })
+
+  it('marks a window scored on the stand-in as a baseline rather than a result', () => {
     // "We registered these; next time you are scored on whether they are gone"
     // is a different claim from "you scored 50".
-    expect(recurrence(at({ firstWindow: true })).baselineOnly).toBe(true)
-    expect(recurrence(at({ firstWindow: false })).baselineOnly).toBe(false)
+    expect(recurrence(at({ rCross: null })).baselineOnly).toBe(true)
+    expect(recurrence(at({ rCross: 0.2 })).baselineOnly).toBe(false)
   })
 })
 
@@ -89,5 +104,30 @@ describe('the score', () => {
       expect(s).toBeGreaterThanOrEqual(0)
       expect(s).toBeLessThanOrEqual(100)
     }
+  })
+})
+
+describe('when the two windows are the same period', () => {
+  /**
+   * The scan counts over all time, so two consecutive runs see the same corpus
+   * a few minutes apart. Every repeated signature carries over by construction:
+   * a measured r_cross of 1.0 and a score of zero, which is a fact about the
+   * counting basis and not about the environment.
+   *
+   * Measured on this machine: a second window scored 0 on axis 6 and moved the
+   * composite by -12.73 with nothing about the environment having changed.
+   */
+  it('refuses the cross-window rate and says why', () => {
+    const r = recurrence(at({ rIn: 0.4, rCross: 1, periodsDiffer: false }))
+    expect(r.rateKind).toBe('within-window')
+    expect(r.rate).toBeCloseTo(0.4)
+    expect(r.omitted).toContain('axis6-all-time-basis')
+  })
+
+  it('takes it once the periods do differ', () => {
+    const r = recurrence(at({ rIn: 0.4, rCross: 1, periodsDiffer: true }))
+    expect(r.rateKind).toBe('cross-window')
+    expect(r.rate).toBeCloseTo(1)
+    expect(r.omitted).not.toContain('axis6-all-time-basis')
   })
 })

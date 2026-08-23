@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSyn
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { canonical, bodyHash } from './canonical.js'
-import type { Snapshot, Prev } from './record.js'
+import type { Sidecar, Snapshot, Prev } from './record.js'
 import type { Hmac128, Sha256 } from './types.js'
 import { filesystemReason, sha256 } from './types.js'
 
@@ -179,7 +179,7 @@ export function sweepTemporaries(dir: string, io: SnapshotIo): number {
 export interface WriteInputs {
   readonly snapshotDir: string
   readonly snapshot: Snapshot
-  readonly sidecar: readonly Hmac128[] | null
+  readonly sidecar: Sidecar | null
 }
 
 /**
@@ -241,6 +241,36 @@ export function writeSnapshot(inputs: WriteInputs, io: SnapshotIo = defaultSnaps
     }
   } finally {
     lock?.release()
+  }
+}
+
+/**
+ * The sidecar of the most recent committed snapshot, or null.
+ *
+ * Read for the cross-window recurrence rate, which intersects this window's
+ * repeated-signature set with the previous one's. The set cannot be recovered
+ * from anywhere else, so a window with no readable sidecar has no cross-window
+ * rate rather than an empty intersection -- an empty intersection reads as "no
+ * failure recurred", which is a perfect score arrived at by accident.
+ */
+export function readLatestSidecar(
+  dir: string,
+  io: SnapshotIo = defaultSnapshotIo,
+): { readonly members: readonly string[]; readonly repeated: readonly string[] } | null {
+  const files = listSnapshots(dir, io)
+  const last = files[files.length - 1]
+  if (last === undefined) return null
+  const name = last.file.replace(/\.json$/, '.sig.json')
+  try {
+    const parsed: unknown = JSON.parse(io.readFile(join(dir, name)))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const o = parsed as Record<string, unknown>
+    const members = Array.isArray(o['members']) ? o['members'].filter((x): x is string => typeof x === 'string') : null
+    const repeated = Array.isArray(o['repeated']) ? o['repeated'].filter((x): x is string => typeof x === 'string') : null
+    if (members === null || repeated === null) return null
+    return { members, repeated }
+  } catch {
+    return null
   }
 }
 
