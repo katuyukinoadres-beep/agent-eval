@@ -101,6 +101,25 @@ export const BASE_PAYLOAD = {
         'origin フィールドが付いている user 行の割合。低いほど human 判定が過小になる',
       sourceField: 'origin.kind',
     }),
+    // This submission's counts, stated as they are rather than as the spec's
+    // default. Three of the four differ, and each difference is a gap in this
+    // implementation that the field now makes visible instead of hiding:
+    //
+    //   period  allTime, not window. `windowDays` is carried in the payload and
+    //           never applied as a filter; the scan reads every transcript that
+    //           survived pruning. Claiming `window` would be the exact defect
+    //           this field was added to stop.
+    //   unit    row, not toolUseId. Denials are tallied per row, and rows and
+    //           ids disagreed by one on the machine that was measured.
+    //   excludes  empty. `Tool permission stream closed` appears 11 times here
+    //           and is not removed, so denial counts include failures where no
+    //           decision was reached.
+    countBasis: {
+      scope: 'all',
+      period: 'allTime',
+      unit: 'row',
+      excludes: [],
+    },
     window: {
       unit: 'activeDays',
       windowDays: 10,

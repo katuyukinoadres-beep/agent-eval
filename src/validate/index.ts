@@ -18,6 +18,8 @@ import {
   TOOL_VERSION_CEILING,
   VALID_AVAILABILITY,
   WINDOW_DAYS_METHOD,
+  COUNT_BASIS_FIELDS,
+  COUNT_BASIS_EXCLUSIONS,
   type FlagId,
   type RuleId,
 } from './rules.js'
@@ -190,6 +192,34 @@ export function validate(payload: unknown): Verdict {
       }
       if (isNum(userDays) && isNum(evidence) && userDays > evidence) {
         add('V-16', 'scanManifest.window.userRowDays', `${userDays} user-row days against ${evidence} evidence days`)
+      }
+    }
+
+    // ── V-25: a count with no stated basis ───────────────────────────────────
+    // The rate rule (V-3) for counts. Four published figures for one quantity
+    // differed by 1.33x, and each was right about a different question.
+    const basis = manifest['countBasis']
+    if (!isObj(basis)) {
+      add('V-25', 'scanManifest.countBasis', 'missing or not an object')
+    } else {
+      for (const [field, allowed] of Object.entries(COUNT_BASIS_FIELDS)) {
+        const value = basis[field]
+        if (typeof value !== 'string' || !(allowed as readonly string[]).includes(value)) {
+          add('V-25', `scanManifest.countBasis.${field}`, `not in the union: ${JSON.stringify(value)}`)
+        }
+      }
+      const excludes = basis['excludes']
+      if (!Array.isArray(excludes)) {
+        add('V-25', 'scanManifest.countBasis.excludes', 'missing or not an array')
+      } else {
+        // An empty array is legal — it says nothing was excluded, which is a
+        // fact about the submission and not an omission in it.
+        const unknown = excludes.filter(
+          (e) => typeof e !== 'string' || !(COUNT_BASIS_EXCLUSIONS as readonly string[]).includes(e),
+        )
+        if (unknown.length > 0) {
+          add('V-25', 'scanManifest.countBasis.excludes', `unknown exclusion(s): ${JSON.stringify(unknown)}`)
+        }
       }
     }
 

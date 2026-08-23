@@ -27,6 +27,7 @@ export const RULE_IDS = [
   'V-14',
   'V-15',
   'V-16',
+  'V-25',
 ] as const
 
 export type RuleId = (typeof RULE_IDS)[number]
@@ -60,7 +61,23 @@ export const RULE_REASONS: Readonly<Record<RuleId, string>> = {
   'V-14': 'more human-turn days than evidence days, which cannot happen: a day with a human turn left a transcript, so it is already an evidence day',
   'V-15': 'windowSource and cleanupPeriodDays contradict each other — a window claimed to come from a setting must say which value it read',
   'V-16': 'the three day counts are not nested — human-turn days sit inside user-row days, which sit inside evidence days, by construction',
+  'V-25': 'countBasis is missing or names a scope, period or unit outside its union — a count with no stated basis moved 1.33x across four published figures',
 }
+
+/**
+ * The unions countBasis draws on. V-3 for counts.
+ *
+ * `unit` is the one that surprises: two `permission-rule` rows sharing a
+ * `tool_use_id` were measured, so rows gave 52 where ids gave 51. A count with
+ * no unit is already plus-or-minus one.
+ */
+export const COUNT_BASIS_FIELDS = {
+  scope: ['all', 'main'],
+  period: ['window', 'allTime'],
+  unit: ['toolUseId', 'row'],
+} as const
+
+export const COUNT_BASIS_EXCLUSIONS = ['infrastructure-error'] as const
 
 /**
  * The spec names two different quantities `activeDays` in the same environment:
@@ -95,6 +112,7 @@ export const REQUIRED_MANIFEST_FIELDS = [
   'originFieldCoverage',
   'window',
   'externalLog',
+  'countBasis',
 ] as const
 
 export const VALID_AVAILABILITY = ['available', 'not_applicable', 'parse_failed'] as const

@@ -270,6 +270,47 @@ describe('V-14 — more human-turn days than evidence days', () => {
   })
 })
 
+describe('V-25 — a count with no stated basis', () => {
+  const basis = (p: Mutable): Mutable => obj(obj(p, 'scanManifest'), 'countBasis')
+
+  it('refuses a manifest with no countBasis at all', () => {
+    // The rate rule for counts. Without it, `permission-rule` was published as
+    // 40, 41, 44 and 45 — four right answers to four unstated questions, and
+    // the same quantity moves 1.33x depending on the basis.
+    expectRefused(broken((p) => { delete obj(p, 'scanManifest')['countBasis'] }), 'V-25')
+  })
+
+  it('refuses a unit outside the union', () => {
+    // `row` and `toolUseId` disagreed by one on the machine that was measured:
+    // two permission-rule rows shared a tool_use_id, so rows gave 52 and ids 51.
+    expectRefused(broken((p) => { basis(p)['unit'] = 'calls' }), 'V-25')
+  })
+
+  it('refuses a scope or period outside the union', () => {
+    expectRefused(broken((p) => { basis(p)['scope'] = 'sub' }), 'V-25')
+    expectRefused(broken((p) => { basis(p)['period'] = 'lastWeek' }), 'V-25')
+  })
+
+  it('refuses an exclusion nobody defined', () => {
+    expectRefused(broken((p) => { basis(p)['excludes'] = ['whatever-we-felt-like'] }), 'V-25')
+  })
+
+  it('accepts an empty exclusion list', () => {
+    // Excluding nothing is a fact about the submission, not an omission in it.
+    // This machine excludes nothing and carries 11 infrastructure errors, which
+    // the basis now says out loud.
+    const v = validate(broken((p) => { basis(p)['excludes'] = [] }))
+    expect(v.violations.map((x) => x.rule)).not.toContain('V-25')
+  })
+
+  it('names which field was wrong, not just that something was', () => {
+    const v = validate(broken((p) => { basis(p)['unit'] = 'calls' }))
+    expect(v.violations.filter((x) => x.rule === 'V-25').map((x) => x.path)).toEqual([
+      'scanManifest.countBasis.unit',
+    ])
+  })
+})
+
 describe('V-16 — day counts that do not nest', () => {
   const win = (p: Mutable): Mutable => obj(obj(p, 'scanManifest'), 'window')
 
@@ -337,7 +378,7 @@ describe('the rule set is honest about what it does not check', () => {
     // Guards against a rule id existing with nothing exercising it.
     const covered = new Set<RuleId>([
       'V-1', 'V-2', 'V-3', 'V-4', 'V-5', 'V-6', 'V-7', 'V-9', 'V-10', 'V-11',
-      'V-13', 'V-14', 'V-15', 'V-16',
+      'V-13', 'V-14', 'V-15', 'V-16', 'V-25',
     ])
     expect([...RULE_IDS].filter((r) => !covered.has(r))).toEqual([])
   })
