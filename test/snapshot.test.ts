@@ -44,7 +44,7 @@ const counts = {
   sessionIds: ['s1', 's2'],
   dates: ['2026-08-19', '2026-08-20'],
   userRowDates: ['2026-08-19', '2026-08-20'],
-  humanTurnDates: ['2026-08-19'],
+  humanTurnDates: ['2026-08-19'], humanTurnDatesUtc: [],
   perProject: {},
   perSession: {
     s1: { intervals: 6, bundles: 3, failures: 2, writeRepeats: 1, investigationRepeats: 0, timedOut: 0, largeOutput: 0, errors: 2, lines: 60 },
@@ -59,7 +59,7 @@ const counts = {
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
   metabolism: {
     skillsListed: [], listingChars: 0, listingTruncated: false,
-    skillFirings: {}, hookFirings: {}, mcpFirings: {}, effectiveInputPerCall: [],
+    skillFirings: {}, hookFirings: {}, mcpFirings: {}, effectiveInputPerCall: [], peakInputPerBundle: [], effectiveInputPerBundle: [], inputPerBundleWithoutCache: [],
   },
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,

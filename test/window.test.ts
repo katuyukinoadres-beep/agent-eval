@@ -19,6 +19,8 @@ const base: WindowInputs = {
   jsonlDates: ['2026-08-16', '2026-08-17', '2026-08-18'],
   userRowDates: ['2026-08-16', '2026-08-17', '2026-08-18'],
   humanTurnDates: ['2026-08-17', '2026-08-18'],
+  humanTurnDatesUtc: [],
+  dayBoundary: 'Z',
   gitDates: [],
   externalDates: [],
   externalExists: false,

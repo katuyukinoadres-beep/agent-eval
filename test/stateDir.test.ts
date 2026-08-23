@@ -193,6 +193,26 @@ describe('refusing to run against a tracked store', () => {
       expect(String(e)).toContain('--state-dir')
     }
   })
+
+  it('names it without naming the path', () => {
+    // This message reaches the summary line and, through a refusal, a snapshot
+    // field that is never pruned. The path is under the home directory, so it
+    // carries the OS username -- and the user already knows where their own
+    // state directory is. The advice is the part they need.
+    const home = freshHome()
+    const r = ensureStateDir(home, null, { ...defaultIo, tracked: () => false })
+    try {
+      refuseIfTracked(r.stateDir, { ...defaultIo, tracked: () => true })
+      throw new Error('should have refused')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      expect(message).not.toContain(r.stateDir)
+      expect(message).not.toContain(home)
+      // Still says what to do, so dropping the path did not drop the advice.
+      expect(message).toContain('--state-dir')
+      expect(message).toContain('tracked by git')
+    }
+  })
 })
 
 describe('the key sits outside the store', () => {

@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
+import { localIso, offsetLabelOf, offsetMinutesOf } from './collect/day.js'
 import { walkProjects } from './collect/walk.js'
 import { scan } from './collect/scan.js'
 import { gitCommitDates } from './collect/git.js'
@@ -27,7 +28,7 @@ import {
 } from './collect/environment.js'
 import { assemble } from './payload/assemble.js'
 import { settleArtifacts } from './score/artifact.js'
-import { ensureStateDir } from './snapshot/stateDir.js'
+import { ensureStateDir, StateDirError } from './snapshot/stateDir.js'
 import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
 import { buildSnapshot } from './snapshot/build.js'
@@ -138,7 +139,13 @@ export function defaultOptions(overrides: Partial<RunOptions> = {}): RunOptions 
     os: overrides.os ?? platform(),
     repos: overrides.repos ?? [],
     closingLogPath: overrides.closingLogPath ?? null,
-    measuredAt: overrides.measuredAt ?? new Date().toISOString(),
+    // Stamped in this machine's own offset, not UTC. The day boundary is taken
+    // from here, and an active day is a day of somebody's work -- which ends at
+    // their midnight. A UTC stamp on a machine nine hours ahead splits every
+    // evening across two days, and the window counts days: measured on this
+    // corpus, 10 active days under UTC against 11 under the local offset, with
+    // a window of the most recent 10.
+    measuredAt: overrides.measuredAt ?? localIso(new Date()),
     submissionId: overrides.submissionId ?? crypto.randomUUID(),
     windowDays: overrides.windowDays ?? 10,
     stateDir: overrides.stateDir ?? null,
@@ -194,14 +201,41 @@ export function run(options: RunOptions): RunResult {
   let sign = null as ReturnType<typeof signerFor> | null
   let store: { readonly stateDir: string; readonly snapshotDir: string } | null = null
   let key: ReturnType<typeof loadKey> | null = null
+  // Opening the store is allowed to fail. It used to throw sixty lines above
+  // the try that exists for exactly this, so a home directory that is version
+  // controlled, or read-only, or already holding a tracked state dir, killed
+  // the run with an uncaught error carrying an absolute path and a stack --
+  // and produced no payload, in a function whose own comment says the payload
+  // must still come out on a day the store cannot be written.
+  let storeRefusal: WriteOutcome | null = null
   if (options.useStore) {
-    const dirs = ensureStateDir(options.home, options.stateDir)
-    store = { stateDir: dirs.stateDir, snapshotDir: dirs.snapshotDir }
-    key = loadKey(options.home, dirs.stateDir)
-    sign = signerFor(key.master)
+    try {
+      const dirs = ensureStateDir(options.home, options.stateDir)
+      store = { stateDir: dirs.stateDir, snapshotDir: dirs.snapshotDir }
+      key = loadKey(options.home, dirs.stateDir)
+      sign = signerFor(key.master)
+    } catch (e) {
+      store = null
+      key = null
+      sign = null
+      storeRefusal = {
+        kind: 'refused',
+        reason: 'state-dir-unwritable',
+        // A StateDirError carries advice and, deliberately, no path. Anything
+        // else is a filesystem error whose message embeds one, so it becomes a
+        // fixed phrase chosen by errno.
+        detail: e instanceof StateDirError ? e.message : filesystemReason(e),
+      }
+    }
   }
 
-  const counts = scan(inventory, undefined, sign)
+  // The day boundary comes from the report's own timestamp, so a run and the
+  // window it cuts agree about where a day ends. It is published, never
+  // inferred: the same corpus has 10 human-turn days under UTC and 11 under
+  // +09:00, against a window of the most recent 10.
+  const dayOffsetMinutes = offsetMinutesOf(options.measuredAt)
+  const dayBoundary = offsetLabelOf(options.measuredAt)
+  const counts = scan(inventory, undefined, sign, dayOffsetMinutes)
 
   const git = gitCommitDates(options.repos)
   const log = readClosingLog(options.closingLogPath)
@@ -212,6 +246,8 @@ export function run(options: RunOptions): RunResult {
     jsonlDates: counts.dates,
     userRowDates: counts.userRowDates,
     humanTurnDates: counts.humanTurnDates,
+    humanTurnDatesUtc: counts.humanTurnDatesUtc,
+    dayBoundary,
     gitDates: git.dates,
     externalDates: log.dates,
     externalExists: log.exists,
@@ -248,7 +284,9 @@ export function run(options: RunOptions): RunResult {
     artifacts,
     window,
     permissions: tallyPermissions(scopes),
-    skills: countSkills(join(options.cwd, '.claude')),
+    // Both directories skills can live in, so the denominator covers the same
+    // ground as a numerator collected across every project on the machine.
+    skills: countSkills([join(options.cwd, '.claude'), join(options.home, '.claude')]),
     hooks: countHooks(scopes),
     mcp: countMcpServers(mcpSourcePaths(options.cwd, options.home)),
     os: options.os,
@@ -265,7 +303,7 @@ export function run(options: RunOptions): RunResult {
   // the shape it ships in.
   const validation = validate(JSON.parse(JSON.stringify(payload)) as unknown)
 
-  let snapshot: WriteOutcome | null = null
+  let snapshot: WriteOutcome | null = storeRefusal
   let chain: ChainVerdict | null = null
   let comparison: Comparison | null = null
   if (store !== null && key !== null) {

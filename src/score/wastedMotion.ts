@@ -14,6 +14,7 @@
  */
 
 import type { WastedCounts } from '../collect/wasted.js'
+import type { Leaning } from './composite.js'
 import {
   WEIGHT_FAILURE,
   WEIGHT_INVESTIGATION_REPEAT,
@@ -75,10 +76,18 @@ export type OmittedTermName = (typeof OMITTED_TERMS)[number]
  * no direction is exactly what V-24 exists to refuse, and catching it here is
  * cheaper than catching it in a payload.
  */
-export const OMITTED_TERM_LEANINGS: Readonly<Record<OmittedTermName, 'high' | 'low'>> = {
+export const OMITTED_TERM_LEANINGS: Readonly<Record<OmittedTermName, Leaning>> = {
+  // v1 §5 lists this under the additions: `+ 0.5 * a call that succeeded and
+  // contributed nothing`. Leaving an addition out makes W smaller and the score
+  // higher.
   'unused-success': 'high',
-  'verification-exclusion': 'high',
-  'user-script-decay': 'high',
+  // v1 §5 lists both of these under `# 除外` -- they *subtract* from the
+  // numerator. Leaving a subtraction out leaves W too large and the score too
+  // low, the same direction as winsorisation. They were marked `high`, which
+  // contradicted this file's own note that the repeat counts are an upper
+  // bound, two paragraphs above.
+  'verification-exclusion': 'low',
+  'user-script-decay': 'low',
   winsorisation: 'low',
 }
 

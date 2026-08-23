@@ -156,6 +156,16 @@ export const BASE_PAYLOAD = {
       // externalLog below and is the record rate's denominator.
       activeDays: 17,
       activeDaysMethod: 'human-turn-days',
+    // The boundary the days were cut on, and the same count recut on UTC.
+    // Measured on this corpus: 10 under UTC, 10 under +05:30, 11 under +09:00.
+    dayBoundary: 'Z',
+    activeDaysUtc: 10,
+    // Equal to `activeDays` here, which means the window selected everything.
+    // A figure that did not move is not evidence the window works.
+    activeDaysInWindow: 10,
+    truncated: false,
+    windowStart: '2026-08-11',
+    windowEnd: '2026-08-20',
       // Between 17 and 18: a user spoke on every day that carried a user row in
       // the sample this fixture keeps the components of. On the machine as it
       // stands today the two are 5 and 9, because origin coverage is 3.11%.

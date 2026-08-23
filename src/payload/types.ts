@@ -142,7 +142,17 @@ export type UnavailableReason =
   | 'insufficient-tool-uses'
   | 'insufficient-edit-intervals'
   | 'insufficient-assets'
+  // Axis 4's own two conditions. They used to be reported as
+  // `insufficient-assets` (an axis-5 threshold v2 abolished, whose text advises
+  // defining more assets) and `definition-pending` (which says the definition
+  // is unsettled -- it is settled; the environment is small).
+  | 'no-artifacts'
+  | 'too-few-bundles'
   | 'no-external-log'
+  // Axis 6's own condition. It used to report `no-external-log`, which advises
+  // installing a log that would not change the outcome, while layer B's absence
+  // is already in `omittedTerms`.
+  | 'no-failures'
   | 'first-window'
   | 'definition-pending'
   | 'environment-gated'
@@ -191,6 +201,38 @@ export interface Window {
    */
   readonly activeDays: number
   readonly activeDaysMethod: WindowDaysMethod
+  /**
+   * The offset the calendar day was cut on, as written: `Z`, `+09:00`.
+   *
+   * Published because it decides what a day is, and therefore what the window
+   * contains. Measured on this corpus: 10 active days under UTC, 10 under
+   * +05:30, 11 under +09:00 and 9 under -05:00 — against a window of the most
+   * recent 10. The boundary alone decides whether the window selects a subset
+   * or the whole corpus.
+   */
+  readonly dayBoundary: string
+  /**
+   * `activeDays` recut on UTC, whatever boundary was used.
+   *
+   * Beside it rather than instead of it, so the divergence is on screen. Two
+   * submissions cut on different boundaries are not comparable, and without
+   * this a reader cannot tell that is what happened.
+   */
+  readonly activeDaysUtc: number
+  /**
+   * Active days actually inside the window: `min(windowDays, activeDays)`.
+   *
+   * Distinct from `activeDays`, which is the corpus. When the two are equal the
+   * window selected everything and cut nothing -- which is this machine's state
+   * today, and the reason a figure that did not move is not evidence the window
+   * works.
+   */
+  readonly activeDaysInWindow: number
+  /** True when the corpus has fewer active days than the window asked for. */
+  readonly truncated: boolean
+  /** The oldest and newest active day inside the window, inclusive. */
+  readonly windowStart: string | null
+  readonly windowEnd: string | null
   /**
    * Days carrying a user row of any kind — the ceiling on `activeDays` under
    * this scan, and the figure that says how much of it origin coverage decided.

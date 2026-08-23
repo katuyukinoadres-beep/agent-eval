@@ -77,7 +77,7 @@ afterAll(() => {
   if (root !== '') rmSync(root, { recursive: true, force: true })
 })
 
-const counts = () => scan(walkProjects(projects()))
+const counts = () => scan(walkProjects(projects()), undefined, null, 0)
 
 describe('the reducer reads each file once', () => {
   it('opens every file exactly once', () => {
@@ -86,20 +86,30 @@ describe('the reducer reads each file once', () => {
     // Totals look right either way, so the open count is what is asserted.
     const opens = new Map<string, number>()
     const inv = walkProjects(projects())
-    scan(inv, (path) => {
-      opens.set(path, (opens.get(path) ?? 0) + 1)
-      return ''
-    })
+    scan(
+      inv,
+      (path) => {
+        opens.set(path, (opens.get(path) ?? 0) + 1)
+        return ''
+      },
+      null,
+      0,
+    )
     expect([...opens.values()]).toEqual(inv.files.map(() => 1))
     expect(opens.size).toBe(inv.files.length)
   })
 
   it('survives a file it cannot read rather than aborting the scan', () => {
     const inv = walkProjects(projects())
-    const c = scan(inv, (p) => {
-      if (p.endsWith('agent-1.jsonl')) throw new Error('EACCES')
-      return ''
-    })
+    const c = scan(
+      inv,
+      (p) => {
+        if (p.endsWith('agent-1.jsonl')) throw new Error('EACCES')
+        return ''
+      },
+      null,
+      0,
+    )
     expect(c.linesRead).toBe(0)
   })
 
@@ -110,10 +120,15 @@ describe('the reducer reads each file once', () => {
     // was short together so the identities still closed. A corpus that failed
     // to open was indistinguishable from a quiet month.
     const inv = walkProjects(projects())
-    const c = scan(inv, (p) => {
-      if (p.endsWith('agent-1.jsonl')) throw new Error('EACCES')
-      return JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-08-20T00:00:00Z' })
-    })
+    const c = scan(
+      inv,
+      (p) => {
+        if (p.endsWith('agent-1.jsonl')) throw new Error('EACCES')
+        return JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-08-20T00:00:00Z' })
+      },
+      null,
+      0,
+    )
     expect(c.filesUnreadable).toBe(1)
   })
 
@@ -123,6 +138,8 @@ describe('the reducer reads each file once', () => {
     const inv = walkProjects(projects())
     const c = scan(inv, () =>
       JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-08-20T00:00:00Z' }),
+      null,
+      0,
     )
     expect(c.filesUnreadable).toBe(0)
   })
@@ -134,7 +151,7 @@ describe('the reducer reads each file once', () => {
     // zero-byte transcript cost every later window its baseline for as long as
     // it sat there.
     const inv = walkProjects(projects())
-    const c = scan(inv, () => '')
+    const c = scan(inv, () => '', null, 0)
     expect(Object.keys(c.perSession)).toEqual([])
     expect(c.sessionIds).toEqual([])
     expect(c.filesWithoutRows).toBe(inv.files.length)
@@ -144,6 +161,8 @@ describe('the reducer reads each file once', () => {
     const inv = walkProjects(projects())
     const c = scan(inv, () =>
       JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-08-20T00:00:00Z' }),
+      null,
+      0,
     )
     expect(Object.keys(c.perSession).length).toBeGreaterThan(0)
     expect(c.filesWithoutRows).toBe(0)

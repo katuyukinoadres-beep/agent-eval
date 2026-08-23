@@ -302,3 +302,41 @@ describe('how the effective weights are allocated', () => {
     expect(a).toEqual(b)
   })
 })
+
+describe('aggregating the leanings', () => {
+  const axisWith = (...leans: readonly string[]): AxisInput => ({
+    key: 'wastedMotion',
+    available: true,
+    score: 50,
+    omittedTerms: leans.map((l) => ({ term: 't', cause: 'not-implemented', leans: l }) as OmittedTerm),
+  })
+
+  it('says mixed when terms point both ways', () => {
+    expect(aggregateLeaning([axisWith('high', 'low')])).toBe('mixed')
+  })
+
+  it('says mixed when a direction is unknown, because it could be either', () => {
+    // Two axes assert a direction their formula cannot fix: for a convex
+    // combination renormalised over survivors, dropping a term raises the score
+    // exactly when that term sits below the renormalised score.
+    expect(aggregateLeaning([axisWith('unknown')])).toBe('mixed')
+    expect(aggregateLeaning([axisWith('high', 'unknown')])).toBe('mixed')
+  })
+
+  it('lets a term that moves nothing contribute nothing', () => {
+    // An optional layer on top is not a term inside the combination.
+    // Not null: "terms were dropped and none of them moves the score" is a
+    // different fact from "no term was dropped", and V-24 refuses a null.
+    expect(aggregateLeaning([axisWith('none')])).toBe('none')
+    expect(aggregateLeaning([axisWith('none', 'high')])).toBe('high')
+  })
+
+  it('does not read every value that is not high as low', () => {
+    // The previous form was `if (leans === 'high') high = true; else low = true`,
+    // so a value meaning "not known" would have been reported as a known
+    // direction, in the one field that exists to say a direction is known.
+    expect(aggregateLeaning([axisWith('high')])).toBe('high')
+    expect(aggregateLeaning([axisWith('low')])).toBe('low')
+    expect(aggregateLeaning([])).toBeNull()
+  })
+})

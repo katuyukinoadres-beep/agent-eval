@@ -144,9 +144,14 @@ export function assertGuarded(stateDir: string, io: StateDirIo = defaultIo): boo
 export function refuseIfTracked(stateDir: string, io: StateDirIo = defaultIo): void {
   if (!io.exists(stateDir)) return
   if (!io.tracked(stateDir)) return
+  // The path is deliberately not in the message. This reaches the summary line
+  // and, through a refusal, a snapshot field that is never pruned -- and the
+  // path is under the home directory, so it carries the OS username. The advice
+  // is what the user needs; the path they already know.
   throw new StateDirError(
-    `${stateDir} is tracked by git. It holds MACs of session ids, project names and command ` +
-      `names, and committing it publishes them. Untrack it, or point elsewhere with --state-dir.`,
+    'the state directory is tracked by git. It holds MACs of session ids, project names and ' +
+      'command names, and committing it publishes them. Untrack it, or point elsewhere with ' +
+      '--state-dir.',
   )
 }
 

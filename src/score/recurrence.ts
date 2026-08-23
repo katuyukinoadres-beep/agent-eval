@@ -26,6 +26,8 @@ export const WEIGHT_EXPLANATION = 0.3
 /** Where the explanation-repetition term saturates. */
 export const L3_TARGET = 0.25
 
+import type { Leaning } from './composite.js'
+
 export type RecurrenceOmission =
   | 'axis6-explanation-repetition'
   | 'axis6-external-hook-log'
@@ -45,9 +47,17 @@ export type RecurrenceOmission =
  * does not keep. v1 puts it as an optional layer on top, so its absence is not
  * a deduction and leaves the score where layer A puts it.
  */
-export const RECURRENCE_OMISSION_LEANINGS: Readonly<Record<RecurrenceOmission, 'high' | 'low'>> = {
-  'axis6-explanation-repetition': 'high',
-  'axis6-external-hook-log': 'high',
+export const RECURRENCE_OMISSION_LEANINGS: Readonly<Record<RecurrenceOmission, Leaning>> = {
+  // Convex, renormalised over the survivors: dropping this term raises the
+  // score exactly when L3 is below the renormalised score. L3 is not computed,
+  // so the direction is not known -- and `high` was asserting the answer to the
+  // question the omission exists to record. At L3 near zero the omission costs
+  // roughly 16 points rather than granting any.
+  'axis6-explanation-repetition': 'unknown',
+  // Layer B is an optional layer on top, not a term inside the combination.
+  // Its absence leaves the score exactly where layer A puts it -- which is what
+  // the paragraph above this table says, while the table said `high`.
+  'axis6-external-hook-log': 'none',
   // r_in over one window against r_cross over two: within-window repetition is
   // rarer than carry-over, so standing in for it reads high.
   'axis6-all-time-basis': 'high',

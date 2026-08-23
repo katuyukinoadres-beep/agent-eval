@@ -24,12 +24,14 @@ import {
  */
 
 const base: MetabolismInputs = {
-  effectiveInputPerCall: [30_000],
+  peakInputPerBundle: [30_000], effectiveInputPerBundle: [30_000],
+  inputPerBundleWithoutCache: [],
   skillsListed: [],
   skillFirings: {},
   hookFirings: {},
   mcpFirings: {},
   mcpServersDefined: 0,
+  hooksDefined: 0,
   listingTruncated: false,
 }
 
@@ -134,11 +136,11 @@ describe('the score', () => {
 
   it('has no score when nothing carried usage', () => {
     // Not zero: a window with no measured tokens has no tax to judge.
-    expect(metabolism(at({ effectiveInputPerCall: [] })).score).toBeNull()
+    expect(metabolism(at({ peakInputPerBundle: [] })).score).toBeNull()
   })
 
   it('stays inside 0 and 100', () => {
-    const r = metabolism(at({ effectiveInputPerCall: [10_000_000], skillsListed: ['a'] }))
+    const r = metabolism(at({ peakInputPerBundle: [10_000_000], skillsListed: ['a'] }))
     expect(r.score).toBeGreaterThanOrEqual(0)
     expect(r.score).toBeLessThanOrEqual(100)
   })
@@ -148,17 +150,29 @@ describe('saturation', () => {
   it('is reported, because an axis on its floor cannot move', () => {
     // A score that cannot respond to anything the environment does is useless
     // as a time series, which is what this product is for.
-    expect(metabolism(at({ effectiveInputPerCall: [500_000] })).saturated).toBe(true)
-    expect(metabolism(at({ effectiveInputPerCall: [114_635] })).saturated).toBe(false)
+    expect(metabolism(at({ peakInputPerBundle: [500_000] })).saturated).toBe(true)
+    expect(metabolism(at({ peakInputPerBundle: [114_635] })).saturated).toBe(false)
   })
 })
 
 describe('what it does not compute', () => {
-  it('names both omissions and their direction', () => {
+  it('names the one omission left, and its direction', () => {
+    // `static-defects` is not an omission any more: v2 §3.5 removes D from this
+    // axis entirely and moves it to the safety check, which is not scored.
+    // Declaring an omission for a term the axis no longer has overstates what
+    // is missing, and it was one of the two deductions that made the axis
+    // unscorable.
     const r = metabolism(base)
-    expect([...r.omitted]).toEqual(['static-defects', 'dead-weight-descriptions'])
-    // Both are deductions, so leaving them out makes this axis read high.
-    for (const o of r.omitted) expect(METABOLISM_OMISSION_LEANINGS[o]).toBe('high')
+    expect([...r.omitted]).toEqual(['dead-weight-descriptions'])
+    expect(METABOLISM_OMISSION_LEANINGS['dead-weight-descriptions']).toBe('high')
+  })
+
+  it('records a truncated listing as an omission rather than as a flag nobody reads', () => {
+    // The flag was collected, threaded through two interfaces, and never read.
+    // A truncated listing understates the asset set, so U runs high with
+    // nothing to show it -- truncated and short were indistinguishable.
+    expect(metabolism({ ...base, listingTruncated: true }).omitted).toContain('listing-truncated')
+    expect(metabolism({ ...base, listingTruncated: false }).omitted).not.toContain('listing-truncated')
   })
 
   it('keeps the dead-weight threshold visible even though it is unused', () => {
@@ -192,5 +206,84 @@ describe('a deduction-style axis with a dropped deduction', () => {
     // Not scored is not the same as not measured. A snapshot that omitted this
     // would lose it for good.
     expect(metabolism(base).score).not.toBeNull()
+  })
+})
+
+describe('which context-tax reading is scored', () => {
+  /**
+   * v1's two lines disagree. The first says `median(per task bundle)`; the
+   * second writes `median(usage.input_tokens + cache_read_input_tokens)`, which
+   * is per assistant message. The trapezoid's 40k and 120k thresholds are
+   * context *sizes*, and that is what disambiguates them.
+   *
+   * All four readings, measured on this machine:
+   *
+   *   per assistant message, with cache   123,276   trapezoid 20.00
+   *   per bundle, summed, with cache    5,594,668   trapezoid 20.00
+   *   per bundle, peak, with cache        476,013   trapezoid 20.00
+   *   per bundle, summed, without cache        30   trapezoid 100.00
+   */
+  it('grades the peak, not the sum', () => {
+    // Summing counts the same cached context once per call inside the bundle.
+    const r = metabolism(at({ peakInputPerBundle: [50_000], effectiveInputPerBundle: [5_000_000] }))
+    expect(r.fc).toBe(50_000)
+    expect(r.fcSummed).toBe(5_000_000)
+    expect(r.trapezoidScore).toBeCloseTo(trapezoid(50_000))
+  })
+
+  it('reports the summed and cache-free readings beside it', () => {
+    // Never scored alone: cache reads are 94.7% of all tokens measured, so the
+    // with-cache figure mostly measures how long a session ran.
+    const r = metabolism(
+      at({
+        peakInputPerBundle: [50_000],
+        effectiveInputPerBundle: [5_000_000],
+        inputPerBundleWithoutCache: [30],
+      }),
+    )
+    expect(r.fcSummed).toBe(5_000_000)
+    expect(r.fcWithoutCache).toBe(30)
+  })
+
+  it('would return the floor for every possible environment under the summed reading', () => {
+    // The decisive argument against it. No environment has a bundle summing
+    // under the 120,000 ceiling, so that reading returns 20 for everyone
+    // forever -- a metric that measures nothing.
+    expect(trapezoid(5_594_668)).toBe(20)
+    expect(trapezoid(120_001)).toBe(20)
+    // The peak can still discriminate.
+    expect(trapezoid(50_000)).toBeGreaterThan(20)
+  })
+})
+
+describe('the asset denominator', () => {
+  /**
+   * v2 §3.5: `assetsDefined = skills listed + hooks registered + MCP servers
+   * enabled`. Registrations, not firings.
+   *
+   * Hooks were the one class whose denominator was its own numerator's support
+   * set: it iterated `hookFirings`, so an unfired hook cost nothing and sixty
+   * hooks with no firings were indistinguishable from no hooks at all. That
+   * reverses the guard this axis exists to be.
+   */
+  it('counts a registered hook that never fired', () => {
+    const fired = metabolism(at({ skillsListed: [], hookFirings: { a: 5 }, hooksDefined: 1 }))
+    const withDead = metabolism(at({ skillsListed: [], hookFirings: { a: 5 }, hooksDefined: 4 }))
+    expect(fired.assets).toBe(1)
+    expect(withDead.assets).toBe(4)
+    expect(fired.u).toBe(1)
+    expect(withDead.u).toBeCloseTo(0.25)
+  })
+
+  it('does not double-count a hook that did fire', () => {
+    // The padding is `defined - fired`, so a fully exercised set adds nothing.
+    const r = metabolism(at({ skillsListed: [], hookFirings: { a: 5, b: 5 }, hooksDefined: 2 }))
+    expect(r.assets).toBe(2)
+    expect(r.firedAssets).toBe(2)
+  })
+
+  it('pads MCP servers the same way, which it always did', () => {
+    const r = metabolism(at({ skillsListed: [], mcpFirings: { x: 3 }, mcpServersDefined: 5 }))
+    expect(r.assets).toBe(5)
   })
 })
