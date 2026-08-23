@@ -130,6 +130,20 @@ describe('what a snapshot records', () => {
     const { snapshot } = buildSnapshot(inputs())
     expect(snapshot.completeness.evaluatedOver).toEqual(SCORED_AXES)
     expect(snapshot.completeness.schemaComplete).toBe(false)
+  })
+
+  it('keeps the composite, because nothing else does', () => {
+    // It was stored nowhere and read back as a hardcoded null, so the composite
+    // delta -- the number the product exists to produce -- was structurally
+    // null on every run a comparison could ever make.
+    const { snapshot } = buildSnapshot({ ...inputs(), compositeE4: 543_100 })
+    expect(snapshot.compositeE4).toBe(543_100)
+    expect(snapshot.completeness.compositeComparable).toBe(true)
+  })
+
+  it('says so when there was no composite to keep', () => {
+    const { snapshot } = buildSnapshot({ ...inputs(), compositeE4: null })
+    expect(snapshot.compositeE4).toBeNull()
     expect(snapshot.completeness.compositeComparable).toBe(false)
   })
 })

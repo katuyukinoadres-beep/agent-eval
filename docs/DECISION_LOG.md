@@ -1366,3 +1366,45 @@ S = 失敗のうち、人間発話を挟まずに同じ対象で3回以内に成
 25セッション × 成果物12件 → `belowMinDenominator: true`、成果物300件 → `false`。**両方向を出す。** 片方向だけのテストは「常に true を返す検査」でも通る。
 
 clamp を戻すと「12件で true」が落ちることを確認済み（`expected false to be true`）。
+
+---
+
+## 2026-08-23 — 総合点の窓間Δが構造的に常に null だった
+
+**この製品が出すために存在する数字が、一度も出ていなかった。**
+
+3箇所が同時に効いていた:
+
+1. `run.ts:viewOf` が `compositeE4: null` を**ハードコード**。前窓の総合点はどこにも保存されていない
+2. `compositeComparable = (measured.length === SCORED_AXES.length)` — 採点軸5本すべてが必要。今出せるのは4本なので**常に false**
+3. `belowMinDenominator: true` も同じくハードコード。**実測の不足と「不足だと決めつけた」が同じ値**になり、それに依存する規則がどちら向きにも発火できない
+
+### 直し方
+
+- スナップショット本体に `compositeE4` を保存
+- `compositeComparable` は「**この窓が数字を出せたか**」に限定。「2つの窓が比較可能か」は別の問いで、保存された軸集合から `compare()` が判定する。2つを1つの boolean に畳んだせいで常に false になっていた
+- `belowMinDenominator` は軸から読む。フィールドを持たない旧レコードは「不足」扱い（**測っていない最小値を「満たした」と言えない**）
+
+### `basis` は集合で判定する（#47）
+
+`measuredNow.length === measuredThen.length` は**サイズ比較**。4軸ずつ測った2窓が違う4軸なら `identical` にはならない。`identical` は読み手が「環境以外は何も動いていない」と取る語。
+
+総合Δも同じ条件を課した。フラグは「数字がある」としか言わず、「同じ量である」とは言わない。
+
+### 実測
+
+```
+vs prev    identical, 4 axes: artifactUptake -0.47, recurrencePrevention +0,
+                              selfVerification -0.02, wastedMotion +0
+           composite: 54.35 → 54.22 (-0.13)
+```
+
+### スナップショットの分子分母が軸2のキーでしか保存されていなかった（#20）
+
+`a.detail['wastedTotal']` / `a.detail['bundleCount']` を全軸に当てていたので、**5軸中4軸がスコアだけを保存し、その下の数字は null**。後の窓はスコアしか検算材料がない。`SAMPLE_KEYS` に軸ごとのキーを明示。
+
+### effectiveWeights は largest remainder ではなかった（#34）
+
+コメントには largest remainder と書いてあり、実装は「**最後の軸が端数を全部かぶる**」だった。合計100にはなるが、端数が1軸に集中する。4軸のとき recurrencePrevention が正確値から 0.0136 ずれる（配分後は全軸 0.01 以内）。
+
+陽性対照: last-takes-remainder に戻すとテストが `expected 0.013636... to be less than or equal to 0.01` で落ちる。

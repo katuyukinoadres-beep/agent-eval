@@ -28,6 +28,9 @@ import type { AxisKey } from '../payload/types.js'
  * v1's 15/14/14/14/10/13 renormalised over the 80 points left after axes 7 and
  * 8 were dropped from the first release. They sum to 100.
  */
+/** 100.00 points, in hundredths, so the allocation is integer arithmetic. */
+const TOTAL_HUNDREDTHS = 10_000
+
 export const AXIS_WEIGHTS = {
   firstPassLanding: 18.75,
   wastedMotion: 17.5,
@@ -232,18 +235,29 @@ export function composite(inputs: CompositeInputs): Composite {
   // four axes at 17.5/17.5/17.5/16.25 give 25.45 x3 + 23.64 = 99.99, and V-18
   // refused exactly that the first time a live composite ran over four axes.
   // The rule was right and the emitter was wrong.
+  //
+  // Largest remainder, in hundredths of a point. Every share is floored, and
+  // the points left over go one at a time to the shares with the largest
+  // fractional parts. The set sums to 100 by construction, and no single axis
+  // absorbs the whole rounding error -- giving the leftover to the last share
+  // sums correctly too, but can move one axis by up to 0.005 per other axis,
+  // and which axis it lands on depends on nothing more than iteration order.
+  //
+  // Ties break on the key so that the same axis set always produces the same
+  // weights, whatever order it arrives in.
   const effectiveWeights: Record<string, number> = {}
-  const exact = axesUsed.map((k) => ({ key: k, value: (100 * AXIS_WEIGHTS[k]) / nominalWeightSum }))
-  let assigned = 0
-  for (const e of exact.slice(0, -1)) {
-    const v = round2(e.value)
-    effectiveWeights[e.key] = v
-    assigned += v
+  const shares = axesUsed.map((k) => {
+    const exact = (TOTAL_HUNDREDTHS * AXIS_WEIGHTS[k]) / nominalWeightSum
+    const base = Math.floor(exact)
+    return { key: k, base, frac: exact - base }
+  })
+  let leftover = TOTAL_HUNDREDTHS - shares.reduce((sum, e) => sum + e.base, 0)
+  for (const e of [...shares].sort((x, y) => y.frac - x.frac || (x.key < y.key ? -1 : 1))) {
+    if (leftover <= 0) break
+    e.base += 1
+    leftover -= 1
   }
-  const last = exact[exact.length - 1]
-  // The final share takes whatever is left, so the set sums to 100 by
-  // construction rather than by luck.
-  if (last !== undefined) effectiveWeights[last.key] = round2(100 - assigned)
+  for (const e of shares) effectiveWeights[e.key] = e.base / 100
 
   const raw = scored.reduce(
     (sum, a) => sum + AXIS_WEIGHTS[a.key as ScoredAxisKey] * (a.score ?? 0),

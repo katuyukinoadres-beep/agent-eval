@@ -160,7 +160,13 @@ function viewOf(body: Record<string, unknown> | { readonly axes: unknown }): Win
           state: (a['state'] ?? 'not-implemented') as 'measured' | 'not-applicable' | 'not-implemented',
           scoreE4: typeof a['scoreE4'] === 'number' ? a['scoreE4'] : null,
           formulaFingerprint: typeof a['formulaFingerprint'] === 'string' ? a['formulaFingerprint'] : null,
-          belowMinDenominator: true,
+          // Read, not invented. This was hardcoded true for every axis, so a
+          // real shortfall and the assumption of one were the same value and
+          // the rule that depends on it could never fire either way.
+          //
+          // A record that predates the field is treated as short: an old
+          // snapshot cannot say it met a minimum nobody stored.
+          belowMinDenominator: a['belowMinDenominator'] !== false,
         },
       ]),
     ),
@@ -169,7 +175,7 @@ function viewOf(body: Record<string, unknown> | { readonly axes: unknown }): Win
     countBasisDigest: digestOf(COUNT_BASIS_DOMAIN, b['countBasis'] ?? null),
     keyFingerprint: typeof key['fingerprint'] === 'string' ? key['fingerprint'] : '',
     compositeComparable: completeness['compositeComparable'] === true,
-    compositeE4: null,
+    compositeE4: typeof b['compositeE4'] === 'number' ? b['compositeE4'] : null,
   }
 }
 
@@ -253,6 +259,8 @@ export function run(options: RunOptions): RunResult {
         axes: payload.axes,
         gate,
         countBasis: COUNT_BASIS,
+        compositeE4:
+          payload.composite.score === null ? null : Math.round(payload.composite.score * 10_000),
         chain: { seq: head.seq, prev: head.prev },
         key: key.ref,
         toolVersion: VERSION,

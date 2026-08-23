@@ -9,6 +9,7 @@ import {
   tierOf,
   type AxisInput,
   type OmittedTerm,
+  type ScoredAxisKey,
 } from '@/score/composite.js'
 import { OMITTED_TERMS, OMITTED_TERM_LEANINGS } from '@/score/wastedMotion.js'
 
@@ -243,5 +244,61 @@ describe('tiers', () => {
     expect(tierOf(40)).toBe('C')
     expect(tierOf(39.99)).toBe('D')
     expect(tierOf(0)).toBe('D')
+  })
+})
+
+describe('how the effective weights are allocated', () => {
+  /**
+   * The set has to sum to 100.00 exactly -- V-18 refuses it otherwise, and it
+   * refused a live composite over four axes the first time one ran: 17.5,
+   * 17.5, 17.5 and 16.25 rounded independently give 25.45 x3 + 23.64 = 99.99.
+   *
+   * Summing correctly is not enough on its own, though. Handing the leftover to
+   * the last share also sums to 100, and puts the entire rounding error on
+   * whichever axis happens to be last.
+   */
+  const weightsOver = (keys: readonly ScoredAxisKey[]) =>
+    composite({
+      axes: keys.map((k) => ({ key: k, available: true, score: 50, omittedTerms: [] })),
+      gateReason: null,
+    }).effectiveWeights
+
+  const sumOf = (w: Readonly<Record<string, number>>) =>
+    Math.round(Object.values(w).reduce((a, b) => a + b, 0) * 100) / 100
+
+  it('sums to exactly 100 for every axis count that produces a composite', () => {
+    // Below the missing-axis limit there is no composite and no weights to sum,
+    // which is a different outcome from a set that sums wrong.
+    const all = SCORED_AXIS_KEYS
+    for (let n = all.length - MAX_MISSING_AXES; n <= all.length; n += 1) {
+      expect(sumOf(weightsOver(all.slice(0, n))), `${n} axes`).toBe(100)
+    }
+  })
+
+  it('has no weights at all when the composite is withheld', () => {
+    expect(weightsOver(SCORED_AXIS_KEYS.slice(0, 1))).toEqual({})
+  })
+
+  it('spreads the rounding error instead of putting it all on one axis', () => {
+    // Four equal-ish weights: the exact share is 25.4545..., and three axes
+    // taking 25.45 leaves 23.64 for the fourth under last-takes-the-remainder
+    // -- 1.81 away from its own exact share. Largest remainder keeps every
+    // share within one hundredth of where it belongs.
+    const w = weightsOver(['wastedMotion', 'selfVerification', 'artifactUptake', 'recurrencePrevention'])
+    const exact = Object.fromEntries(
+      Object.keys(w).map((k) => {
+        const sum = Object.keys(w).reduce((a, key) => a + AXIS_WEIGHTS[key as ScoredAxisKey], 0)
+        return [k, (100 * AXIS_WEIGHTS[k as ScoredAxisKey]) / sum]
+      }),
+    )
+    for (const [k, v] of Object.entries(w)) {
+      expect(Math.abs(v - (exact[k] as number)), k).toBeLessThanOrEqual(0.01)
+    }
+  })
+
+  it('gives the same weights however the axis set is ordered', () => {
+    const a = weightsOver(['wastedMotion', 'selfVerification', 'artifactUptake'])
+    const b = weightsOver(['artifactUptake', 'wastedMotion', 'selfVerification'])
+    expect(a).toEqual(b)
   })
 })

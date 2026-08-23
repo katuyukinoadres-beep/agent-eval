@@ -122,7 +122,15 @@ function comparisonLine(result: ReturnType<typeof runScan>): string {
     c.excludedByFingerprint.length === 0
       ? ''
       : ` — ${c.excludedByFingerprint.length} axis(es) excluded, formula changed`
-  return `${c.basis}, ${c.axes.length} axes: ${parts}${gap}${excluded}`
+  // The composite delta, or the reason there is not one. It was structurally
+  // null for the whole of the first build because nothing stored the previous
+  // window's figure, and a missing line reads as "no change".
+  const INDENT = '\n           '
+  const total =
+    c.delta === null
+      ? `${INDENT}composite: withheld — the two windows did not measure the same axes`
+      : `${INDENT}composite: ${c.compositeThen} → ${c.compositeNow} (${c.delta >= 0 ? '+' : ''}${c.delta})`
+  return `${c.basis}, ${c.axes.length} axes: ${parts}${gap}${excluded}${total}`
 }
 
 /** The total, or why there is not one, plus which way it leans. */

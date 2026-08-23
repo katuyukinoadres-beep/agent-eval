@@ -60,7 +60,7 @@ import {
   type Snapshot,
   type ScoredAxis,
 } from './record.js'
-import { day, dayOf, e4, int, semver, type Day, type Hmac128, type Sha256 } from './types.js'
+import { day, dayOf, e4, int, semver, type Day, type E4, type Hmac128, type Sha256 } from './types.js'
 
 /**
  * The constants axis 2's score actually depends on.
@@ -140,6 +140,15 @@ export interface BuildInputs {
   readonly axes: Axes
   readonly gate: GateVerdict
   readonly countBasis: CountBasis
+  /**
+   * The composite this window produced, or null when it was withheld.
+   *
+   * Stored, because a delta needs the previous window's figure and nothing else
+   * keeps it. It was hardcoded null on the read side for the whole of the first
+   * build, which made the composite delta structurally always null -- the one
+   * number the product exists to produce.
+   */
+  readonly compositeE4: number | null
   readonly chain: ChainLink
   readonly key: KeyRef
   readonly toolVersion: string
@@ -232,6 +241,22 @@ const sessionsOf = (counts: ScanCounts, sign: Signer): readonly SessionRecord[] 
     }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
+/**
+ * Which two figures in each axis's `detail` are its numerator and denominator.
+ *
+ * Written out per axis because the keys are not shared. Reading axis 2's
+ * `wastedTotal` and `bundleCount` from every axis stored null for the other
+ * four, so four of five snapshots carried a score with nothing underneath it --
+ * and a later window verifying that score has only the score to go on.
+ */
+const SAMPLE_KEYS: Partial<Record<AxisKey, { readonly numerator: string; readonly denominator: string }>> = {
+  wastedMotion: { numerator: 'wastedTotal', denominator: 'bundleCount' },
+  selfVerification: { numerator: 'verifiedIntervals', denominator: 'intervals' },
+  artifactUptake: { numerator: 'reusedArtifacts', denominator: 'artifacts' },
+  environmentMetabolism: { numerator: 'firedAssets', denominator: 'assets' },
+  recurrencePrevention: { numerator: 'distinctSignatures', denominator: 'errors' },
+}
+
 const axesOf = (payloadAxes: Axes, counts: ScanCounts): Record<AxisKey, AxisRecord> => {
   const out = emptyAxes()
   for (const key of AXIS_KEYS) {
@@ -246,9 +271,13 @@ const axesOf = (payloadAxes: Axes, counts: ScanCounts): Record<AxisKey, AxisReco
     out[key] = {
       state: a.availability === 'available' ? 'measured' : 'not-applicable',
       formulaFingerprint: fingerprint,
-      numeratorE4: a.detail?.['wastedTotal'] === undefined ? null : e4(a.detail['wastedTotal']),
-      denominator: a.detail?.['bundleCount'] ?? null,
+      numeratorE4: numeratorOf(key, a.detail),
+      denominator: denominatorOf(key, a.detail),
       scoreE4: a.score === null ? null : e4(a.score),
+      // Read from the axis rather than asserted. `belowMinDenominator: true`
+      // was invented on the read side for every axis, so nothing downstream
+      // could tell a real shortfall from the assumption of one.
+      belowMinDenominator: a.belowMinDenominator,
       sampling: { clusters: int(counts.sessionIds.length) },
       omittedTerms: a.omittedTerms.map((t) => ({
         term: t.term,
@@ -258,6 +287,17 @@ const axesOf = (payloadAxes: Axes, counts: ScanCounts): Record<AxisKey, AxisReco
     }
   }
   return out
+}
+
+const numeratorOf = (key: AxisKey, detail: Readonly<Record<string, number>> | null): E4 | null => {
+  const k = SAMPLE_KEYS[key]?.numerator
+  const v = k === undefined ? undefined : detail?.[k]
+  return v === undefined ? null : e4(v)
+}
+
+const denominatorOf = (key: AxisKey, detail: Readonly<Record<string, number>> | null): number | null => {
+  const k = SAMPLE_KEYS[key]?.denominator
+  return k === undefined ? null : (detail?.[k] ?? null)
 }
 
 const signaturesOf = (counts: ScanCounts): { sets: SignatureSets; members: readonly Hmac128[] } => {
@@ -372,12 +412,18 @@ export function buildSnapshot(inputs: BuildInputs): Built {
     chain: inputs.chain,
     key: inputs.key,
     countBasis: inputs.countBasis,
+    compositeE4: inputs.compositeE4,
     completeness: {
       schemaComplete: measured.length === SCORED_AXES.length,
       // A composite over one axis and a composite over six are different
       // quantities. Storing the refusal makes it mechanical rather than
       // remembered.
-      compositeComparable: measured.length === SCORED_AXES.length,
+      // Whether this window can supply a figure at all, not whether the two
+      // windows match: the axis sets are stored beside it and the comparison
+      // decides that by comparing them. Requiring every scored axis meant the
+      // flag was false on every run a five-axis build could produce, and a
+      // stored `false` reads the same as a considered refusal.
+      compositeComparable: typeof inputs.compositeE4 === 'number',
       axesAbsent: axesAbsent as readonly ScoredAxis[],
       evaluatedOver: SCORED_AXES,
       blocksAbsent: absences
