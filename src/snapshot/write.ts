@@ -243,3 +243,30 @@ export function writeSnapshot(inputs: WriteInputs, io: SnapshotIo = defaultSnaps
     lock?.release()
   }
 }
+
+/**
+ * The most recent committed snapshot body, or null.
+ *
+ * Read for comparison, so its hash is recomputed here too: a previous window
+ * whose stored hash was edited to match an edited body would otherwise supply
+ * the figures a delta is taken against.
+ */
+export function readLatestBody(
+  dir: string,
+  io: SnapshotIo = defaultSnapshotIo,
+): Record<string, unknown> | null {
+  const files = listSnapshots(dir, io)
+  const last = files[files.length - 1]
+  if (last === undefined) return null
+  try {
+    const parsed: unknown = JSON.parse(io.readFile(join(dir, last.file)))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const body = parsed as Record<string, unknown>
+    const { selfHash, ...rest } = body
+    // A body that does not hash to its stored value is not usable as a
+    // baseline; the chain reports the break separately.
+    return bodyHash(rest) === selfHash ? body : null
+  } catch {
+    return null
+  }
+}

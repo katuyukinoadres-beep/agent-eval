@@ -31,7 +31,12 @@ import { ensureStateDir } from './snapshot/stateDir.js'
 import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
 import { buildSnapshot } from './snapshot/build.js'
-import { defaultSnapshotIo, readHead, writeSnapshot, type WriteOutcome } from './snapshot/write.js'
+import { defaultSnapshotIo, readHead, readLatestBody, writeSnapshot, type WriteOutcome } from './snapshot/write.js'
+import { compare, type Comparison, type WindowView } from './score/comparison.js'
+
+/** Domain for the basis digest, built without an inline escape. */
+const COUNT_BASIS_DOMAIN = 'agent-eval/count-basis/1' + String.fromCharCode(10)
+import { digestOf } from './snapshot/canonical.js'
 import { verifyChain, type ChainVerdict } from './snapshot/verify.js'
 import { payloadDigest } from './snapshot/canonical.js'
 import { firstLine } from './snapshot/types.js'
@@ -82,6 +87,13 @@ export interface RunResult {
   readonly snapshot: WriteOutcome | null
   /** The chain as it stands after this run, or null when no store was opened. */
   readonly chain: ChainVerdict | null
+  /**
+   * This window against the previous one, or null when no store was opened.
+   *
+   * Carries its own refusal reason rather than being absent: "there was no
+   * previous window" and "the two could not be compared" are different facts.
+   */
+  readonly comparison: Comparison | null
 }
 
 /**
@@ -124,6 +136,40 @@ export function defaultOptions(overrides: Partial<RunOptions> = {}): RunOptions 
     windowDays: overrides.windowDays ?? 10,
     stateDir: overrides.stateDir ?? null,
     useStore: overrides.useStore ?? false,
+  }
+}
+
+/**
+ * The parts of a snapshot a comparison needs, from either a freshly built one
+ * or one read back off disk.
+ *
+ * One reader for both, so the two windows are never described by two different
+ * pieces of code -- which is how a field comes to be read one way on the way in
+ * and another on the way out.
+ */
+function viewOf(body: Record<string, unknown> | { readonly axes: unknown }): WindowView {
+  const b = body as Record<string, unknown>
+  const axes = (b['axes'] ?? {}) as Record<string, Record<string, unknown>>
+  const key = (b['key'] ?? {}) as Record<string, unknown>
+  const completeness = (b['completeness'] ?? {}) as Record<string, unknown>
+  return {
+    axes: Object.fromEntries(
+      Object.entries(axes).map(([k, a]) => [
+        k,
+        {
+          state: (a['state'] ?? 'not-implemented') as 'measured' | 'not-applicable' | 'not-implemented',
+          scoreE4: typeof a['scoreE4'] === 'number' ? a['scoreE4'] : null,
+          formulaFingerprint: typeof a['formulaFingerprint'] === 'string' ? a['formulaFingerprint'] : null,
+          belowMinDenominator: true,
+        },
+      ]),
+    ),
+    // Digested rather than compared field by field, so a basis that gains a
+    // field later still compares as different.
+    countBasisDigest: digestOf(COUNT_BASIS_DOMAIN, b['countBasis'] ?? null),
+    keyFingerprint: typeof key['fingerprint'] === 'string' ? key['fingerprint'] : '',
+    compositeComparable: completeness['compositeComparable'] === true,
+    compositeE4: null,
   }
 }
 
@@ -194,11 +240,14 @@ export function run(options: RunOptions): RunResult {
 
   let snapshot: WriteOutcome | null = null
   let chain: ChainVerdict | null = null
+  let comparison: Comparison | null = null
   if (store !== null && key !== null) {
     // Built and written inside a try that cannot reach the caller: the payload
     // must still come out on a day the store cannot be written.
     try {
       const head = readHead(store.snapshotDir, defaultSnapshotIo)
+      // Read before writing: the baseline is the window before this one.
+      const previous = readLatestBody(store.snapshotDir, defaultSnapshotIo)
       const built = buildSnapshot({
         counts,
         axes: payload.axes,
@@ -219,6 +268,7 @@ export function run(options: RunOptions): RunResult {
         sidecar: built.sidecar,
       })
       chain = verifyChain(store.snapshotDir, defaultSnapshotIo)
+      comparison = compare(viewOf(built.snapshot), previous === null ? null : viewOf(previous))
     } catch (e) {
       snapshot = {
         kind: 'refused',
@@ -232,6 +282,7 @@ export function run(options: RunOptions): RunResult {
     payload,
     validation,
     gateReasons: gate.reasons.map(String),
+    comparison,
     stateDir: store?.stateDir ?? null,
     signaturesSigned: counts.signaturesSigned,
     snapshot,
