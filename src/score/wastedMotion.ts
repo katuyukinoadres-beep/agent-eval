@@ -59,6 +59,29 @@ export const OMITTED_TERMS = [
   'winsorisation',
 ] as const
 
+/**
+ * Which way each omitted term moves the score it was left out of.
+ *
+ * Three are positive numerator terms: leaving them out makes W smaller and the
+ * score higher. Winsorisation is the reverse -- nothing caps a heavy bundle, so
+ * W runs high and the score low. Both directions in one axis is why a total
+ * containing it can only be called `mixed`.
+ */
+export type OmittedTermName = (typeof OMITTED_TERMS)[number]
+
+/**
+ * Keyed by the union rather than by `string`, so adding a term to
+ * `OMITTED_TERMS` without stating its direction fails to compile. A term with
+ * no direction is exactly what V-24 exists to refuse, and catching it here is
+ * cheaper than catching it in a payload.
+ */
+export const OMITTED_TERM_LEANINGS: Readonly<Record<OmittedTermName, 'high' | 'low'>> = {
+  'unused-success': 'high',
+  'verification-exclusion': 'high',
+  'user-script-decay': 'high',
+  winsorisation: 'low',
+}
+
 export interface Winsorised {
   /**
    * Bundles that made at least one tool call.

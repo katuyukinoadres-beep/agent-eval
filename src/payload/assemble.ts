@@ -38,7 +38,8 @@ import type { AssembledWindow } from '../collect/window.js'
 import type { McpCount, PermissionTally, SkillCount, HookCount } from '../collect/environment.js'
 import { gate, type GateVerdict } from '../score/gate.js'
 import { MIN_DENOMINATOR, MIN_NUMERATOR, meetsMinimum } from '../score/minimum.js'
-import { wastedMotion } from '../score/wastedMotion.js'
+import { wastedMotion, OMITTED_TERM_LEANINGS, type OmittedTermName } from '../score/wastedMotion.js'
+import { composite, type AxisInput, type OmittedTerm, type SuppressedReason } from '../score/composite.js'
 import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
 
 export interface AssembleInputs {
@@ -170,6 +171,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     belowMinDenominator: true,
     unavailableReasons: reasons[key] ?? ['definition-pending'],
     detail: null,
+    omittedTerms: [],
   })
 
   const minimum = meetsMinimum({
@@ -197,6 +199,17 @@ export function assemble(inputs: AssembleInputs): Assembled {
     confidenceInterval: null,
     belowMinDenominator: !minimum.meetsMinimum,
     unavailableReasons: axis2Available ? [] : [...(reasons['wastedMotion'] ?? [])],
+    // Named, caused and directed. Three of these are positive numerator terms,
+    // so leaving them out makes the score read high; winsorisation is the one
+    // that reads low. A receiver seeing 57.1 with no leaning would take it for
+    // a plain measurement.
+    omittedTerms: motion.omitted.map(
+      (term): OmittedTerm => ({
+        term,
+        cause: 'not-implemented',
+        leans: OMITTED_TERM_LEANINGS[term as OmittedTermName],
+      }),
+    ),
     detail: {
       wastedTotal: Math.round(motion.numerator * 100) / 100,
       bundleCount: motion.bundles,
@@ -298,6 +311,19 @@ export function assemble(inputs: AssembleInputs): Assembled {
     measuredAt: iso8601(inputs.measuredAt),
   }
 
+  // The gate is the authority on its own three conditions; the composite takes
+  // the verdict rather than re-deriving it.
+  const gateReason: SuppressedReason | null = verdict.reasons[0] ?? null
+
+  const axisInputs: readonly AxisInput[] = AXIS_KEYS.map((k) => ({
+    key: k,
+    available: axes[k].availability === 'available',
+    score: axes[k].score,
+    omittedTerms: axes[k].omittedTerms,
+  }))
+
+  const compositeBlock = composite({ axes: axisInputs, gateReason })
+
   const payload: Payload = {
     schemaVersion: '1.0',
     runTimestamp: iso8601(inputs.measuredAt),
@@ -372,6 +398,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
       ),
     },
     axes,
+    composite: compositeBlock,
     environment,
   }
 

@@ -716,3 +716,54 @@ V-25 を `add()` で握りつぶすと拒否テスト5件だけが落ち、`acce
 ### 残っている追随
 
 NiKo が定義した **V-17〜V-24 / W-8** は未実装。全て `composite` ブロック（総合点）に対する検査で、そのブロック自体がまだ無い。V-23（`belowMinDenominator` の軸があるのに significant）と V-24（`omittedTerms` があるのに `leans` が null）は、**こちらが実装で分けた区別と書いた慣習が仕様に昇格したもの**。
+
+---
+
+## 2026-08-23 — composite（総合点）と V-17〜V-24 / W-8
+
+NiKo が 8/20 に §12 で合成式を確定（`2956466`）。重み表はあったが**それを消費する式が無く**、S12 が唯一そこで止まっていた。
+
+### 実機
+
+```json
+"composite": {
+  "score": null, "tier": null,
+  "axesUsed": ["wastedMotion"], "nominalWeightSum": 17.5,
+  "effectiveWeights": {},
+  "excluded": ["firstPassLanding","selfVerification","artifactUptake",
+               "environmentMetabolism","recurrencePrevention"],
+  "suppressedReason": "too-many-missing-axes",
+  "leans": "mixed",
+  "outcomeScore": null, "designScore": null
+}
+```
+
+**総合点が出ないのが第1弾の正常系**（仕様 §12.3 が明記）。6軸中5軸が未実装なので欠測上限2を超える。
+
+### 欠測は0点でも最良値でもない（P-A）
+
+v1 は前者だけを禁じていた。後者を禁じないと**測れない環境ほど高く出る**形が残り、これは本製品が最初に否定したもの（設定を凝ると点が上がる装置）と同型になる。テストで両方向を固定した。
+
+### `leans` は「優勢な向き」ではなく「両方あれば mixed」
+
+軸2は正の分子項を3つ（高く出る）と winsorisation（低く出る）を同時に落としている。重みで多数決すれば `high` になるが、仕様は名指しでこのケースを `mixed` と定めている。
+
+> **どちらとも言えないことを言えないと書く**のが正しい状態で、精度が上がったふりをしない
+
+実機の `leans` は `mixed`。
+
+### `suppressedReason` の3語は実装側の語彙が採用された
+
+仕様の初稿は `parse_rate` / `roots_incomplete` / `active_days` を新設していたが、**AB-88 で指摘したのと同じ形**（同じものを2文書が別名で呼び、受信側が黙って比較に失敗する）なので、`src/score/gate.ts` の `GateReason` の実文字列に合わせられた。新設は `too-many-missing-axes` の1語だけ。
+
+### 向きの無い項を作れなくした
+
+`OMITTED_TERM_LEANINGS` を `Record<OmittedTermName, 'high'|'low'>` で型付けした。`OMITTED_TERMS` に項を足して向きを書き忘れると**コンパイルが通らない**。向きの無い項は V-24 が拒否する対象で、ペイロードで捕まえるよりコンパイルで捕まえるほうが安い。
+
+### V-21 / V-23 は実装しない
+
+どちらも `comparison` ブロックを検査するが、そのブロックには前窓が要る。**書き出す仕組み（P4）がまだ無いので、常に通るルールはカバレッジに見えるだけ**。`NOT_IMPLEMENTED_HERE` に名前で残した。
+
+### 陽性対照
+
+新6ルールを `add()` で握りつぶすと拒否テスト10件だけが落ち、受理系4件と W-8 は通り続ける。368件中358件は無傷。

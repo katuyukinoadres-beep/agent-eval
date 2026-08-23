@@ -60,6 +60,7 @@ const ALL_NOT_APPLICABLE: Axis = {
   // environment is small" from "this axis was never implemented".
   unavailableReasons: ['too-few-clusters'],
   detail: null,
+  omittedTerms: [],
 }
 
 const axes = Object.fromEntries(AXIS_KEYS.map((k) => [k, ALL_NOT_APPLICABLE])) as Axes
@@ -249,6 +250,24 @@ export const BASE_PAYLOAD = {
 
   axes,
 
+  composite: {
+    // Every axis is not_applicable here, so five of the six are missing and no
+    // total is produced. That is the correct first-release result for this
+    // machine, not a failure to compute one.
+    score: null,
+    tier: null,
+    axesUsed: [],
+    nominalWeightSum: 0,
+    effectiveWeights: {},
+    excluded: [
+      'firstPassLanding', 'wastedMotion', 'selfVerification',
+      'artifactUptake', 'environmentMetabolism', 'recurrencePrevention',
+    ],
+    suppressedReason: 'too-many-missing-axes',
+    leans: null,
+    outcomeScore: null,
+    designScore: null,
+  },
   environment: {
     os: 'Windows 11',
     shell: 'PowerShell + Git Bash',
