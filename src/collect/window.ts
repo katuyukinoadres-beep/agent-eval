@@ -10,6 +10,7 @@
  */
 
 import type { ActiveDaysMethod, Window, WindowSource } from '../payload/types.js'
+import { windowScope } from './scope.js'
 import { makeMetric } from '../payload/metric.js'
 import type { Metric } from '../payload/metric.js'
 import type { SettingsScope } from './settings.js'
@@ -19,7 +20,18 @@ export interface WindowInputs {
   readonly jsonlDates: readonly string[]
   /** Days carrying a user row of any kind. */
   readonly userRowDates: readonly string[]
-  /** Days carrying `origin.kind === 'human'`. */
+  /** The same human-turn days recut on UTC, so the boundary's effect is visible. */
+  readonly humanTurnDatesUtc: readonly string[]
+  /** The offset the days were cut on, as written. Published, never inferred. */
+  readonly dayBoundary: string
+  /**
+   * Days carrying at least one human turn under P1. The window's own unit.
+   *
+   * Not `origin.kind === 'human'`, which is what this said while the code did
+   * something else. That field is on 2.7% of user rows here, so following the
+   * comment lands on about five active days instead of eleven — one away from
+   * the five-day suppression gate.
+   */
   readonly humanTurnDates: readonly string[]
   readonly gitDates: readonly string[]
   readonly externalDates: readonly string[]
@@ -111,7 +123,8 @@ export function methodFor(hasGit: boolean, hasExternal: boolean): ActiveDaysMeth
 
 export function assembleWindow(inputs: WindowInputs): AssembledWindow {
   const {
-    jsonlDates, userRowDates, humanTurnDates, gitDates, externalDates,
+    jsonlDates, userRowDates, humanTurnDates, humanTurnDatesUtc, dayBoundary,
+    gitDates, externalDates,
     externalExists, externalRows, cleanupPeriodDays, cleanupFoundAt, windowDays,
   } = inputs
 
@@ -150,6 +163,13 @@ export function assembleWindow(inputs: WindowInputs): AssembledWindow {
 
   const windowSource: WindowSource = cleanupFoundAt === null ? 'observed' : 'setting'
 
+  // The days the window actually covers. Computed here rather than assumed,
+  // because `activeDays` and `activeDaysInWindow` being equal is a fact about
+  // this corpus -- ten active days against a window of ten -- and not a
+  // property of the window. A figure that did not move is not evidence the
+  // window works.
+  const scope = windowScope(humanTurnDates, windowDays, dayBoundary)
+
   const window: Window = {
     unit: 'activeDays',
     windowDays,
@@ -158,6 +178,12 @@ export function assembleWindow(inputs: WindowInputs): AssembledWindow {
     calendarSpanDays: spanDays,
     activeDays: new Set(humanTurnDates).size,
     activeDaysMethod: 'human-turn-days',
+    dayBoundary,
+    activeDaysUtc: new Set(humanTurnDatesUtc).size,
+    activeDaysInWindow: scope?.activeDaysInWindow ?? 0,
+    truncated: scope?.truncated ?? true,
+    windowStart: scope?.start ?? null,
+    windowEnd: scope?.end ?? null,
     userRowDays: new Set(userRowDates).size,
     contiguousDays: longestRun([...evidence]),
     gapCount: Math.max(0, spanDays - evidenceDays),

@@ -15,6 +15,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { FileEntry, Inventory } from './walk.js'
+import { dayOf, type Day } from './day.js'
 import { notHumanBecause, userText } from './humanTurn.js'
 import { bundleTracker, isEnvironmentNoise, type BundleTracker } from './bundle.js'
 import { readWrite, recordWrite, type MutPathTally, type PathTally } from './artifact.js'
@@ -325,8 +326,19 @@ export interface ScanCounts {
    * see that rather than infer it.
    */
   readonly userRowDates: readonly string[]
-  /** Days carrying `origin.kind === 'human'`. The window's own definition. */
-  readonly humanTurnDates: readonly string[]
+  /**
+   * Days carrying at least one human turn under P1 — `notHumanBecause` returns
+   * null. The window's own unit.
+   *
+   * Not `origin.kind === 'human'`, which is what this said for a long time
+   * while the code did something else. That field is present on 2.7% of user
+   * rows here, so an implementer following the docstring would have landed on
+   * about five active days instead of eleven -- one away from the five-day
+   * suppression gate.
+   */
+  readonly humanTurnDates: readonly Day[]
+  /** The same cut on UTC, so the effect of the boundary is visible. */
+  readonly humanTurnDatesUtc: readonly Day[]
   /**
    * Per-project line tallies, keyed by project directory name.
    *
@@ -469,9 +481,18 @@ interface MutProjectTally { lines: number; subLines: number; humanRows: number }
 
 /** The three date sets, gathered in one pass so they cannot drift apart. */
 interface DateSets {
-  readonly all: Set<string>
-  readonly userRow: Set<string>
-  readonly humanTurn: Set<string>
+  readonly all: Set<Day>
+  readonly userRow: Set<Day>
+  readonly humanTurn: Set<Day>
+  /**
+   * The same human-turn days cut on UTC, whatever boundary was asked for.
+   *
+   * Published beside the real one so the divergence is on screen rather than
+   * inferred. On this corpus the two are 11 and 10 against a window of 10 --
+   * the boundary is the difference between a window that selects a subset and
+   * one that selects everything.
+   */
+  readonly humanTurnUtc: Set<Day>
 }
 
 interface Mut {
@@ -672,6 +693,7 @@ function reduceLine(
   openEdits: Map<string, boolean>,
   pending: Map<string, PendingFailure>,
   seenClasses: Set<string>,
+  dayOffsetMinutes: number,
 ): void {
   const line = raw.trim()
   if (line.length === 0) return
@@ -728,7 +750,12 @@ function reduceLine(
   if (typeof sessionId === 'string' && sessionId !== fileSession) m.sessionIdMismatchRows += 1
 
   const ts = row['timestamp']
-  const day = typeof ts === 'string' && ts.length >= 10 ? ts.slice(0, 10) : null
+  // Parsed, not sliced, and against a named boundary. `ts.slice(0, 10)` reads
+  // the UTC day out of the string without saying so, and this corpus has 10
+  // human-turn days under UTC and 11 under +09:00 -- against a ten-day window,
+  // that is the difference between a filter and a no-op.
+  const day = dayOf(ts, dayOffsetMinutes)
+  const dayUtc = dayOffsetMinutes === 0 ? day : dayOf(ts, 0)
   if (day !== null) dates.all.add(day)
 
   const skill = row['attributionSkill']
@@ -809,6 +836,7 @@ function reduceLine(
       for (const st of pending.values()) st.humanSince = true
       proj.humanRows += 1
       if (day !== null) dates.humanTurn.add(day)
+      if (dayUtc !== null) dates.humanTurnUtc.add(dayUtc)
     } else {
       notHuman.set(why, (notHuman.get(why) ?? 0) + 1)
     }
@@ -1092,6 +1120,15 @@ export function scan(
    * run are the same array and opposite facts.
    */
   sign: Signer | null = null,
+  /**
+   * Minutes east of UTC that the calendar day is cut on.
+   *
+   * Required rather than defaulted: a default would pick UTC silently, and on
+   * this corpus UTC gives 10 human-turn days where the report's own offset
+   * gives 11 — against a ten-day window, the difference between selecting a
+   * subset and selecting everything. See `offsetMinutesOf`.
+   */
+  dayOffsetMinutes: number,
 ): ScanCounts {
   const m: Mut = {
     linesRead: 0, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 0, mainLines: 0, subLines: 0,
@@ -1106,7 +1143,7 @@ export function scan(
   const mcp = new Set<string>()
   const versions = new Map<string, number>()
   const sessions = new Set<string>()
-  const dates: DateSets = { all: new Set(), userRow: new Set(), humanTurn: new Set() }
+  const dates: DateSets = { all: new Set(), userRow: new Set(), humanTurn: new Set(), humanTurnUtc: new Set() }
   const edits: EditTally = new Map()
   const perProject = new Map<string, MutProjectTally>()
   const notHuman = new Map<string, number>()
@@ -1198,7 +1235,7 @@ export function scan(
       }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses, dayOffsetMinutes)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
@@ -1326,6 +1363,7 @@ export function scan(
     dates: [...dates.all].sort(),
     userRowDates: [...dates.userRow].sort(),
     humanTurnDates: [...dates.humanTurn].sort(),
+    humanTurnDatesUtc: [...dates.humanTurnUtc].sort(),
     perProject: Object.fromEntries([...perProject.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
   }
 }

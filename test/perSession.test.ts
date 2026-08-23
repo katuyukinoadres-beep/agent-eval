@@ -80,7 +80,7 @@ afterAll(() => {
 })
 
 const counts = (signed = false) =>
-  scan(walkProjects(projects()), undefined, signed ? signerFor(KEY) : null)
+  scan(walkProjects(projects()), undefined, signed ? signerFor(KEY) : null, 0)
 
 describe('per-session tallies', () => {
   it('splits the numerator by session', () => {

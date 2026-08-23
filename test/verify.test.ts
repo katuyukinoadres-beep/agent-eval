@@ -46,7 +46,7 @@ const counts = {
   sessionIds: ['s1'],
   dates: ['2026-08-19'],
   userRowDates: ['2026-08-19'],
-  humanTurnDates: ['2026-08-19'],
+  humanTurnDates: ['2026-08-19'], humanTurnDatesUtc: [],
   perProject: {},
   perSession: {
     s1: { intervals: 10, bundles: 5, failures: 3, writeRepeats: 1, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 3, lines: 100 },

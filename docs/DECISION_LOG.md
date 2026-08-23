@@ -1694,3 +1694,50 @@ wastedMotion: { availability: "available", score: 46.25 }
 あわせて、tracked 拒否メッセージから**パスを削った**。このメッセージはサマリ行と、剪定されないスナップショットフィールドに載る。パスはホーム配下なので**OSユーザ名が入る**。ユーザーは自分の state dir の場所を知っているので、必要なのは助言のほう。
 
 陽性対照: メッセージが `stateDir` も `home` も含まず、かつ `--state-dir` と `tracked by git` は含むことを確認。
+
+---
+
+## 2026-08-23 — 窓の Stage A: 日の定義
+
+設計ワークフロー（11エージェント / 4案 / 3レンズ）の結論は **scope-per-axis**（行は落とさず、集計に日を付け、採点時に窓を当てる）。単一パスの保証も、parentUuid 連鎖も、`seen` 集合も、CENSOR_DAYS も、`sessions-close` も、**すべて壊れない**。境界はスキャン後に `humanTurnDates` から求まる — `scan()` が既に返している。
+
+Stage A としてまず**日の定義**だけを入れた。
+
+### `ts.slice(0, 10)` は「パースしない UTC 日」だった
+
+タイムゾーンを名乗らず、パースもしない。`'9999-99-99T00:00:00Z'` から `'9999-99-99'` を返す。
+
+`dayOf(ts, offsetMinutes)` に置換。パースできなければ **null**（推測しない）。
+
+### 日の境界が窓の中身を決める。実測:
+
+| 境界 | human-turn 日数 | 窓10日での効果 |
+|---|---|---|
+| UTC | 10 | **全選択（フィルタが効かない）** |
+| +05:30（この機械の実オフセット） | 10 | **全選択** |
+| +09:00 | 11 | 2026-07-08 が落ちる |
+| -05:00 | 9 | 全選択 |
+
+### 🚨 この環境では、窓を入れても数字は1つも動かない
+
+稼働日が10、窓が10。**死んだフィルタと正しい窓が、この機械の数字だけでは区別できない。** だから:
+
+- `window.dayBoundary` / `window.activeDaysUtc` / `window.activeDaysInWindow` / `truncated` / `windowStart` / `windowEnd` を全部 payload に出す
+- サマリに `10/10 in window ... boundary +05:30, 10 under UTC` と出す。**`activeDaysInWindow === activeDays` は「窓が何も切らなかった」という事実**
+- 10稼働日を超える fixture でのテストは省略不可
+
+### `measuredAt` の既定を UTC からローカルオフセットに変えた
+
+**稼働日は「誰かの一日」**で、それはその人の真夜中で終わる。9時間進んだ機械で UTC 打刻すると、毎晩が2日に割れる。窓は日を数えるので、これは定義を変えてしまう。
+
+### docstring が窓の定義を間違えていた
+
+`scan.ts` と `window.ts` の両方が `humanTurnDates` を「`origin.kind === 'human'` の日」と書いていた。実装は `notHumanBecause(row) === null`（P1）。
+
+**`origin.kind` はこの環境の user 行の 2.7% にしか無い。** interface を信じて実装した人は稼働日**5日**に着地する — `MIN_ACTIVE_DAYS = 5` の抑止ゲートの1日手前。
+
+### 設計が出した残りの論点（未着手）
+
+- Stage B: 約45個の集計器を日キー化 + `restrict(counts, scope)`。**負の対照**（`restrict(dated, null)` が今日の `scan()` と完全一致）が必須
+- Stage C: `countBasis.period` を `window` へ、恒等式の日別化、r_cross の再配線
+- **窓を切っても r_cross は直らない**: 直近10稼働日を2回取れば同じ10日。`rolled >= windowDays`（互いに素）でしか比較しない設計。この機械では**あと10稼働日**先

@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
+import { localIso, offsetLabelOf, offsetMinutesOf } from './collect/day.js'
 import { walkProjects } from './collect/walk.js'
 import { scan } from './collect/scan.js'
 import { gitCommitDates } from './collect/git.js'
@@ -138,7 +139,13 @@ export function defaultOptions(overrides: Partial<RunOptions> = {}): RunOptions 
     os: overrides.os ?? platform(),
     repos: overrides.repos ?? [],
     closingLogPath: overrides.closingLogPath ?? null,
-    measuredAt: overrides.measuredAt ?? new Date().toISOString(),
+    // Stamped in this machine's own offset, not UTC. The day boundary is taken
+    // from here, and an active day is a day of somebody's work -- which ends at
+    // their midnight. A UTC stamp on a machine nine hours ahead splits every
+    // evening across two days, and the window counts days: measured on this
+    // corpus, 10 active days under UTC against 11 under the local offset, with
+    // a window of the most recent 10.
+    measuredAt: overrides.measuredAt ?? localIso(new Date()),
     submissionId: overrides.submissionId ?? crypto.randomUUID(),
     windowDays: overrides.windowDays ?? 10,
     stateDir: overrides.stateDir ?? null,
@@ -222,7 +229,13 @@ export function run(options: RunOptions): RunResult {
     }
   }
 
-  const counts = scan(inventory, undefined, sign)
+  // The day boundary comes from the report's own timestamp, so a run and the
+  // window it cuts agree about where a day ends. It is published, never
+  // inferred: the same corpus has 10 human-turn days under UTC and 11 under
+  // +09:00, against a window of the most recent 10.
+  const dayOffsetMinutes = offsetMinutesOf(options.measuredAt)
+  const dayBoundary = offsetLabelOf(options.measuredAt)
+  const counts = scan(inventory, undefined, sign, dayOffsetMinutes)
 
   const git = gitCommitDates(options.repos)
   const log = readClosingLog(options.closingLogPath)
@@ -233,6 +246,8 @@ export function run(options: RunOptions): RunResult {
     jsonlDates: counts.dates,
     userRowDates: counts.userRowDates,
     humanTurnDates: counts.humanTurnDates,
+    humanTurnDatesUtc: counts.humanTurnDatesUtc,
+    dayBoundary,
     gitDates: git.dates,
     externalDates: log.dates,
     externalExists: log.exists,

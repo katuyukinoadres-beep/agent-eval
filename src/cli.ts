@@ -171,6 +171,10 @@ function summarise(result: ReturnType<typeof runScan>): string {
     `origin     ${m.originFieldCoverage.numerator}/${m.originFieldCoverage.denominator} of user rows`,
     '',
     `window     ${w.activeDays} human-turn days, ${w.userRowDays} user-row days, ${w.windowSource}`,
+    // The boundary decides what a day is, and `activeDaysInWindow === activeDays`
+    // means the window cut nothing — a figure that did not move is not evidence
+    // it works.
+    `           ${w.activeDaysInWindow}/${w.activeDays} in window (${w.windowStart ?? '-'}..${w.windowEnd ?? '-'}), boundary ${w.dayBoundary}, ${w.activeDaysUtc} under UTC`,
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`,
     '',
