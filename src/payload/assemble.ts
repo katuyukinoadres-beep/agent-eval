@@ -44,6 +44,7 @@ import { composite, type AxisInput, type OmittedTerm, type SuppressedReason } fr
 import { METABOLISM_OMISSION_LEANINGS, metabolism } from '../score/metabolism.js'
 import { UPTAKE_OMISSION_LEANINGS, uptake } from '../score/uptake.js'
 import { VERIFICATION_OMISSION_LEANINGS, verification } from '../score/verification.js'
+import { RECURRENCE_OMISSION_LEANINGS, recurrence } from '../score/recurrence.js'
 import type { ArtifactSet } from '../score/artifact.js'
 import { basename, normalisePath } from '../collect/reference.js'
 import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
@@ -389,6 +390,44 @@ export function assemble(inputs: AssembleInputs): Assembled {
     },
   }
 
+  // Axis 6. On a first window there is no previous signature set, so the
+  // within-window repeat rate stands in and the record says which one it was --
+  // two windows must never be compared across that switch.
+  const rec = recurrence({
+    rIn: counts.errorRepeats.rIn,
+    errors: counts.errorRepeats.errors,
+    firstWindow: true,
+    hasExternalHookLog: false,
+  })
+
+  const recurrenceAxis: Axis = {
+    availability: rec.score === null ? 'not_applicable' : 'available',
+    lineStates: {
+      available: rec.score === null ? 0 : counts.toolActivityRows,
+      not_applicable: rec.score === null ? linesRead : linesRead - counts.toolActivityRows,
+      parse_failed: 0,
+    },
+    metric: null,
+    score: rec.score === null ? null : Math.round(rec.score * 100) / 100,
+    confidenceInterval: null,
+    belowMinDenominator: !meetsMinimum({
+      clusters,
+      denominator: Math.max(rec.errors, MIN_DENOMINATOR),
+      numerator: Math.max(counts.errorRepeats.distinctSignatures, MIN_NUMERATOR),
+    }).meetsMinimum,
+    unavailableReasons: rec.unavailable === null ? [] : ['no-external-log'],
+    omittedTerms: rec.omitted.map(
+      (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: RECURRENCE_OMISSION_LEANINGS[term] }),
+    ),
+    detail: {
+      errors: rec.errors,
+      distinctSignatures: counts.errorRepeats.distinctSignatures,
+      repeatRateE4: Math.round((rec.rate ?? 0) * 10_000),
+      // 1 while this is a baseline rather than a score. The report must say so.
+      baselineOnly: rec.baselineOnly ? 1 : 0,
+    },
+  }
+
   const axes = Object.fromEntries(
     AXIS_KEYS.map((k) => [
       k,
@@ -400,7 +439,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
             ? uptakeAxis
             : k === 'selfVerification'
               ? verificationAxis
-              : axisFor(k),
+              : k === 'recurrencePrevention'
+                ? recurrenceAxis
+                : axisFor(k),
     ]),
   ) as Axes
 
