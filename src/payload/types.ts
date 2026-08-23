@@ -12,7 +12,7 @@
  * A number never travels without its denominator. See ./metric.ts.
  */
 
-import type { Count, Metric } from './metric.js'
+import type { Count, CountBasis, Metric } from './metric.js'
 
 // ── branded leaves ────────────────────────────────────────────────────────────
 // The handful of leaves that genuinely have to be strings. Each is built through
@@ -246,6 +246,14 @@ export interface ScanManifest {
   readonly toolVersionDistinct: number
   /** Share of user rows carrying `origin`; low values mean human counts undercount. */
   readonly originFieldCoverage: Metric
+  /**
+   * How every count in this submission was counted, unless the count says
+   * otherwise.
+   *
+   * One place, because the alternative was measured: the same quantity moved
+   * 1.33x across four published figures, none of which stated its basis.
+   */
+  readonly countBasis: CountBasis
   readonly window: Window
   readonly externalLog: ExternalLog
   readonly measuredAt: Iso8601

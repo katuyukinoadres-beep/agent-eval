@@ -117,11 +117,61 @@ export interface Metric {
   readonly sourceField: SourceField
 }
 
+// ── how a count was counted ───────────────────────────────────────────────────
+
+/**
+ * The four things that decide what a count comes out as.
+ *
+ * A rate carries `denominatorMeaning`; a count carried nothing, and the cost
+ * showed up in the specs themselves: `permission-rule` appears there as 40, 41,
+ * 44 and 45. None is wrong. Counting the same quantity on one machine gives 39
+ * through 52 — 1.33x — depending on these four, and all four published figures
+ * sit inside that band. They answer different questions, and none of them wrote
+ * down which.
+ */
+export const COUNT_SCOPES = ['all', 'main'] as const
+export const COUNT_PERIODS = ['window', 'allTime'] as const
+
+/**
+ * `row` and `toolUseId` are not the same count.
+ *
+ * Two `permission-rule` rows sharing one `tool_use_id` were measured on the
+ * other machine, so rows gave 52 where ids gave 51. A count with no unit carries
+ * a plus-or-minus one before anything else has gone wrong.
+ */
+export const COUNT_UNITS = ['toolUseId', 'row'] as const
+
+/**
+ * A failure where no decision was reached — `Tool permission stream closed` and
+ * kin. Excluded from counts and kept by name in coverage: moved to another box,
+ * not deleted. There are 11 of them on this machine.
+ */
+export const COUNT_EXCLUSIONS = ['infrastructure-error'] as const
+
+export type CountScope = (typeof COUNT_SCOPES)[number]
+export type CountPeriod = (typeof COUNT_PERIODS)[number]
+export type CountUnit = (typeof COUNT_UNITS)[number]
+export type CountExclusion = (typeof COUNT_EXCLUSIONS)[number]
+
+export interface CountBasis {
+  readonly scope: CountScope
+  readonly period: CountPeriod
+  readonly unit: CountUnit
+  readonly excludes: readonly CountExclusion[]
+}
+
 /** A figure that is not a ratio, and says so rather than inventing a denominator. */
 export interface Count {
   readonly value: number
   readonly noDenominatorReason: NoDenominatorReason
   readonly sourceField: SourceField
+  /**
+   * Present only when this count departs from the submission's default basis.
+   *
+   * The default sits once in `scanManifest.countBasis`. Writing it on every
+   * field would bury the ones that differ among the ones that do not.
+   */
+  readonly basis?: CountBasis
 }
 
 export class MetricError extends Error {}
