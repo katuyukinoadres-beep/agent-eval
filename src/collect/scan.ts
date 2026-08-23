@@ -178,7 +178,28 @@ export interface ScanCounts {
   }
 
   readonly toolVersions: Readonly<Record<string, number>>
+  /**
+   * Session clusters, folded to the parent session.
+   *
+   * The bootstrap resamples over these, so the count decides whether a rate
+   * gets a confidence interval at all. v2 §6.3 fixes the unit as
+   * `session_id（sub は親 session_id に畳む）`.
+   *
+   * Taken from where the file sits, not from the `sessionId` on the row. On
+   * this machine the two agree — 12 and 12, with no id appearing only under
+   * subagents — but they agree by circumstance. A subagent transcript that
+   * carried its own id would raise the cluster count with nothing to say it
+   * had, and the cluster count is what gates the minimum denominator.
+   */
   readonly sessionIds: readonly string[]
+  /**
+   * Rows whose own `sessionId` is not the session their file belongs to.
+   *
+   * Zero here. It exists so the agreement above is checked on every run rather
+   * than assumed from one measurement, and `scan.test.ts` builds a corpus where
+   * it is non-zero so the check is known to be able to fire.
+   */
+  readonly sessionIdMismatchRows: number
   readonly dates: readonly string[]
   /**
    * Days carrying a user row of any kind — the ceiling on human-turn days under
@@ -240,6 +261,7 @@ interface Mut {
   originHumanRows: number
   denialRows: number
   denialUserRejected: number
+  sessionIdMismatchRows: number
   taskBundles: number
   toolActivityRows: number
   rootBundles: number
@@ -327,6 +349,7 @@ function reduceLine(
   dates: DateSets,
   edits: EditTally,
   proj: MutProjectTally,
+  fileSession: string,
   notHuman: Map<string, number>,
   bundles: BundleTracker,
   paths: Map<string, MutPathTally>,
@@ -381,8 +404,13 @@ function reduceLine(
   const version = row['version']
   if (typeof version === 'string') versions.set(version, (versions.get(version) ?? 0) + 1)
 
+  // The cluster is the file's session, folded from the path. The row's own id
+  // is compared against it rather than trusted, because a divergence would move
+  // the cluster count silently and the cluster count gates the minimum
+  // denominator.
+  sessions.add(fileSession)
   const sessionId = row['sessionId']
-  if (typeof sessionId === 'string') sessions.add(sessionId)
+  if (typeof sessionId === 'string' && sessionId !== fileSession) m.sessionIdMismatchRows += 1
 
   const ts = row['timestamp']
   const day = typeof ts === 'string' && ts.length >= 10 ? ts.slice(0, 10) : null
@@ -543,7 +571,7 @@ export function scan(
     linesRead: 0, linesParseFailed: 0, bytesRead: 0, mainLines: 0, subLines: 0,
     toolResultTotal: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
     attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, taskBundles: 0, toolActivityRows: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
+    denialRows: 0, denialUserRejected: 0, sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
     input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
   }
   const skills = new Set<string>()
@@ -583,7 +611,7 @@ export function scan(
       continue
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, notHuman, bundles, paths, refs, toolOf, signatures, wasted, w)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, notHuman, bundles, paths, refs, toolOf, signatures, wasted, w)
     }
     m.taskBundles += bundles.opened()
     m.rootBundles += bundles.roots()
@@ -642,6 +670,7 @@ export function scan(
     },
     toolVersions: Object.fromEntries([...versions.entries()].sort()),
     sessionIds: [...sessions].sort(),
+    sessionIdMismatchRows: m.sessionIdMismatchRows,
     dates: [...dates.all].sort(),
     userRowDates: [...dates.userRow].sort(),
     humanTurnDates: [...dates.humanTurn].sort(),
