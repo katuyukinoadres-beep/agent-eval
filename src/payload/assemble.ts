@@ -18,6 +18,7 @@
  */
 
 import { makeCount, makeMetric } from './metric.js'
+import type { CountBasis } from './metric.js'
 import type { Metric } from './metric.js'
 import {
   AXIS_KEYS,
@@ -41,6 +42,26 @@ import { MIN_DENOMINATOR, MIN_NUMERATOR, meetsMinimum } from '../score/minimum.j
 import { wastedMotion, OMITTED_TERM_LEANINGS, type OmittedTermName } from '../score/wastedMotion.js'
 import { composite, type AxisInput, type OmittedTerm, type SuppressedReason } from '../score/composite.js'
 import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
+
+    // This submission's counts, stated as they are rather than as the spec's
+// default. Three of the four differ, and each difference is a gap in this
+// implementation that the field now makes visible instead of hiding:
+//
+//   period  allTime, not window. `windowDays` is carried in the payload and
+//           never applied as a filter; the scan reads every transcript that
+//           survived pruning. Claiming `window` would be the exact defect
+//           this field was added to stop.
+//   unit    row, not toolUseId. Denials are tallied per row, and rows and
+//           ids disagreed by one on the machine that was measured.
+//   excludes  empty. `Tool permission stream closed` appears 11 times here
+//           and is not removed, so denial counts include failures where no
+//           decision was reached.
+export const COUNT_BASIS: CountBasis = {
+  scope: 'all',
+  period: 'allTime',
+  unit: 'row',
+  excludes: [],
+}
 
 export interface AssembleInputs {
   readonly inventory: Inventory
@@ -279,25 +300,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
       denominatorMeaning: 'origin フィールドが付いている user 行の割合。低いほど human 判定が過小になる',
       sourceField: 'origin.kind',
     }),
-    // This submission's counts, stated as they are rather than as the spec's
-    // default. Three of the four differ, and each difference is a gap in this
-    // implementation that the field now makes visible instead of hiding:
-    //
-    //   period  allTime, not window. `windowDays` is carried in the payload and
-    //           never applied as a filter; the scan reads every transcript that
-    //           survived pruning. Claiming `window` would be the exact defect
-    //           this field was added to stop.
-    //   unit    row, not toolUseId. Denials are tallied per row, and rows and
-    //           ids disagreed by one on the machine that was measured.
-    //   excludes  empty. `Tool permission stream closed` appears 11 times here
-    //           and is not removed, so denial counts include failures where no
-    //           decision was reached.
-    countBasis: {
-      scope: 'all',
-      period: 'allTime',
-      unit: 'row',
-      excludes: [],
-    },
+    countBasis: COUNT_BASIS,
     window: window.window,
     externalLog: {
       exists: window.externalRows > 0,

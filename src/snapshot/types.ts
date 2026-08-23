@@ -95,3 +95,17 @@ export const dayOf = (iso: string): Day | null => {
   const head = iso.slice(0, 10)
   return DAY.test(head) ? (head as Day) : null
 }
+
+/**
+ * The first line of an error, bounded, with no stack.
+ *
+ * One helper rather than three copies, because each copy is another place for
+ * the newline escape to be written wrong -- which it was, twice today. A stack
+ * is deliberately not included: it carries the checkout directory.
+ */
+const NEWLINE = String.fromCharCode(10)
+
+export const firstLine = (e: unknown, max = 200): string => {
+  const text = e instanceof Error ? e.message : String(e)
+  return (text.split(NEWLINE)[0] ?? 'unknown').slice(0, max)
+}

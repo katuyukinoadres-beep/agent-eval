@@ -29,6 +29,12 @@ import { assemble } from './payload/assemble.js'
 import { ensureStateDir } from './snapshot/stateDir.js'
 import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
+import { buildSnapshot } from './snapshot/build.js'
+import { defaultSnapshotIo, readHead, writeSnapshot, type WriteOutcome } from './snapshot/write.js'
+import { payloadDigest } from './snapshot/canonical.js'
+import { firstLine } from './snapshot/types.js'
+import { COUNT_BASIS } from './payload/assemble.js'
+import { VERSION } from './version.js'
 import { validate, type Verdict } from './validate/index.js'
 import type { Payload } from './payload/types.js'
 
@@ -64,6 +70,14 @@ export interface RunResult {
   readonly stateDir: string | null
   /** True when signatures were MAC'd. False means the set is empty for want of a key. */
   readonly signaturesSigned: boolean
+  /**
+   * What happened to the snapshot.
+   *
+   * Null only when no store was asked for. A snapshot that silently failed to
+   * write is discovered a window later, when the comparison it existed for
+   * cannot be made -- so the outcome is carried out and printed.
+   */
+  readonly snapshot: WriteOutcome | null
 }
 
 /**
@@ -116,10 +130,12 @@ export function run(options: RunOptions): RunResult {
   // and the plaintext signature tuples never come back out of it.
   let sign = null as ReturnType<typeof signerFor> | null
   let store: { readonly stateDir: string; readonly snapshotDir: string } | null = null
+  let key: ReturnType<typeof loadKey> | null = null
   if (options.useStore) {
     const dirs = ensureStateDir(options.home, options.stateDir)
     store = { stateDir: dirs.stateDir, snapshotDir: dirs.snapshotDir }
-    sign = signerFor(loadKey(options.home, dirs.stateDir).master)
+    key = loadKey(options.home, dirs.stateDir)
+    sign = signerFor(key.master)
   }
 
   const counts = scan(inventory, undefined, sign)
@@ -163,11 +179,46 @@ export function run(options: RunOptions): RunResult {
   // the shape it ships in.
   const validation = validate(JSON.parse(JSON.stringify(payload)) as unknown)
 
+  let snapshot: WriteOutcome | null = null
+  if (store !== null && key !== null) {
+    // Built and written inside a try that cannot reach the caller: the payload
+    // must still come out on a day the store cannot be written.
+    try {
+      const head = readHead(store.snapshotDir, defaultSnapshotIo)
+      const built = buildSnapshot({
+        counts,
+        axes: payload.axes,
+        gate,
+        countBasis: COUNT_BASIS,
+        chain: { seq: head.seq, prev: head.prev },
+        key: key.ref,
+        toolVersion: VERSION,
+        os: options.os,
+        writtenOn: options.measuredAt,
+        filesRead: inventory.files.length,
+        payloadDigest: payloadDigest(payload),
+        sign,
+      })
+      snapshot = writeSnapshot({
+        snapshotDir: store.snapshotDir,
+        snapshot: built.snapshot,
+        sidecar: built.sidecar,
+      })
+    } catch (e) {
+      snapshot = {
+        kind: 'refused',
+        reason: 'identity-violation',
+        detail: firstLine(e),
+      }
+    }
+  }
+
   return {
     payload,
     validation,
     gateReasons: gate.reasons.map(String),
     stateDir: store?.stateDir ?? null,
     signaturesSigned: counts.signaturesSigned,
+    snapshot,
   }
 }

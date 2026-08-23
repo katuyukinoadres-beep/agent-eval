@@ -74,14 +74,14 @@ export function canonicalString(s: string): string {
   return `${out}"`
 }
 
-export function canonicalNumber(n: number): string {
-  if (!Number.isFinite(n)) throw new SnapshotError(`non-finite number in a snapshot: ${n}`)
+export function canonicalNumber(n: number, path = '$'): string {
+  if (!Number.isFinite(n)) throw new SnapshotError(`non-finite number at ${path}: ${n}`)
   if (!Number.isInteger(n)) {
     throw new SnapshotError(
-      `non-integer in a snapshot: ${n}. Scale it with e4() and name the field with an E4 suffix.`,
+      `non-integer at ${path}: ${n}. Scale it with e4() and give the field an E4 suffix.`,
     )
   }
-  if (!Number.isSafeInteger(n)) throw new SnapshotError(`integer past the safe range: ${n}`)
+  if (!Number.isSafeInteger(n)) throw new SnapshotError(`integer past the safe range at ${path}: ${n}`)
   // Object.is separates -0 from 0. `-0` and `0` are one value with two
   // spellings, and a hash must not depend on which one a caller produced.
   return Object.is(n, -0) ? '0' : String(n)
@@ -94,22 +94,29 @@ export function canonicalNumber(n: number): string {
  * record that sets a field to `undefined` hashes like one that omits it. A
  * function or a symbol is a programming error rather than data, and throws.
  */
-export function canonical(value: unknown): string {
+/**
+ * Canonical JSON, with the path to whatever it refused.
+ *
+ * The path is not decoration. The first real record this ran against carried a
+ * fraction somewhere in a nested object, and `non-integer: 0.5355` with no path
+ * is a message that sends someone reading every field by hand.
+ */
+export function canonical(value: unknown, path = '$'): string {
   if (value === null) return 'null'
   if (value === true) return 'true'
   if (value === false) return 'false'
-  if (typeof value === 'number') return canonicalNumber(value)
+  if (typeof value === 'number') return canonicalNumber(value, path)
   if (typeof value === 'string') return canonicalString(value)
-  if (typeof value === 'bigint') throw new SnapshotError('bigint in a snapshot')
+  if (typeof value === 'bigint') throw new SnapshotError(`bigint in a snapshot at ${path}`)
   if (typeof value === 'function' || typeof value === 'symbol') {
-    throw new SnapshotError(`${typeof value} in a snapshot`)
+    throw new SnapshotError(`${typeof value} in a snapshot at ${path}`)
   }
 
   if (Array.isArray(value)) {
     // Given order. Every array in the record has a stated total order, decided
     // where it is built: unordered iteration is how two runs over identical
     // data produce two hashes.
-    return `[${value.map((v) => canonical(v === undefined ? null : v)).join(',')}]`
+    return `[${value.map((v, i) => canonical(v === undefined ? null : v, `${path}[${i}]`)).join(',')}]`
   }
 
   if (typeof value === 'object') {
@@ -119,10 +126,10 @@ export function canonical(value: unknown): string {
     const keys = Object.keys(obj)
       .filter((k) => obj[k] !== undefined)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    return `{${keys.map((k) => `${canonicalString(k)}:${canonical(obj[k])}`).join(',')}}`
+    return `{${keys.map((k) => `${canonicalString(k)}:${canonical(obj[k], `${path}.${k}`)}`).join(',')}}`
   }
 
-  throw new SnapshotError(`unserialisable value in a snapshot: ${typeof value}`)
+  throw new SnapshotError(`unserialisable value in a snapshot at ${path}: ${typeof value}`)
 }
 
 /**
@@ -147,3 +154,26 @@ export function digestOf(domain: string, value: unknown): Sha256 {
 export const bodyHash = (body: unknown): Sha256 => digestOf(SNAPSHOT_DOMAIN, body)
 
 export const sidecarHash = (sidecar: unknown): Sha256 => digestOf(SIDECAR_DOMAIN, sidecar)
+
+/**
+ * A digest over text that is already fixed, rather than over a value to be
+ * serialised.
+ *
+ * The canonical form above is for snapshots, and it accepts integers only. A
+ * payload is not a snapshot -- it carries rates -- so canonicalising one is a
+ * category error, and the first real run made it by hashing the payload to
+ * identify which one a snapshot accompanied. What identifies a payload is the
+ * bytes that were emitted, which is what this hashes.
+ */
+export function digestOfText(domain: string, text: string): Sha256 {
+  const h = createHash('sha256')
+  h.update(domain, 'utf8')
+  h.update(text, 'utf8')
+  return sha256(`sha256:${h.digest('hex')}`)
+}
+
+export const PAYLOAD_DOMAIN = 'agent-eval/payload/1' + String.fromCharCode(10)
+
+/** The digest of a payload as it ships: the exact bytes the CLI prints. */
+export const payloadDigest = (payload: unknown): Sha256 =>
+  digestOfText(PAYLOAD_DOMAIN, JSON.stringify(payload, null, 2))
