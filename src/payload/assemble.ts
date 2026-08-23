@@ -42,6 +42,9 @@ import { MIN_DENOMINATOR, MIN_NUMERATOR, meetsMinimum } from '../score/minimum.j
 import { wastedMotion, OMITTED_TERM_LEANINGS, type OmittedTermName } from '../score/wastedMotion.js'
 import { composite, type AxisInput, type OmittedTerm, type SuppressedReason } from '../score/composite.js'
 import { METABOLISM_OMISSION_LEANINGS, metabolism } from '../score/metabolism.js'
+import { UPTAKE_OMISSION_LEANINGS, uptake } from '../score/uptake.js'
+import type { ArtifactSet } from '../score/artifact.js'
+import { basename, normalisePath } from '../collect/reference.js'
 import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
 
     // This submission's counts, stated as they are rather than as the spec's
@@ -67,6 +70,8 @@ export const COUNT_BASIS: CountBasis = {
 export interface AssembleInputs {
   readonly inventory: Inventory
   readonly counts: ScanCounts
+  /** The settled artifact set. Axis 4's denominator. */
+  readonly artifacts: ArtifactSet
   readonly window: AssembledWindow
   readonly permissions: PermissionTally
   readonly skills: SkillCount
@@ -288,10 +293,64 @@ export function assemble(inputs: AssembleInputs): Assembled {
     },
   }
 
+  // Axis 4. Its (b) term is dropped and the rest renormalised: an abandoned
+  // bundle needs a semantic judgement, and the mechanical half alone would call
+  // every question-and-answer bundle abandoned.
+  const editedNames = new Set(counts.manualEdits.editedNames)
+  const stale = new Set(counts.manualEdits.staleRecoveredPaths.map(normalisePath))
+  const up = uptake({
+    artifacts: inputs.artifacts.artifacts,
+    totalWeight: inputs.artifacts.totalWeight,
+    bundles: counts.taskBundles,
+    lastMentionIn: counts.lastMentionIn,
+    manuallyOverwritten: (p) => stale.has(p) || editedNames.has(basename(p)),
+    firstWindow: true,
+  })
+
+  const uptakeAxis: Axis = {
+    availability: up.score === null ? 'not_applicable' : 'available',
+    lineStates: {
+      available: up.score === null ? 0 : counts.toolActivityRows,
+      not_applicable: up.score === null ? linesRead : linesRead - counts.toolActivityRows,
+      parse_failed: 0,
+    },
+    metric: null,
+    score: up.score === null ? null : Math.round(up.score * 100) / 100,
+    confidenceInterval: null,
+    belowMinDenominator: !meetsMinimum({
+      clusters,
+      denominator: Math.max(up.artifacts, MIN_DENOMINATOR),
+      numerator: Math.max(up.reusedArtifacts, MIN_NUMERATOR),
+    }).meetsMinimum,
+    unavailableReasons:
+      up.unavailable === null
+        ? []
+        : up.unavailable === 'no-artifacts'
+          ? ['insufficient-assets']
+          : ['definition-pending'],
+    omittedTerms: up.omitted.map(
+      (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: UPTAKE_OMISSION_LEANINGS[term] }),
+    ),
+    detail: {
+      artifacts: up.artifacts,
+      reusedArtifacts: up.reusedArtifacts,
+      overwrittenArtifacts: up.overwrittenArtifacts,
+      reuseE4: Math.round((up.reuse ?? 0) * 10_000),
+      overwrittenE4: Math.round((up.overwritten ?? 0) * 10_000),
+      bundles: up.bundles,
+    },
+  }
+
   const axes = Object.fromEntries(
     AXIS_KEYS.map((k) => [
       k,
-      k === 'wastedMotion' ? wastedAxis : k === 'environmentMetabolism' ? metabolismAxis : axisFor(k),
+      k === 'wastedMotion'
+        ? wastedAxis
+        : k === 'environmentMetabolism'
+          ? metabolismAxis
+          : k === 'artifactUptake'
+            ? uptakeAxis
+            : axisFor(k),
     ]),
   ) as Axes
 

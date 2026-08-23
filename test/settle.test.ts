@@ -192,7 +192,7 @@ describe('censoring arithmetic', () => {
 describe('the reference index', () => {
   it('finds a path mentioned in prose after it was written', () => {
     const r = referenceIndex()
-    r.note('あとで scripts/redact.py を直して', '2026-08-02T00:00:00Z')
+    r.note('あとで scripts/redact.py を直して', '2026-08-02T00:00:00Z', 1)
     expect(r.lastMention('c:/Users/x/scripts/redact.py')).toBe('2026-08-02T00:00:00Z')
   })
 
@@ -201,21 +201,21 @@ describe('the reference index', () => {
     // next. Without normalising, a file counts as referenced only when the two
     // spellings happen to agree.
     const r = referenceIndex()
-    r.note('C:\\Users\\X\\A.TS', '2026-08-02T00:00:00Z')
+    r.note('C:\\Users\\X\\A.TS', '2026-08-02T00:00:00Z', 1)
     expect(r.lastMention('c:/users/x/a.ts')).not.toBeNull()
   })
 
   it('keeps the latest mention, not the first', () => {
     const r = referenceIndex()
-    r.note('/x/a.ts', '2026-08-02T00:00:00Z')
-    r.note('/x/a.ts', '2026-08-05T00:00:00Z')
-    r.note('/x/a.ts', '2026-08-03T00:00:00Z')
+    r.note('/x/a.ts', '2026-08-02T00:00:00Z', 1)
+    r.note('/x/a.ts', '2026-08-05T00:00:00Z', 1)
+    r.note('/x/a.ts', '2026-08-03T00:00:00Z', 1)
     expect(r.lastMention('/x/a.ts')).toBe('2026-08-05T00:00:00Z')
   })
 
   it('returns null for a path nobody mentioned', () => {
     const r = referenceIndex()
-    r.note('something else entirely', '2026-08-02T00:00:00Z')
+    r.note('something else entirely', '2026-08-02T00:00:00Z', 1)
     expect(r.lastMention('/x/a.ts')).toBeNull()
   })
 

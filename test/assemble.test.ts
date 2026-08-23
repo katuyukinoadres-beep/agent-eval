@@ -50,7 +50,7 @@ const counts = {
   orphanBundles: 0,
   environmentNoiseRows: 0,
   editedPaths: {},
-  lastMention: () => null,
+  lastMention: () => null, lastMentionIn: () => null,
   referenceTokens: 0,
   toolActivityRows: 200,
   errorRepeats: { errors: 10, distinctSignatures: 5, rIn: 0.5, byFamily: { timeout: 10 } },
@@ -58,6 +58,9 @@ const counts = {
     skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
     skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},
     effectiveInputPerCall: [30_000, 30_000],
+  },
+  manualEdits: {
+    editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
   wasted: {
     failures: 10,
@@ -86,6 +89,11 @@ const inputs: AssembleInputs = {
     ],
   },
   counts,
+  artifacts: {
+    artifacts: [], totalWeight: 0, consideredPaths: 0,
+    notSettled: { 'written-too-recently': 0, 'no-longer-exists': 0 },
+    clustered: 0, clipped: 0, weightFlooredUnknown: 0,
+  },
   window,
   permissions: { allow: 67, deny: 3, ask: 0, unrestrictedExec: 0, cliWildcard: 27, scriptPathFixed: 24, scopesWithEntries: ['user'] },
   skills: { total: 27, byGlob: { 'skills/*.md': 27 } },
@@ -192,8 +200,11 @@ describe('no axis carries a score', () => {
     // `too-few-clusters` is measured. `definition-pending` is not about this
     // environment at all — it is about a formula the repository does not have.
     const { payload } = assemble(inputs)
-    expect(payload.axes.artifactUptake.unavailableReasons).toContain('too-few-clusters')
-    expect(payload.axes.artifactUptake.unavailableReasons).toContain('definition-pending')
+    expect(payload.axes.selfVerification.unavailableReasons).toContain('too-few-clusters')
+    expect(payload.axes.selfVerification.unavailableReasons).toContain('definition-pending')
+    // Axis 4 is built now, and says its own reason: no artifacts in this
+    // fixture rather than a small environment.
+    expect(payload.axes.artifactUptake.unavailableReasons).toEqual(['insufficient-assets'])
     expect(payload.axes.coverageGate.unavailableReasons).toEqual(['too-few-clusters'])
   })
 

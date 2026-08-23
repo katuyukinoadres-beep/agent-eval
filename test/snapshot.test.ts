@@ -53,11 +53,14 @@ const counts = {
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
   signaturesSigned: true,
   taskBundles: 5, rootBundles: 0, orphanBundles: 0, toolActivityRows: 50,
-  environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, referenceTokens: 0,
+  environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null, referenceTokens: 0,
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
   metabolism: {
     skillsListed: [], listingChars: 0, listingTruncated: false,
     skillFirings: {}, hookFirings: {}, mcpFirings: {}, effectiveInputPerCall: [],
+  },
+  manualEdits: {
+    editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
   wasted: {
     failures: 3, hookOriginated: 0, writeRepeats: 1, investigationRepeats: 1,
