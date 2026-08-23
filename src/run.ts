@@ -31,6 +31,7 @@ import { loadKey } from './snapshot/key.js'
 import { signerFor } from './snapshot/mac.js'
 import { buildSnapshot } from './snapshot/build.js'
 import { defaultSnapshotIo, readHead, writeSnapshot, type WriteOutcome } from './snapshot/write.js'
+import { verifyChain, type ChainVerdict } from './snapshot/verify.js'
 import { payloadDigest } from './snapshot/canonical.js'
 import { firstLine } from './snapshot/types.js'
 import { COUNT_BASIS } from './payload/assemble.js'
@@ -78,6 +79,8 @@ export interface RunResult {
    * cannot be made -- so the outcome is carried out and printed.
    */
   readonly snapshot: WriteOutcome | null
+  /** The chain as it stands after this run, or null when no store was opened. */
+  readonly chain: ChainVerdict | null
 }
 
 /**
@@ -180,6 +183,7 @@ export function run(options: RunOptions): RunResult {
   const validation = validate(JSON.parse(JSON.stringify(payload)) as unknown)
 
   let snapshot: WriteOutcome | null = null
+  let chain: ChainVerdict | null = null
   if (store !== null && key !== null) {
     // Built and written inside a try that cannot reach the caller: the payload
     // must still come out on a day the store cannot be written.
@@ -204,6 +208,7 @@ export function run(options: RunOptions): RunResult {
         snapshot: built.snapshot,
         sidecar: built.sidecar,
       })
+      chain = verifyChain(store.snapshotDir, defaultSnapshotIo)
     } catch (e) {
       snapshot = {
         kind: 'refused',
@@ -220,5 +225,6 @@ export function run(options: RunOptions): RunResult {
     stateDir: store?.stateDir ?? null,
     signaturesSigned: counts.signaturesSigned,
     snapshot,
+    chain,
   }
 }
