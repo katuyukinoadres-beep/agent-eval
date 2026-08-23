@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { buildSnapshot, WASTED_MOTION_CONSTANTS, type BuildInputs } from '@/snapshot/build.js'
+import { AXIS_CONSTANTS, buildSnapshot, WASTED_MOTION_CONSTANTS, type BuildInputs } from '@/snapshot/build.js'
 import { defaultSnapshotIo, listSnapshots, readHead, writeSnapshot } from '@/snapshot/write.js'
 import { bodyHash, canonical } from '@/snapshot/canonical.js'
 import { IdentityViolation, SCORED_AXES, formulaFingerprint } from '@/snapshot/record.js'
@@ -142,6 +142,24 @@ describe('the formula fingerprint', () => {
     expect(formulaFingerprint('wastedMotion', reordered)).toBe(
       formulaFingerprint('wastedMotion', WASTED_MOTION_CONSTANTS),
     )
+  })
+
+  it('covers every axis that has a formula, not only the first one built', () => {
+    // An axis with a measured score and a null fingerprint is one whose
+    // definition can change between windows with nothing to say it did -- the
+    // failure the fingerprint exists to stop, reintroduced per axis.
+    for (const key of ['wastedMotion', 'selfVerification', 'artifactUptake', 'environmentMetabolism', 'recurrencePrevention']) {
+      expect(AXIS_CONSTANTS[key], key).toBeDefined()
+      expect(Object.keys(AXIS_CONSTANTS[key] ?? {}).length, key).toBeGreaterThan(0)
+    }
+  })
+
+  it('holds only integers, so the canonical form accepts every entry', () => {
+    for (const [axis, constants] of Object.entries(AXIS_CONSTANTS)) {
+      for (const [name, value] of Object.entries(constants)) {
+        expect(Number.isInteger(value), `${axis}.${name} = ${value}`).toBe(true)
+      }
+    }
   })
 
   it('differs between axes holding the same constants', () => {
