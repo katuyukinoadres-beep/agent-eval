@@ -47,8 +47,8 @@ const counts = {
   humanTurnDates: ['2026-08-19'],
   perProject: {},
   perSession: {
-    s1: { bundles: 3, failures: 2, writeRepeats: 1, investigationRepeats: 0, timedOut: 0, largeOutput: 0, errors: 2, lines: 60 },
-    s2: { bundles: 2, failures: 1, writeRepeats: 0, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 1, lines: 40 },
+    s1: { intervals: 6, bundles: 3, failures: 2, writeRepeats: 1, investigationRepeats: 0, timedOut: 0, largeOutput: 0, errors: 2, lines: 60 },
+    s2: { intervals: 4, bundles: 2, failures: 1, writeRepeats: 0, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 1, lines: 40 },
   },
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
   signaturesSigned: true,

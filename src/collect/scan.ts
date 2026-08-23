@@ -313,6 +313,15 @@ export interface ScanCounts {
  * subagent transcript lands in its parent's cluster.
  */
 export interface SessionTally {
+  /**
+   * Edit intervals this session opened.
+   *
+   * Per session because a cluster is a session with a non-zero denominator
+   * *for that axis*, and the axes do not share a denominator. Counting every
+   * session that produced a line over-counts clusters for every axis, in the
+   * direction that lets a minimum pass.
+   */
+  readonly intervals: number
   readonly bundles: number
   readonly failures: number
   readonly writeRepeats: number
@@ -324,6 +333,7 @@ export interface SessionTally {
 }
 
 interface MutSessionTally {
+  intervals: number
   bundles: number
   failures: number
   writeRepeats: number
@@ -921,6 +931,7 @@ function reduceLine(
             const wasVerified = openEdits.get(key)
             if (wasVerified !== undefined) {
               m.intervals += 1
+              st.intervals += 1
               if (wasVerified) m.verifiedIntervals += 1
             }
             openEdits.set(key, false)
@@ -1055,7 +1066,7 @@ export function scan(
     let st = perSession.get(file.sessionId)
     if (st === undefined) {
       st = {
-        bundles: 0, failures: 0, writeRepeats: 0, investigationRepeats: 0,
+        intervals: 0, bundles: 0, failures: 0, writeRepeats: 0, investigationRepeats: 0,
         timedOut: 0, largeOutput: 0, errors: 0, lines: 0,
       }
       perSession.set(file.sessionId, st)
@@ -1077,6 +1088,7 @@ export function scan(
     // missing one.
     for (const verified of openEdits.values()) {
       m.intervals += 1
+      st.intervals += 1
       if (verified) m.verifiedIntervals += 1
     }
     // Failures nothing ever cleared.

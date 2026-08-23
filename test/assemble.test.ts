@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { meetsMinimum } from '@/score/minimum.js'
+import { UPTAKE_REFERENCED } from '@/score/artifact.js'
 import { assemble, type AssembleInputs } from '@/payload/assemble.js'
 import { validate } from '@/validate/index.js'
 import { assembleWindow } from '@/collect/window.js'
@@ -40,6 +42,13 @@ const counts = {
   tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
   toolVersions: { '2.1.233': 1_000 },
   sessionIds: ['a', 'b'],
+  // Per-axis clusters are counted from here, not from sessionIds: a cluster is
+  // a session with a non-zero denominator for that axis, and the axes do not
+  // share one.
+  perSession: {
+    a: { intervals: 60, bundles: 25, failures: 6, writeRepeats: 2, investigationRepeats: 6, timedOut: 0, largeOutput: 0, errors: 6, lines: 600 },
+    b: { intervals: 40, bundles: 15, failures: 4, writeRepeats: 2, investigationRepeats: 4, timedOut: 0, largeOutput: 0, errors: 4, lines: 400 },
+  },
   dates: ['2026-08-16'],
   userRowDates: ['2026-08-16'],
   humanTurnDates: ['2026-08-16'],
@@ -257,5 +266,88 @@ describe('projects', () => {
     const { payload } = assemble(inputs)
     expect(JSON.stringify(payload.environment.projects)).not.toContain('p1')
     expect(payload.environment.projects[0]?.id.startsWith('sha256:')).toBe(true)
+  })
+})
+
+describe('the minimum denominator', () => {
+  /**
+   * Twenty-five sessions, so the cluster term passes and the other two are the
+   * only things that can decide the verdict.
+   *
+   * This is the shape the old code could not express. It passed
+   * `Math.max(measured, MIN)` into a test for `< MIN`, so the denominator and
+   * numerator conditions held whatever the measurement was, and the verdict was
+   * the cluster count wearing three names. On a machine with enough sessions
+   * that meant a delta could be called an improvement off twelve artifacts.
+   */
+  const manySessions = Object.fromEntries(
+    Array.from({ length: 25 }, (_, i) => [
+      `s${i}`,
+      {
+        intervals: 40,
+        bundles: 20,
+        failures: 4,
+        writeRepeats: 1,
+        investigationRepeats: 2,
+        timedOut: 0,
+        largeOutput: 0,
+        errors: 4,
+        lines: 100,
+      },
+    ]),
+  )
+
+  const artifactsOf = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      path: `f${i}.ts`,
+      weight: 1,
+      uptake: UPTAKE_REFERENCED,
+      newLines: 60,
+      newLinesKnown: true,
+      bundle: (i % 25) + 1,
+    }))
+
+  const withSessions = (artifactCount: number) =>
+    assemble({
+      ...inputs,
+      counts: {
+        ...inputs.counts,
+        sessionIds: Object.keys(manySessions),
+        perSession: manySessions,
+        // Every artifact referred to again from a different bundle, so the
+        // numerator condition is satisfied and the denominator is the only
+        // thing left that can decide the verdict.
+        lastMentionIn: () => ({ bundle: 9_999, at: '2026-08-20T12:00:00.000Z' }),
+      },
+      artifacts: {
+        ...inputs.artifacts,
+        artifacts: artifactsOf(artifactCount),
+        totalWeight: artifactCount,
+        consideredPaths: artifactCount,
+      },
+    }).payload
+
+  it('fails on a small denominator even when there are clusters enough', () => {
+    // Axis 4's denominator is artifacts. Twelve is the number from the report
+    // that prompted this: plenty of sessions, far too few artifacts.
+    expect(withSessions(12).axes.artifactUptake.belowMinDenominator).toBe(true)
+  })
+
+  it('passes when the denominator is genuinely large', () => {
+    // The other half of the control. Without a case that comes out false, the
+    // test above would also pass against a check hardcoded to true -- which is
+    // exactly what the clamped version was.
+    expect(withSessions(300).axes.artifactUptake.belowMinDenominator).toBe(false)
+  })
+
+  it('names both conditions rather than folding them into the cluster count', () => {
+    // `denominator-below-minimum` and `numerator-below-minimum` were
+    // unreachable strings: nothing could produce either, because both were
+    // tested against a value clamped to the threshold first.
+    expect(meetsMinimum({ clusters: 25, denominator: 12, numerator: 3 }).reasons).toEqual([
+      'denominator-below-minimum',
+      'numerator-below-minimum',
+    ])
+    expect(meetsMinimum({ clusters: 25, denominator: 300, numerator: 40 }).reasons).toEqual([])
   })
 })

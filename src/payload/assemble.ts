@@ -124,10 +124,14 @@ function rateOrNull(
  * is not built.
  */
 function axisReasons(clusters: number, gated: boolean): Readonly<Record<string, readonly UnavailableReason[]>> {
-  // Only the cluster term. The denominator and numerator terms of the minimum
-  // are real conditions, but no axis has computed a denominator yet, and
-  // reporting a shortfall against a figure that was never measured invents a
-  // finding. `definition-pending` is what is true about those axes.
+  // Only the cluster term, and only for the axes this map serves.
+  //
+  // The denominator and numerator terms are real conditions, but the axes
+  // reached from here have not computed a denominator, and reporting a
+  // shortfall against a figure that was never measured invents a finding --
+  // eleven of them were reported that way once. `definition-pending` is what is
+  // true about these axes. The four axes that do compute a denominator take
+  // their verdict from their own measured values instead, above.
   const short = meetsMinimum({ clusters, denominator: MIN_DENOMINATOR, numerator: MIN_NUMERATOR })
   const sample: readonly UnavailableReason[] = gated
     ? ['environment-gated', ...short.reasons]
@@ -176,8 +180,19 @@ export function assemble(inputs: AssembleInputs): Assembled {
     activeDays: window.window.activeDays,
   })
 
-  // Clusters are sessions, which is what the spec's bootstrap resamples over.
+  // Clusters are sessions, which is what the spec's bootstrap resamples over --
+  // but a cluster is a session with a non-zero denominator *for that axis*, and
+  // the axes do not share a denominator. Counting every session that produced a
+  // line over-counts clusters on every axis at once, in the direction that lets
+  // a minimum pass.
+  const sessions = Object.values(counts.perSession)
+  const clustersWith = (has: (t: (typeof sessions)[number]) => boolean): number =>
+    sessions.filter(has).length
+  /** Sessions at all. The fallback where no per-session denominator exists. */
   const clusters = counts.sessionIds.length
+  const clustersByBundle = clustersWith((t) => t.bundles > 0)
+  const clustersByInterval = clustersWith((t) => t.intervals > 0)
+  const clustersByError = clustersWith((t) => t.errors > 0)
   const reasons = axisReasons(clusters, !verdict.totalAllowed)
 
   // Axis 2 is available on its own condition -- filtered tool_use of at least
@@ -204,7 +219,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
   })
 
   const minimum = meetsMinimum({
-    clusters,
+    clusters: clustersByBundle,
     denominator: motion.bundles,
     numerator: Math.floor(motion.numerator),
   })
@@ -279,10 +294,17 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // snapshot that omitted them would lose them for good.
     score: null,
     confidenceInterval: null,
+    // Measured values, not clamped ones. Passing `Math.max(measured, MIN)` and
+    // then testing `< MIN` is a condition that cannot fail: it reported every
+    // denominator as sufficient however small it was, which let a delta be
+    // called an improvement off twelve artifacts.
+    //
+    // Axis 5's denominator is assets, which are defined machine-wide rather
+    // than per session, so this keeps the session count and says so.
     belowMinDenominator: !meetsMinimum({
       clusters,
-      denominator: Math.max(met.assets, MIN_DENOMINATOR),
-      numerator: Math.max(met.firedAssets, MIN_NUMERATOR),
+      denominator: met.assets,
+      numerator: met.firedAssets,
     }).meetsMinimum,
     unavailableReasons: ['definition-pending'],
     omittedTerms: met.omitted.map(
@@ -327,10 +349,12 @@ export function assemble(inputs: AssembleInputs): Assembled {
     metric: null,
     score: up.score === null ? null : Math.round(up.score * 100) / 100,
     confidenceInterval: null,
+    // Artifacts are keyed by bundle, and a bundle belongs to a session, so the
+    // sessions that opened a bundle are the ones that could hold one.
     belowMinDenominator: !meetsMinimum({
-      clusters,
-      denominator: Math.max(up.artifacts, MIN_DENOMINATOR),
-      numerator: Math.max(up.reusedArtifacts, MIN_NUMERATOR),
+      clusters: clustersByBundle,
+      denominator: up.artifacts,
+      numerator: up.reusedArtifacts,
     }).meetsMinimum,
     unavailableReasons:
       up.unavailable === null
@@ -375,9 +399,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     score: ver.score === null ? null : Math.round(ver.score * 100) / 100,
     confidenceInterval: null,
     belowMinDenominator: !meetsMinimum({
-      clusters,
-      denominator: Math.max(ver.intervals, MIN_DENOMINATOR),
-      numerator: Math.max(counts.verification.verifiedIntervals, MIN_NUMERATOR),
+      clusters: clustersByInterval,
+      denominator: ver.intervals,
+      numerator: counts.verification.verifiedIntervals,
     }).meetsMinimum,
     unavailableReasons: ver.unavailable === null ? [] : ['insufficient-edit-intervals'],
     omittedTerms: ver.omitted.map(
@@ -424,9 +448,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     score: rec.score === null ? null : Math.round(rec.score * 100) / 100,
     confidenceInterval: null,
     belowMinDenominator: !meetsMinimum({
-      clusters,
-      denominator: Math.max(rec.errors, MIN_DENOMINATOR),
-      numerator: Math.max(counts.errorRepeats.distinctSignatures, MIN_NUMERATOR),
+      clusters: clustersByError,
+      denominator: rec.errors,
+      numerator: counts.errorRepeats.distinctSignatures,
     }).meetsMinimum,
     unavailableReasons: rec.unavailable === null ? [] : ['no-external-log'],
     omittedTerms: rec.omitted.map(

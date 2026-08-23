@@ -49,7 +49,7 @@ const counts = {
   humanTurnDates: ['2026-08-19'],
   perProject: {},
   perSession: {
-    s1: { bundles: 5, failures: 3, writeRepeats: 1, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 3, lines: 100 },
+    s1: { intervals: 10, bundles: 5, failures: 3, writeRepeats: 1, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 3, lines: 100 },
   },
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
   signaturesSigned: true,
