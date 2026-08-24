@@ -119,7 +119,7 @@ describe('the score', () => {
   })
 })
 
-describe('when the two windows are the same period', () => {
+describe('when the two windows are not different periods', () => {
   /**
    * The scan counts over all time, so two consecutive runs see the same corpus
    * a few minutes apart. Every repeated signature carries over by construction:
@@ -133,13 +133,13 @@ describe('when the two windows are the same period', () => {
     const r = recurrence(at({ rIn: 0.4, rCross: 1, periodsDiffer: false }))
     expect(r.rateKind).toBe('within-window')
     expect(r.rate).toBeCloseTo(0.4)
-    expect(r.omitted).toContain('axis6-all-time-basis')
+    expect(r.omitted).toContain('axis6-window-not-rolled')
   })
 
   it('takes it once the periods do differ', () => {
     const r = recurrence(at({ rIn: 0.4, rCross: 1, periodsDiffer: true }))
     expect(r.rateKind).toBe('cross-window')
     expect(r.rate).toBeCloseTo(1)
-    expect(r.omitted).not.toContain('axis6-all-time-basis')
+    expect(r.omitted).not.toContain('axis6-window-not-rolled')
   })
 })

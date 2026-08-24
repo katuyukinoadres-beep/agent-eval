@@ -188,14 +188,20 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // Said plainly while it is true. The window applies to the manifest's rate
     // metrics and not to the axis scores, and a reader who takes the block
     // above for the scope of the scores below has been misled by layout alone.
-    ...(m.countBasis.period === 'window'
-      ? []
-      : [
-          '           🚨 the window applies to the rates above; the axis scores below are over the whole corpus',
-          ...(m.basisMismatch.length === 0
-            ? []
-            : [`           🚨 ${m.basisMismatch.length} count(s) declare a period their basis does not match`]),
-        ]),
+    // Derived, not asserted. Each axis carries the basis its inputs were taken
+    // on, so this line cannot drift from what actually happened.
+    ...(() => {
+      const scored = axes.filter(([, a]) => a.score !== null)
+      const outside = scored.filter(([, a]) => a.basis?.period !== 'window').map(([k]) => k)
+      return [
+        `           scored over the window: ${scored.length - outside.length}/${scored.length} axes${
+          outside.length === 0 ? '' : ` — ${outside.join(', ')} over the whole corpus`
+        }`,
+        ...(m.basisMismatch.length === 0
+          ? []
+          : [`           🚨 ${m.basisMismatch.length} count(s) declare a period their basis does not match`]),
+      ]
+    })(),
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate === null ? 'no day to divide by' : `${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`}`,
     '',

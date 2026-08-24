@@ -1,14 +1,1 @@
-node_modules/
-dist/
-*.log
-.env
-.env.local
-.DS_Store
-Thumbs.db
-
-# Never commit anything derived from real transcripts.
-# The product's whole premise is that analysis stays local; a fixture
-# built from a real session would put conversation text in git.
-fixtures/real/
-*.jsonl
-snapshots/
+*

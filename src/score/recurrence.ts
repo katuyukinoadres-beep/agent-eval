@@ -31,7 +31,7 @@ import type { Leaning } from './composite.js'
 export type RecurrenceOmission =
   | 'axis6-explanation-repetition'
   | 'axis6-external-hook-log'
-  | 'axis6-all-time-basis'
+  | 'axis6-window-not-rolled'
 
 /**
  * What is not computed, and which way each moves the score.
@@ -58,9 +58,12 @@ export const RECURRENCE_OMISSION_LEANINGS: Readonly<Record<RecurrenceOmission, L
   // Its absence leaves the score exactly where layer A puts it -- which is what
   // the paragraph above this table says, while the table said `high`.
   'axis6-external-hook-log': 'none',
-  // r_in over one window against r_cross over two: within-window repetition is
-  // rarer than carry-over, so standing in for it reads high.
-  'axis6-all-time-basis': 'high',
+  // The window has not rolled far enough for the two to be different periods.
+  // A trailing ten-active-day window run twice in a day selects the same ten
+  // days; run tomorrow it shares nine. r_in over one window against r_cross
+  // over two: within-window repetition is rarer than carry-over, so standing in
+  // for it reads high.
+  'axis6-window-not-rolled': 'high',
 }
 
 export interface RecurrenceInputs {
@@ -80,12 +83,11 @@ export interface RecurrenceInputs {
   /**
    * Whether the two windows actually cover different periods.
    *
-   * They do not yet. The scan counts over all time, so two consecutive runs see
-   * the same corpus a few minutes apart and every repeated signature carries
-   * over by construction -- measured r_cross of 1.0 and a score of zero, which
-   * is a fact about the counting basis and not about the environment. Scoring
-   * it would be the plainest possible case of reporting a property of the
-   * method as a property of the thing measured.
+   * A trailing window of the most recent ten active days, run twice in one day,
+   * selects the same ten days; run tomorrow it shares nine of them. Either way
+   * a cross-window rate over the pair measures the overlap rather than the
+   * environment, so only fully disjoint windows count as different periods —
+   * the one rule that needs no correction factor nobody has measured.
    */
   readonly periodsDiffer: boolean
   /** Failures the rate was computed over. Zero means nothing to divide by. */
@@ -121,7 +123,7 @@ export function recurrence(inputs: RecurrenceInputs): Recurrence {
   // `firstWindow: false` with no usable previous set would otherwise label an
   // r_in as an r_cross and let two incomparable windows be differenced.
   const useCross = inputs.rCross !== null && inputs.periodsDiffer
-  if (!inputs.periodsDiffer) omitted.push('axis6-all-time-basis')
+  if (!inputs.periodsDiffer) omitted.push('axis6-window-not-rolled')
   const rateKind = useCross ? 'cross-window' : 'within-window'
   // Follows `useCross`, not the presence of the value: a measured r_cross that
   // the basis forbids scoring must not slip in through the coalesce.

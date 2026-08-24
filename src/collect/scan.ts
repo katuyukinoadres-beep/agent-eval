@@ -22,6 +22,7 @@ import { readWrite, recordWrite, type MutPathTally, type PathTally } from './art
 import { normalisePath, referenceIndex, type Mention, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
 import {
+  ATTRIBUTIONS,
   IN_AXIS2_NUMERATOR,
   IN_REPAIR_SPLIT,
   isExternalTool,
@@ -173,6 +174,13 @@ export interface ScanCounts {
   readonly taskBundles: number
   /** Bundles begun by a row whose parent was not in the file. Zero here. */
   readonly rootBundles: number
+  /**
+   * Bundles by the day they opened on, with roots and orphans split out.
+   *
+   * What the window selects over. Counted at emit from one map rather than
+   * tallied as the scan goes, so a bundle and its day cannot disagree.
+   */
+  readonly bundlesPerDay: Readonly<Record<string, { task: number; root: number; orphan: number }>>
   readonly orphanBundles: number
   /** P3 rows dropped from every numerator and denominator: 15 here. */
   readonly environmentNoiseRows: number
@@ -199,6 +207,8 @@ export interface ScanCounts {
   readonly errorRepeats: RepeatRate
   /** Axis 2's numerator terms, before weighting. */
   readonly wasted: WastedCounts
+  /** The same, by the day each bundle opened on. The window selects over this. */
+  readonly wastedPerDay: Readonly<Record<string, WastedCounts>>
   /**
    * The same terms again, split by session cluster.
    *
@@ -209,6 +219,32 @@ export interface ScanCounts {
    * recomputed from are pruned.
    */
   readonly perSession: Readonly<Record<string, SessionTally>>
+  /**
+   * Days each session had a non-zero denominator on, per axis.
+   *
+   * A cluster is a session with a denominator *for that axis*, so the window
+   * has to judge it over the window. Sets rather than tallies, because the only
+   * question ever asked of them is whether the count is above zero.
+   */
+  /**
+   * Name-keyed collections with the days each name occurred on.
+   *
+   * A window selects over these rather than summing them: a skill that fired
+   * six weeks ago is not a fired asset for a utilisation rate taken from the
+   * last ten active days, and a distinct-name count cannot be added up.
+   */
+  readonly dayedNames: {
+    readonly skillFirings: Readonly<Record<string, readonly string[]>>
+    readonly hookFirings: Readonly<Record<string, readonly string[]>>
+    readonly mcpFirings: Readonly<Record<string, readonly string[]>>
+    readonly editedNames: Readonly<Record<string, readonly string[]>>
+    readonly staleRecoveredPaths: Readonly<Record<string, readonly string[]>>
+  }
+  readonly clusterDays: {
+    readonly bundles: Readonly<Record<string, readonly string[]>>
+    readonly intervals: Readonly<Record<string, readonly string[]>>
+    readonly errors: Readonly<Record<string, readonly string[]>>
+  }
   /**
    * Error signatures, MAC'd.
    *
@@ -230,6 +266,14 @@ export interface ScanCounts {
    * and intersecting one-offs would measure coincidence.
    */
   readonly signaturesRepeated: readonly Hmac128[]
+  /**
+   * Signature keys by day, so a window can recompute a rate that does not add.
+   *
+   * Local and opaque. Never put in a payload; a test asserts it.
+   */
+  readonly signatureKeysPerDay: Readonly<Record<string, readonly string[]>>
+  /** The MACs by day, for the windowed recurrence set. */
+  readonly macsPerDay: Readonly<Record<string, readonly Hmac128[]>>
   readonly signaturesSigned: boolean
   /** Rows carrying a tool_use or tool_result block — axis 2's evidence lines. */
   readonly toolActivityRows: number
@@ -260,6 +304,8 @@ export interface ScanCounts {
   readonly manualEdits: ManualEditCounts
   /** Axis 3's raw counts: edit intervals, the ones a verification touched, and repair. */
   readonly verification: VerificationCounts
+  /** The same, by the day each interval or episode opened on. */
+  readonly verificationPerDay: Readonly<Record<string, Omit<VerificationCounts, 'todoWriteUsed'>>>
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -682,11 +728,47 @@ interface MutMetabolism {
  * failures whose error class was new to the session. Without it, alternating a
  * command that always fails with one that always succeeds drives S to 1.0.
  */
+/**
+ * A write waiting to see whether anything looked at it again.
+ *
+ * `openedOn` is the day the write happened. The interval is charged there, and
+ * a verification that arrives later still counts — including one dated after
+ * the window ends. An interval opened on day 3 and verified on day 12 is a
+ * verified interval on day 3; cutting the verification off at the boundary
+ * would make every window's newest edits look unverified, which is the
+ * right-edge bias that filtering rows would have introduced.
+ */
+interface OpenEdit {
+  verified: boolean
+  openedOn: Day | null
+}
+
 interface PendingFailure {
   attempts: number
   humanSince: boolean
   firstSeenClass: boolean
+  /** The day the first failing attempt happened. Where the episode is charged. */
+  openedOn: Day | null
 }
+
+/** Axis 3's counters for one day. */
+interface VerificationDay {
+  intervals: number
+  verifiedIntervals: number
+  selfRepaired: number
+  humanRescued: number
+  unresolved: number
+  repairedNotCounted: number
+}
+
+const emptyVerificationDay = (): VerificationDay => ({
+  intervals: 0,
+  verifiedIntervals: 0,
+  selfRepaired: 0,
+  humanRescued: 0,
+  unresolved: 0,
+  repairedNotCounted: 0,
+})
 
 interface MutWasted {
   failures: number
@@ -729,6 +811,22 @@ const repeatedOf = (macs: readonly Hmac128[]): readonly Hmac128[] => {
     .sort()
 }
 
+/** How a bundle came to exist. A delegation is opened by the request that spawned it. */
+type BundleKind = 'human' | 'root' | 'orphan' | 'delegation'
+
+/** Name-keyed collections that a window selects rather than sums. */
+type DayedKind = 'skillFirings' | 'hookFirings' | 'mcpFirings' | 'editedNames' | 'staleRecoveredPaths'
+
+/**
+ * A local, opaque key for one failure signature.
+ *
+ * Truncated, and never emitted: the payload carries the MAC and the aggregate
+ * rate, and this exists only so a window can recompute a rate that does not add
+ * up. Same construction as the `other:<digest>` bucket in `errorClass`.
+ */
+const signatureKey = (tuple: readonly [string, ErrorClass, string]): string =>
+  createHash('sha256').update(tuple.join(SIG_SEPARATOR), 'utf8').digest('hex').slice(0, 16)
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -750,18 +848,25 @@ function reduceLine(
   st: MutSessionTally,
   notHuman: Map<string, number>,
   bundles: BundleTracker,
+  bundleDay: Map<number, { day: Day | null; kind: BundleKind }>,
   subBundle: number | null,
   paths: Map<string, MutPathTally>,
   refs: ReferenceIndex,
   toolOf: Map<string, { name: string; target: string }>,
   tuples: Array<readonly [string, ErrorClass, string]>,
   macs: Hmac128[],
+  signatureKeysPerDay: Map<string, string[]>,
+  macsPerDay: Map<string, Hmac128[]>,
   sign: Signer | null,
   wasted: WastedTracker,
-  w: MutWasted,
+  wOf: (bundle: number | null) => MutWasted,
   met: MutMetabolism,
   manual: MutManualEdits,
-  openEdits: Map<string, boolean>,
+  openEdits: Map<string, OpenEdit>,
+  verificationOn: (day: Day | null) => VerificationDay,
+  noteCluster: (kind: 'bundles' | 'intervals' | 'errors', session: string, day: Day | null) => void,
+  noteDayed: (kind: DayedKind, name: string, day: Day | null) => void,
+  closeInterval: (open: OpenEdit) => void,
   pending: Map<string, PendingFailure>,
   seenClasses: Set<string>,
   dayOffsetMinutes: number,
@@ -836,6 +941,7 @@ function reduceLine(
     d.attributionSkillRows += 1
     skills.add(skill)
     met.skillFirings.set(skill, (met.skillFirings.get(skill) ?? 0) + 1)
+    noteDayed('skillFirings', skill, day)
   }
 
   // Axis 5's asset set. `names` is on the attachment already, so the listing's
@@ -860,11 +966,13 @@ function reduceLine(
       const filename = attachment['filename']
       if (typeof filename === 'string' && filename.length > 0) {
         manual.editedNames.add(filename.split(/[\/]/).pop()?.toLowerCase() ?? '')
+        noteDayed('editedNames', filename.split(/[\/]/).pop()?.toLowerCase() ?? '', day)
       }
     } else if (attachment['type'] === 'hook_success') {
       const name = attachment['hookName']
       if (typeof name === 'string' && name.length > 0) {
         met.hookFirings.set(name, (met.hookFirings.get(name) ?? 0) + 1)
+        noteDayed('hookFirings', name, day)
       }
     }
   }
@@ -873,6 +981,7 @@ function reduceLine(
   if (typeof server === 'string' && server.length > 0) {
     mcp.add(server)
     met.mcpFirings.set(server, (met.mcpFirings.get(server) ?? 0) + 1)
+    noteDayed('mcpFirings', server, day)
   }
 
   // Row level, not inside toolUseResult. The other machine measured 0 against
@@ -923,7 +1032,37 @@ function reduceLine(
   // collapsed 294 files into one pseudo-bundle, which put every subagent
   // artifact the machine ever produced under a single three-per-bundle cap and
   // made repeat detection compare unrelated agents with each other.
-  const bundle = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : subBundle
+  const assigned = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : null
+  const bundle = kind === 'main' ? (assigned?.id ?? null) : subBundle
+
+  // A bundle belongs to the day of the row that opened it, and is recorded once.
+  // Every count that divides by bundles has to leave the window together with
+  // the bundle it divides by: charging a repeat to the row's day while the
+  // bundle it belongs to sits on another lets a numerator count on a day its
+  // denominator does not, and W moves for a boundary reason with nothing to
+  // show it.
+  if (assigned !== null && assigned.kind !== 'inherited' && !bundleDay.has(assigned.id)) {
+    bundleDay.set(assigned.id, { day, kind: assigned.kind })
+    noteCluster('bundles', fileSession, day)
+  }
+  // A delegation's id is allocated when its file opens, but its day is the day
+  // of its first row. Stamping it at file-open charged a bundle to the window
+  // before a single line had been read, so a delegation whose rows all fall
+  // outside the window still inflated the denominator.
+  if (kind === 'sub' && subBundle !== null && !bundleDay.has(subBundle)) {
+    bundleDay.set(subBundle, { day, kind: 'delegation' })
+    noteCluster('bundles', fileSession, day)
+    // Counted against the parent session here rather than at file-open, so the
+    // per-session tally and the machine-wide one register the same bundle at
+    // the same moment. `axis-denominator-close` compares them.
+    st.bundles += 1
+  }
+
+  // Axis 2's numerator lives on the same day as the bundle it will be divided
+  // by. Charging it to the row's day instead lets a repeat count on a day its
+  // bundle does not, which inflates W for a boundary reason with no counter
+  // moving to show it.
+  const w = wOf(bundle)
 
   // P6 — a write's landing place and size, from the result rather than the
   // call: the call says where, the result says how much.
@@ -937,7 +1076,10 @@ function reduceLine(
     }
     if (result['staleRecovered'] === true) {
       const fp = result['filePath']
-      if (typeof fp === 'string') manual.staleRecoveredPaths.add(fp)
+      if (typeof fp === 'string') {
+        manual.staleRecoveredPaths.add(fp)
+        noteDayed('staleRecoveredPaths', fp, day)
+      }
     }
     if (result['timedOutAfterMs'] !== undefined && result['timedOutAfterMs'] !== null) {
       w.timedOut += 1
@@ -1024,10 +1166,13 @@ function reduceLine(
             // the only one the score deducts for, and deducting for a failure
             // the agent fixed would be a penalty for recovering slowly or for
             // recovering from something familiar.
-            if (settled.humanSince) m.humanRescued += 1
+            // Charged to the day the episode opened, so the failure and its
+            // recovery land together however far apart they are.
+            const bucket = verificationOn(settled.openedOn)
+            if (settled.humanSince) bucket.humanRescued += 1
             else if (settled.attempts <= MAX_REPAIR_ATTEMPTS && settled.firstSeenClass) {
-              m.selfRepaired += 1
-            } else m.repairedNotCounted += 1
+              bucket.selfRepaired += 1
+            } else bucket.repairedNotCounted += 1
             pending.delete(okKey)
           }
         }
@@ -1063,6 +1208,7 @@ function reduceLine(
             w.hookOriginated += 1
           }
           st.errors += 1
+          noteCluster('errors', fileSession, day)
 
           // Only what axis 2 charged supplies a signature. A refused call in the
           // recurrence set would make one guardrail firing twice look like the
@@ -1077,6 +1223,7 @@ function reduceLine(
                 attempts: 1,
                 humanSince: false,
                 firstSeenClass: !seenClasses.has(errorClass),
+                openedOn: day,
               })
             } else {
               open.attempts += 1
@@ -1093,7 +1240,20 @@ function reduceLine(
               call?.target ?? '',
             ]
             tuples.push(tuple)
-            if (sign !== null) macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+            // Keyed by the failing row's own day, not by its bundle. `rIn` is
+            // `1 - distinct/count` over this same set, so numerator and
+            // denominator share an anchor by construction — and axis 6, which
+            // the set also feeds, divides by nothing bundle-shaped.
+            const dayKey = day ?? 'undated'
+            const perDay = signatureKeysPerDay.get(dayKey) ?? []
+            perDay.push(signatureKey(tuple))
+            signatureKeysPerDay.set(dayKey, perDay)
+            if (sign !== null) {
+              macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+              const macDay = macsPerDay.get(dayKey) ?? []
+              macDay.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+              macsPerDay.set(dayKey, macDay)
+            }
           }
         }
       }
@@ -1116,13 +1276,13 @@ function reduceLine(
           if (typeof path === 'string' && path.length > 0) {
             const key = normalisePath(path)
             // A second write to the same path closes the first interval.
-            const wasVerified = openEdits.get(key)
-            if (wasVerified !== undefined) {
-              m.intervals += 1
+            const previous = openEdits.get(key)
+            if (previous !== undefined) {
+              closeInterval(previous)
               st.intervals += 1
-              if (wasVerified) m.verifiedIntervals += 1
+              noteCluster('intervals', fileSession, previous.openedOn)
             }
-            openEdits.set(key, false)
+            openEdits.set(key, { verified: false, openedOn: day })
           }
         } else if (INSPECT_TOOLS.has(toolName)) {
           // The path itself or its parent directory appearing in any argument.
@@ -1133,10 +1293,10 @@ function reduceLine(
             .filter((v): v is string => typeof v === 'string')
             .join(' ')
           const haystack = normalisePath(args)
-          for (const [key] of openEdits) {
+          for (const [key, open] of openEdits) {
             const parent = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : ''
             if (haystack.includes(key) || (parent !== '' && haystack.includes(parent))) {
-              openEdits.set(key, true)
+              open.verified = true
             }
           }
         }
@@ -1248,9 +1408,98 @@ export function scan(
   const toolOf = new Map<string, { name: string; target: string }>()
   const tuples: Array<readonly [string, ErrorClass, string]> = []
   const macs: Hmac128[] = []
+  /**
+   * Signature keys by the day the failure happened on.
+   *
+   * `rIn` is `1 - distinct/count`, which is not additive: summing per-day
+   * distinct counts over-counts every signature that appears on two days. The
+   * window therefore has to re-derive it from the members, which means the
+   * members have to survive per day.
+   *
+   * The key is a truncated local digest of the same tuple the MAC is taken
+   * over, not the tuple. It stays inside this process — `assemble` and
+   * `buildSnapshot` both pick their fields by name and neither reaches for it —
+   * and a test asserts it never appears in a payload.
+   */
+  const signatureKeysPerDay = new Map<string, string[]>()
+  const macsPerDay = new Map<string, Hmac128[]>()
   const perSession = new Map<string, MutSessionTally>()
   const seenClassBySession = new Map<string, Set<string>>()
   const subBundles = new Map<string, number>()
+  /**
+   * Each bundle's opening day, recorded once.
+   *
+   * The tallies for task bundles, chain roots and orphans are derived from this
+   * at emit rather than counted as they go, so a bundle and everything charged
+   * to it leave the window together.
+   */
+  const bundleDay = new Map<number, { day: Day | null; kind: BundleKind }>()
+  /**
+   * Which days each session had a non-zero denominator on, per axis.
+   *
+   * A cluster is a session with a denominator *for that axis*, and the window
+   * has to judge that over the window: counting sessions that had a bundle at
+   * any time in the corpus, against a denominator taken from ten days, is a
+   * minimum judged on one basis and a rate taken on another.
+   *
+   * Day sets rather than per-day tallies, because the consumer only ever asks
+   * whether the count is above zero.
+   */
+  const clusterDays = {
+    bundles: new Map<string, Set<string>>(),
+    intervals: new Map<string, Set<string>>(),
+    errors: new Map<string, Set<string>>(),
+  }
+  /**
+   * Named things and the days they happened on.
+   *
+   * The firing maps and the manual-edit sets are keyed by name, so the window
+   * cannot be a sum — it is a selection over which names fired inside it. A
+   * skill that fired six weeks ago is not a fired asset for a utilisation rate
+   * taken from the last ten active days.
+   */
+  const dayed: Record<DayedKind, Map<string, Set<string>>> = {
+    skillFirings: new Map(),
+    hookFirings: new Map(),
+    mcpFirings: new Map(),
+    editedNames: new Map(),
+    staleRecoveredPaths: new Map(),
+  }
+  const noteDayed = (kind: DayedKind, name: string, day: Day | null): void => {
+    const set = dayed[kind].get(name) ?? new Set<string>()
+    set.add(day ?? 'undated')
+    dayed[kind].set(name, set)
+  }
+
+  const noteCluster = (kind: keyof typeof clusterDays, session: string, day: Day | null): void => {
+    const key = day ?? 'undated'
+    const set = clusterDays[kind].get(session) ?? new Set<string>()
+    set.add(key)
+    clusterDays[kind].set(session, set)
+  }
+  /**
+   * Axis 3's counters by the day the interval or the episode opened on.
+   *
+   * The classification is unchanged and still computed over the whole corpus:
+   * `humanSince`, `seenClasses` and the attempt count all see every row, so
+   * v1's first-seen-class rule keeps binding and a rescue is still a rescue.
+   * Only where the result is charged is windowed.
+   */
+  const verificationByDay = new Map<string, VerificationDay>()
+  const verificationOn = (day: Day | null): VerificationDay => {
+    const key = day ?? 'undated'
+    let bucket = verificationByDay.get(key)
+    if (bucket === undefined) {
+      bucket = emptyVerificationDay()
+      verificationByDay.set(key, bucket)
+    }
+    return bucket
+  }
+  const closeInterval = (open: OpenEdit): void => {
+    const bucket = verificationOn(open.openedOn)
+    bucket.intervals += 1
+    if (open.verified) bucket.verifiedIntervals += 1
+  }
   const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
@@ -1263,10 +1512,44 @@ export function scan(
     inputPerBundleWithoutCache: new Map<number, number>(),
   }
   const wasted = wastedTracker()
-  const w: MutWasted = {
+  const emptyWasted = (): MutWasted => ({
     failures: 0, hookOriginated: 0, errorsObserved: 0, attribution: emptyTally(),
     writeRepeats: 0, investigationRepeats: 0,
     timedOut: 0, largeOutput: 0, callsPerBundle: new Map<string, number>(),
+  })
+  /**
+   * Axis 2's counters, keyed by the day the bundle opened on.
+   *
+   * Anchored by the denominator they are divided by. `w = numerator / bundles`,
+   * so a numerator term charged to the row's day while its bundle sits on
+   * another would let the numerator count on a day the denominator does not,
+   * and W would move for a boundary reason with no counter showing it.
+   */
+  const wByDay = new Map<string, MutWasted>()
+  const wOf = (bundle: number | null): MutWasted => {
+    const key = (bundle === null ? null : (bundleDay.get(bundle)?.day ?? null)) ?? 'undated'
+    let bucket = wByDay.get(key)
+    if (bucket === undefined) {
+      bucket = emptyWasted()
+      wByDay.set(key, bucket)
+    }
+    return bucket
+  }
+  /** Every day's counters folded into one. What the all-time view reports. */
+  const wTotal = (): MutWasted => {
+    const out = emptyWasted()
+    for (const b of wByDay.values()) {
+      out.failures += b.failures
+      out.hookOriginated += b.hookOriginated
+      out.errorsObserved += b.errorsObserved
+      out.writeRepeats += b.writeRepeats
+      out.investigationRepeats += b.investigationRepeats
+      out.timedOut += b.timedOut
+      out.largeOutput += b.largeOutput
+      for (const id of ATTRIBUTIONS) out.attribution[id] += b.attribution[id]
+      for (const [k, n] of b.callsPerBundle) out.callsPerBundle.set(k, (out.callsPerBundle.get(k) ?? 0) + n)
+    }
+    return out
   }
   let bundleSeq = 0
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
@@ -1297,7 +1580,7 @@ export function scan(
       perProject.set(file.project, proj)
     }
     const bundles = bundleTracker(nextBundleId)
-    const openEdits = new Map<string, boolean>()
+    const openEdits = new Map<string, OpenEdit>()
     const pending = new Map<string, PendingFailure>()
     // Per session, not per file: v1 says "first seen in that session", and a
     // session is one main transcript plus the subagent files hanging off it.
@@ -1324,25 +1607,27 @@ export function scan(
       if (existing === undefined) {
         subBundle = nextBundleId()
         subBundles.set(file.group, subBundle)
-        m.taskBundles += 1
-        st.bundles += 1
       } else {
         subBundle = existing
       }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses, dayOffsetMinutes)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, verificationOn, noteCluster, noteDayed, closeInterval, pending, seenClasses, dayOffsetMinutes)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
     // missing one.
-    for (const verified of openEdits.values()) {
-      m.intervals += 1
+    for (const open of openEdits.values()) {
+      closeInterval(open)
       st.intervals += 1
-      if (verified) m.verifiedIntervals += 1
     }
-    // Failures nothing ever cleared.
-    m.unresolved += pending.size
+    // Failures nothing ever cleared. Charged to the day each one opened on, so
+    // a failure that arrived inside the window and was never fixed counts
+    // there rather than at the end of the scan.
+    for (const open of pending.values()) {
+      const bucket = verificationOn(open.openedOn)
+      bucket.unresolved += 1
+    }
     // Every bundle that exists, not only the ones a human turn opened. A chain
     // root and an orphan are bundles: their calls are charged to axis 2's
     // numerator, so leaving them out of the denominator raises W by counting
@@ -1354,11 +1639,49 @@ export function scan(
       perSession.delete(file.sessionId)
       m.filesWithoutRows += 1
     }
-    const opened = bundles.opened() + bundles.roots() + bundles.orphans()
-    st.bundles += opened
-    m.taskBundles += opened
-    m.rootBundles += bundles.roots()
-    m.orphanBundles += bundles.orphans()
+    // Per-session tallies still count as they go; the machine-wide ones are
+    // derived from `bundleDay` at emit so a bundle and its day cannot disagree.
+    st.bundles += bundles.opened() + bundles.roots() + bundles.orphans()
+  }
+
+  const countKind = (want: BundleKind): number => {
+    let n = 0
+    for (const b of bundleDay.values()) if (b.kind === want) n += 1
+    return n
+  }
+
+  /**
+   * Bundles by the day they opened on.
+   *
+   * The window selects over this. A bundle and everything charged to it have to
+   * leave the window together — charging a repeat to the row's day while its
+   * bundle sits on another lets a numerator count on a day its denominator does
+   * not, and W moves for a boundary reason with nothing to show it.
+   */
+  const bundlesPerDay = (): Record<string, { task: number; root: number; orphan: number }> => {
+    const out: Record<string, { task: number; root: number; orphan: number }> = {}
+    for (const b of bundleDay.values()) {
+      const key = b.day ?? 'undated'
+      const bucket = (out[key] ??= { task: 0, root: 0, orphan: 0 })
+      bucket.task += 1
+      if (b.kind === 'root') bucket.root += 1
+      if (b.kind === 'orphan') bucket.orphan += 1
+    }
+    return out
+  }
+
+  /** Every day's axis-3 counters folded into one. What the all-time view reports. */
+  const verificationTotal = (): VerificationDay => {
+    const out = emptyVerificationDay()
+    for (const b of verificationByDay.values()) {
+      out.intervals += b.intervals
+      out.verifiedIntervals += b.verifiedIntervals
+      out.selfRepaired += b.selfRepaired
+      out.humanRescued += b.humanRescued
+      out.unresolved += b.unresolved
+      out.repairedNotCounted += b.repairedNotCounted
+    }
+    return out
   }
 
   let repeated = 0
@@ -1385,7 +1708,7 @@ export function scan(
     humanTurns: total((c) => c.humanTurns),
     originHumanRows: total((c) => c.originHumanRows),
     notHumanCounts: Object.fromEntries([...notHuman.entries()].sort()),
-    taskBundles: m.taskBundles,
+    taskBundles: bundleDay.size,
     toolActivityRows: total((c) => c.toolActivityRows),
     metabolism: {
       skillsListed: [...met.skillsListed].sort(),
@@ -1406,16 +1729,17 @@ export function scan(
       userModifiedTrue: total((c) => c.userModifiedTrue),
     },
     verification: {
-      intervals: m.intervals,
-      verifiedIntervals: m.verifiedIntervals,
+      intervals: verificationTotal().intervals,
+      verifiedIntervals: verificationTotal().verifiedIntervals,
       todoWriteUsed: [...byDay.values()].some((c) => c.todoWriteUsed),
-      selfRepaired: m.selfRepaired,
-      humanRescued: m.humanRescued,
-      unresolved: m.unresolved,
-      repairedNotCounted: m.repairedNotCounted,
+      selfRepaired: verificationTotal().selfRepaired,
+      humanRescued: verificationTotal().humanRescued,
+      unresolved: verificationTotal().unresolved,
+      repairedNotCounted: verificationTotal().repairedNotCounted,
     },
-    rootBundles: m.rootBundles,
-    orphanBundles: m.orphanBundles,
+    rootBundles: countKind('root'),
+    orphanBundles: countKind('orphan'),
+    bundlesPerDay: bundlesPerDay(),
     environmentNoiseRows: total((c) => c.environmentNoiseRows),
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
@@ -1424,7 +1748,13 @@ export function scan(
     ambiguousBasenames: refs.ambiguousBasenames(),
     referenceTokens: refs.size(),
     errorRepeats: repeatRate(tuples),
-    wasted: {
+    signatureKeysPerDay: Object.fromEntries(
+      [...signatureKeysPerDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+    ),
+    macsPerDay: Object.fromEntries([...macsPerDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
+    wasted: (() => {
+      const w = wTotal()
+      return {
       failures: w.failures,
       hookOriginated: w.hookOriginated,
       errorsObserved: w.errorsObserved,
@@ -1435,7 +1765,51 @@ export function scan(
       timedOut: w.timedOut,
       largeOutput: w.largeOutput,
       callsPerBundle: Object.fromEntries(w.callsPerBundle),
+      }
+    })(),
+    /**
+     * The same, by the day each bundle opened on. What the window selects over.
+     *
+     * `closure` is recomputed per day rather than apportioned, because a
+     * partition that closes in aggregate can fail for one day — which is the
+     * class of mistake day-keying introduces.
+     */
+    wastedPerDay: Object.fromEntries(
+      [...wByDay.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([day, b]) => [
+          day,
+          {
+            failures: b.failures,
+            hookOriginated: b.hookOriginated,
+            errorsObserved: b.errorsObserved,
+            attribution: { ...b.attribution },
+            closure: closure(b.attribution, b.errorsObserved),
+            writeRepeats: b.writeRepeats,
+            investigationRepeats: b.investigationRepeats,
+            timedOut: b.timedOut,
+            largeOutput: b.largeOutput,
+            callsPerBundle: Object.fromEntries(b.callsPerBundle),
+          },
+        ]),
+    ),
+    dayedNames: {
+      skillFirings: Object.fromEntries([...dayed.skillFirings].map(([k, v]) => [k, [...v].sort()])),
+      hookFirings: Object.fromEntries([...dayed.hookFirings].map(([k, v]) => [k, [...v].sort()])),
+      mcpFirings: Object.fromEntries([...dayed.mcpFirings].map(([k, v]) => [k, [...v].sort()])),
+      editedNames: Object.fromEntries([...dayed.editedNames].map(([k, v]) => [k, [...v].sort()])),
+      staleRecoveredPaths: Object.fromEntries(
+        [...dayed.staleRecoveredPaths].map(([k, v]) => [k, [...v].sort()]),
+      ),
     },
+    clusterDays: {
+      bundles: Object.fromEntries([...clusterDays.bundles].map(([k, v]) => [k, [...v].sort()])),
+      intervals: Object.fromEntries([...clusterDays.intervals].map(([k, v]) => [k, [...v].sort()])),
+      errors: Object.fromEntries([...clusterDays.errors].map(([k, v]) => [k, [...v].sort()])),
+    },
+    verificationPerDay: Object.fromEntries(
+      [...verificationByDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+    ),
     perSession: Object.fromEntries([...perSession.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     signatures: macs,
     signaturesRepeated: repeatedOf(macs),

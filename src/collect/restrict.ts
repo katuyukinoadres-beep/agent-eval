@@ -17,7 +17,11 @@
  * everything and a filter that did nothing at all would look correct.
  */
 
+import { closure, emptyTally, ATTRIBUTIONS } from './attribution.js'
+import type { WastedCounts } from './wasted.js'
+import type { Hmac128 } from '../snapshot/types.js'
 import type { DayCounts, ScanCounts } from './scan.js'
+import { dayOf } from './day.js'
 import type { WindowScope } from './scope.js'
 
 /**
@@ -66,6 +70,13 @@ export const ALL_TIME_REASONS: Readonly<Record<string, string>> = {
   listingTruncated: 'the same',
   sessionIds: 'the cluster set, and one side of the sessions-close identity',
   ambiguousBasenames: 'a property of every path ever seen, not of a day',
+  perProject:
+    'the environment block describes the machine, not a period; project line tallies are not an axis input',
+  'metabolism.assets':
+    'skills listed, hooks registered and MCP servers configured are owned machine-wide — a skill listed before the window is still one you own',
+  'perSession.counts':
+    'the per-session tallies stay corpus-wide; only the cluster day sets are windowed, and they are what the minimum reads',
+  'errorRepeats.byFamily': 'the family split is reported over the corpus; only the rate is windowed',
 }
 
 const sumOver = (
@@ -108,7 +119,7 @@ const mergeMaps = (
 }
 
 /** The row-level counts this view windows. Everything else is copied through. */
-const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds'] as const
+const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification', 'editedPaths', 'manualEdits', 'clusterDays', 'metabolism.firings'] as const
 
 /**
  * Families still taken from the corpus because they are not day-keyed yet.
@@ -116,22 +127,169 @@ const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds'] as const
  * Listed rather than left implicit. Each is a count an axis divides by, and a
  * windowed numerator over an all-time denominator is a rate nobody can name.
  */
-const NOT_YET_WINDOWED = [
-  'taskBundles',
-  'wasted',
-  'errorRepeats',
-  'signatures',
-  'verification',
-  'editedPaths',
-  'perSession',
-  'perProject',
-  'metabolism',
-  'manualEdits',
-] as const
+const NOT_YET_WINDOWED = [] as const
 
 export interface Restricted {
   readonly counts: ScanCounts
   readonly basis: WindowBasis
+}
+
+/**
+ * Axis 2's counters over the selected days.
+ *
+ * `closure` is recomputed from the filtered tally rather than summed from the
+ * per-day ones. A partition that closes in aggregate can be wrong for a single
+ * day, and a `balanced` carried forward from the daily buckets would be true
+ * for free — which is worse than no check, because it reports success.
+ */
+function wastedOver(
+  perDay: Readonly<Record<string, WastedCounts>>,
+  days: readonly string[],
+): WastedCounts {
+  const attribution = emptyTally()
+  const callsPerBundle: Record<string, number> = {}
+  let failures = 0
+  let hookOriginated = 0
+  let errorsObserved = 0
+  let writeRepeats = 0
+  let investigationRepeats = 0
+  let timedOut = 0
+  let largeOutput = 0
+  for (const day of days) {
+    const b = perDay[day]
+    if (b === undefined) continue
+    failures += b.failures
+    hookOriginated += b.hookOriginated
+    errorsObserved += b.errorsObserved
+    writeRepeats += b.writeRepeats
+    investigationRepeats += b.investigationRepeats
+    timedOut += b.timedOut
+    largeOutput += b.largeOutput
+    for (const id of ATTRIBUTIONS) attribution[id] += b.attribution[id]
+    for (const [k, n] of Object.entries(b.callsPerBundle)) {
+      callsPerBundle[k] = (callsPerBundle[k] ?? 0) + n
+    }
+  }
+  return {
+    failures,
+    hookOriginated,
+    errorsObserved,
+    attribution,
+    closure: closure(attribution, errorsObserved),
+    writeRepeats,
+    investigationRepeats,
+    timedOut,
+    largeOutput,
+    callsPerBundle,
+  }
+}
+
+/**
+ * `rIn` over the selected days, recomputed from the members.
+ *
+ * The families are re-derived too. Summing per-day `byFamily` maps is safe
+ * because a family count is additive; the distinct count is not, which is the
+ * whole reason the member keys survive per day.
+ */
+function repeatRateOver(counts: ScanCounts, days: readonly string[]): ScanCounts['errorRepeats'] {
+  const seen = new Set<string>()
+  let errors = 0
+  for (const day of days) {
+    for (const key of counts.signatureKeysPerDay[day] ?? []) {
+      seen.add(key)
+      errors += 1
+    }
+  }
+  const byFamily: Record<string, number> = {}
+  for (const day of days) {
+    const perDay = counts.wastedPerDay[day]
+    if (perDay === undefined) continue
+    // Families are not day-keyed on their own; the aggregate is kept as it is
+    // and the window reports the corpus split. Named in `allTime` below.
+    void perDay
+  }
+  return {
+    errors,
+    distinctSignatures: seen.size,
+    // Zero errors is not a repeat rate of 1. Nothing recurred because nothing
+    // happened, and reporting 1 would read as "every failure was a repeat".
+    rIn: errors === 0 ? 0 : 1 - seen.size / errors,
+    byFamily: Object.keys(byFamily).length === 0 ? counts.errorRepeats.byFamily : byFamily,
+  }
+}
+
+/** The signatures a window saw at least twice. v1's `S_t`, over the window. */
+function repeatedOver(counts: ScanCounts, days: readonly string[]): readonly Hmac128[] {
+  const seen = new Map<Hmac128, number>()
+  for (const day of days) {
+    for (const mac of counts.macsPerDay[day] ?? []) seen.set(mac, (seen.get(mac) ?? 0) + 1)
+  }
+  return [...seen.entries()]
+    .filter(([, n]) => n >= 2)
+    .map(([mac]) => mac)
+    .sort()
+}
+
+/** Axis 3's counters over the selected days. Plain sums: every term is additive. */
+function verificationOver(
+  counts: ScanCounts,
+  days: readonly string[],
+): Omit<ScanCounts['verification'], 'todoWriteUsed'> {
+  let intervals = 0
+  let verifiedIntervals = 0
+  let selfRepaired = 0
+  let humanRescued = 0
+  let unresolved = 0
+  let repairedNotCounted = 0
+  for (const day of days) {
+    const b = counts.verificationPerDay[day]
+    if (b === undefined) continue
+    intervals += b.intervals
+    verifiedIntervals += b.verifiedIntervals
+    selfRepaired += b.selfRepaired
+    humanRescued += b.humanRescued
+    unresolved += b.unresolved
+    repairedNotCounted += b.repairedNotCounted
+  }
+  return { intervals, verifiedIntervals, selfRepaired, humanRescued, unresolved, repairedNotCounted }
+}
+
+/** The names that occurred inside the window, with their corpus-wide counts. */
+function firedWithin(
+  byName: Readonly<Record<string, readonly string[]>>,
+  counts: Readonly<Record<string, number>>,
+  days: readonly string[],
+): Readonly<Record<string, number>> {
+  const out: Record<string, number> = {}
+  for (const [name, on] of Object.entries(byName)) {
+    if (!on.some((d) => days.includes(d))) continue
+    out[name] = counts[name] ?? 0
+  }
+  return out
+}
+
+/** The names that occurred inside the window. */
+function namesWithin(
+  byName: Readonly<Record<string, readonly string[]>>,
+  days: readonly string[],
+): readonly string[] {
+  return Object.entries(byName)
+    .filter(([, on]) => on.some((d) => days.includes(d)))
+    .map(([name]) => name)
+    .sort()
+}
+
+/** Each session's days, cut to the window. A session with none drops out. */
+function withinWindow(
+  bySession: Readonly<Record<string, readonly string[]>>,
+  days: readonly string[],
+): Readonly<Record<string, readonly string[]>> {
+  const out: Record<string, readonly string[]> = {}
+  for (const [session, had] of Object.entries(bySession)) {
+    const kept = had.filter((d) => days.includes(d))
+    if (kept.length > 0) out[session] = kept
+  }
+  return out
 }
 
 export function restrict(counts: ScanCounts, scope: WindowScope | null): Restricted {
@@ -151,6 +309,9 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
   // from the day buckets would make the negative control test the rebuild
   // rather than the original.
   if (scope === null) return { counts, basis }
+
+  // Non-null past this point, which the day-indexed lookups below rely on.
+  const selected: readonly string[] = scope.ordered
 
   return {
     counts: {
@@ -178,15 +339,67 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
         cacheRead: sumOver(perDay, days, (c) => c.cacheRead),
         cacheCreation: sumOver(perDay, days, (c) => c.cacheCreation),
       },
+      // Selected, not summed. A firing count keyed by name cannot be added up
+      // across days, and a skill that fired six weeks ago is not a fired asset
+      // for a rate taken from the last ten active days. The asset *set* stays
+      // corpus-wide: a skill listed before the window is still one you own.
+      metabolism: {
+        ...counts.metabolism,
+        skillFirings: firedWithin(counts.dayedNames.skillFirings, counts.metabolism.skillFirings, selected),
+        hookFirings: firedWithin(counts.dayedNames.hookFirings, counts.metabolism.hookFirings, selected),
+        mcpFirings: firedWithin(counts.dayedNames.mcpFirings, counts.metabolism.mcpFirings, selected),
+      },
       manualEdits: {
         ...counts.manualEdits,
         userModifiedPresent: sumOver(perDay, days, (c) => c.userModifiedPresent),
         userModifiedTrue: sumOver(perDay, days, (c) => c.userModifiedTrue),
+        editedNames: namesWithin(counts.dayedNames.editedNames, selected),
+        staleRecoveredPaths: namesWithin(counts.dayedNames.staleRecoveredPaths, selected),
       },
+      // Intervals and repair episodes are charged to the day they opened on, so
+      // a verification or a recovery that arrives later still lands with the
+      // thing it belongs to. Cutting the follow-up at the boundary would make
+      // every window's newest edits read unverified.
       verification: {
-        ...counts.verification,
+        ...verificationOver(counts, selected),
         todoWriteUsed: anyOver(perDay, days, (c) => c.todoWriteUsed),
       },
+      // Membership by the day of the last write, and the tally itself is left
+      // whole. `lastWrite` stays the corpus-wide maximum and `newLines` stays
+      // cumulative: an artifact's weight has to be the same figure in every
+      // window that contains it, and the right-censor turns on the real last
+      // write rather than on the last one inside some boundary.
+      // A cluster is a session with a denominator for that axis, judged over
+      // the same days the denominator was taken from. Counting sessions that
+      // had a bundle at any time, against a rate taken from ten days, is a
+      // minimum judged on one basis and a rate on another.
+      clusterDays: {
+        bundles: withinWindow(counts.clusterDays.bundles, selected),
+        intervals: withinWindow(counts.clusterDays.intervals, selected),
+        errors: withinWindow(counts.clusterDays.errors, selected),
+      },
+      editedPaths: Object.fromEntries(
+        Object.entries(counts.editedPaths).filter(([, tally]) => {
+          // Cut on the window's own boundary. Slicing ten characters off the
+          // timestamp gives the UTC day regardless, which is the bug the day
+          // function exists to remove.
+          const day = dayOf(tally.lastWrite, scope.offsetMinutes)
+          return day !== null && selected.includes(day)
+        }),
+      ),
+      // Bundles and the terms divided by them leave the window together. A
+      // windowed denominator under a corpus-wide numerator inflates W, and no
+      // counter moves to show it.
+      taskBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.task ?? 0), 0),
+      rootBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.root ?? 0), 0),
+      orphanBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.orphan ?? 0), 0),
+      wasted: wastedOver(counts.wastedPerDay, selected),
+      // Re-derived from the members, never summed. `rIn` is `1 - distinct/count`
+      // and a signature that appears on two days is one signature, so adding
+      // per-day distinct counts over-counts it.
+      errorRepeats: repeatRateOver(counts, selected),
+      signatures: selected.flatMap((d) => [...(counts.macsPerDay[d] ?? [])]),
+      signaturesRepeated: repeatedOver(counts, selected),
     },
     basis,
   }

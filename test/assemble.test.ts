@@ -48,6 +48,8 @@ const counts = {
   // Per-axis clusters are counted from here, not from sessionIds: a cluster is
   // a session with a non-zero denominator for that axis, and the axes do not
   // share one.
+  dayedNames: { skillFirings: {}, hookFirings: {}, mcpFirings: {}, editedNames: {}, staleRecoveredPaths: {} },
+  clusterDays: { bundles: {}, intervals: {}, errors: {} },
   perSession: {
     a: { intervals: 60, bundles: 25, failures: 6, writeRepeats: 2, investigationRepeats: 6, timedOut: 0, largeOutput: 0, errors: 6, lines: 600 },
     b: { intervals: 40, bundles: 15, failures: 4, writeRepeats: 2, investigationRepeats: 4, timedOut: 0, largeOutput: 0, errors: 4, lines: 400 },
@@ -60,7 +62,7 @@ const counts = {
   perProject: { p1: { lines: 1_000, subLines: 400, humanRows: 15 } },
   notHumanCounts: {},
   taskBundles: 40,
-  rootBundles: 0,
+  rootBundles: 0, bundlesPerDay: {},
   orphanBundles: 0,
   environmentNoiseRows: 0,
   editedPaths: {},
@@ -73,6 +75,8 @@ const counts = {
   signatures: [],
   signaturesSigned: false,
   signaturesRepeated: [],
+  signatureKeysPerDay: {},
+  macsPerDay: {},
   metabolism: {
     skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
     skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},
@@ -81,10 +85,12 @@ const counts = {
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
+  verificationPerDay: {},
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
     selfRepaired: 2, humanRescued: 1, unresolved: 1, repairedNotCounted: 0,
   },
+  wastedPerDay: {},
   wasted: {
     failures: 10,
     hookOriginated: 0,
@@ -118,6 +124,8 @@ const inputs: AssembleInputs = {
   // Only the day-keyed counters differ, and this fixture has no per-day
   // buckets, so the two views are the same object here.
   windowedCounts: counts,
+  windowsDisjoint: false,
+  daysRolled: null,
   artifacts: {
     artifacts: [], totalWeight: 0, consideredPaths: 0,
     notSettled: { 'written-too-recently': 0, 'no-longer-exists': 0 },
@@ -376,10 +384,33 @@ describe('the minimum denominator', () => {
   const withSessions = (artifactCount: number) =>
     assemble({
       ...inputs,
+      windowedCounts: {
+        ...inputs.counts,
+        sessionIds: Object.keys(manySessions),
+        perSession: manySessions,
+        // Clusters are counted from the windowed day sets now, so a fixture
+        // that only supplies tallies has no clusters at all.
+        clusterDays: {
+          bundles: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          intervals: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          errors: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+        },
+        // Every artifact referred to again from a different bundle, so the
+        // numerator condition is satisfied and the denominator is the only
+        // thing left that can decide the verdict.
+        mentionedElsewhereAfter: () => true,
+      },
       counts: {
         ...inputs.counts,
         sessionIds: Object.keys(manySessions),
         perSession: manySessions,
+        // Clusters are counted from the windowed day sets now, so a fixture
+        // that only supplies tallies has no clusters at all.
+        clusterDays: {
+          bundles: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          intervals: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          errors: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+        },
         // Every artifact referred to again from a different bundle, so the
         // numerator condition is satisfied and the denominator is the only
         // thing left that can decide the verdict.
@@ -477,8 +508,11 @@ describe('a count whose declared meaning outruns its basis', () => {
     // The manifest's `countBasis` still says `allTime`, because the axes are.
     // A count that departs from it has to say where it departed, or one word
     // ends up covering two periods.
+    // The manifest now defaults to `window`, because every scored axis and
+    // every rate is one. The rates still carry it explicitly — a metric that
+    // states its own basis cannot be misread when the default moves again.
     const { payload } = assemble(inputs)
-    expect(payload.scanManifest.countBasis.period).toBe('allTime')
+    expect(payload.scanManifest.countBasis.period).toBe('window')
     expect(payload.metrics.toolError?.basis?.period).toBe('window')
     expect(payload.metrics.toolErrorAlt?.basis?.period).toBe('window')
   })

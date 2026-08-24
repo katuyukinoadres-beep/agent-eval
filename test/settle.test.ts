@@ -29,6 +29,7 @@ import type { PathTally } from '@/collect/artifact.js'
 
 const tally = (over: Partial<PathTally> = {}): PathTally => ({
   lastWrite: '2026-08-01T00:00:00Z',
+  firstWrite: '2026-08-01T00:00:00Z',
   newLines: 50,
   newLinesKnown: true,
   writes: 1,

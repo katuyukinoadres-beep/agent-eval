@@ -66,7 +66,16 @@ import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
 //           decision was reached.
 export const COUNT_BASIS: CountBasis = {
   scope: 'all',
-  period: 'allTime',
+  // Every scored axis and every rate is taken over the window now. The counts
+  // that are not are named individually in `ALL_TIME_REASONS`, which is what
+  // "unless the count says otherwise" means.
+  //
+  // Changing this changes `countBasisDigest`, so a comparison against a
+  // snapshot written under the old basis is refused with
+  // `count-basis-changed`. That is the mechanism working: the two windows
+  // counted different things, and a delta across them would measure the change
+  // in method.
+  period: 'window',
   unit: 'row',
   excludes: [],
 }
@@ -122,6 +131,17 @@ export interface AssembleInputs {
    * produce an empty set that reads as a perfect score.
    */
   readonly previousRepeated: readonly string[] | null
+  /**
+   * Whether the previous window covered entirely different days.
+   *
+   * Only a disjoint pair may be differenced. A trailing ten-active-day window
+   * shares nine of its ten days with yesterday's, so a rate taken across them
+   * measures the overlap — and correcting for that needs a factor nobody has
+   * measured.
+   */
+  readonly windowsDisjoint: boolean
+  /** Days this window has that the previous one did not. Null when unknown. */
+  readonly daysRolled: number | null
 }
 
 /**
@@ -284,14 +304,14 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // the axes do not share a denominator. Counting every session that produced a
   // line over-counts clusters on every axis at once, in the direction that lets
   // a minimum pass.
-  const sessions = Object.values(counts.perSession)
-  const clustersWith = (has: (t: (typeof sessions)[number]) => boolean): number =>
-    sessions.filter(has).length
   /** Sessions at all. The fallback where no per-session denominator exists. */
   const clusters = counts.sessionIds.length
-  const clustersByBundle = clustersWith((t) => t.bundles > 0)
-  const clustersByInterval = clustersWith((t) => t.intervals > 0)
-  const clustersByError = clustersWith((t) => t.errors > 0)
+  // Counted from the windowed view, because the denominators these gate are
+  // windowed. A session that had a bundle six weeks ago is not a cluster for a
+  // rate taken from the last ten active days.
+  const clustersByBundle = Object.keys(windowedCounts.clusterDays.bundles).length
+  const clustersByInterval = Object.keys(windowedCounts.clusterDays.intervals).length
+  const clustersByError = Object.keys(windowedCounts.clusterDays.errors).length
   const reasons = axisReasons(clusters, !verdict.totalAllowed)
 
   // Axis 2 is available on its own condition -- filtered tool_use of at least
@@ -299,15 +319,23 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // a change between windows may be called an improvement, which is a different
   // question from whether the rate exists. Conflating them reported a machine
   // with 8,502 tool calls as having nothing to measure.
-  const motion = wastedMotion(counts.wasted, counts.errorRepeats.rIn, counts.taskBundles)
+  // All three of axis 2's inputs are day-keyed now, so all three come from the
+  // window. Two of three would be the same mistake as none: the terms have to
+  // leave together or W measures the boundary.
+  const motion = wastedMotion(
+    windowedCounts.wasted,
+    windowedCounts.errorRepeats.rIn,
+    windowedCounts.taskBundles,
+  )
   // Filtered tool_use, which is what v1 and v2 both name. It used to be fed
   // `toolResultTotal` -- a different block type, unfiltered, and designated a
   // reference value by the same spec that sets this threshold.
-  const toolCalls = counts.toolUseFiltered
+  const toolCalls = windowedCounts.toolUseFiltered
   const axis2Available = toolCalls >= MIN_FILTERED_CALLS && motion.score !== null
 
   const axisFor = (key: string): Axis => ({
     availability: 'not_applicable',
+    basis: null,
     // Every line got a verdict, and they sum to linesRead. A tally that does not
     // close is a parser that dropped rows without saying so.
     lineStates: lineStatesFor(false),
@@ -346,6 +374,8 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const wastedAxis: Axis = {
     availability: axis2Available ? 'available' : 'not_applicable',
+    // Every one of axis 2's three inputs is windowed, so the axis is.
+    basis: WINDOW_BASIS,
     // Rows carrying a tool_use or tool_result are the axis's evidence; the rest
     // had nothing for it to judge. The three states still sum to linesRead.
     lineStates: lineStatesFor(axis2Available),
@@ -375,17 +405,17 @@ export function assemble(inputs: AssembleInputs): Assembled {
       bundleCount: motion.bundles,
       wastedPerBundle: Math.round(motion.w * 10_000) / 10_000,
       repeatRate: Math.round(motion.rIn * 10_000) / 10_000,
-      failures: counts.wasted.failures,
-      writeRepeats: counts.wasted.writeRepeats,
-      investigationRepeats: counts.wasted.investigationRepeats,
+      failures: windowedCounts.wasted.failures,
+      writeRepeats: windowedCounts.wasted.writeRepeats,
+      investigationRepeats: windowedCounts.wasted.investigationRepeats,
       // All five numerator terms, so the visible parts reconcile to
       // `wastedTotal`. Two of the five were collected, weighted into the sum,
       // and then left out of the detail -- on the one axis that carries a score,
       // and against this payload's own promise that the detail is what a
       // receiver recomputes from.
-      timedOut: counts.wasted.timedOut,
-      largeOutput: counts.wasted.largeOutput,
-      hookOriginatedExcluded: counts.wasted.hookOriginated,
+      timedOut: windowedCounts.wasted.timedOut,
+      largeOutput: windowedCounts.wasted.largeOutput,
+      hookOriginatedExcluded: windowedCounts.wasted.hookOriginated,
     },
   }
 
@@ -397,9 +427,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     effectiveInputPerBundle: counts.metabolism.effectiveInputPerBundle,
     inputPerBundleWithoutCache: counts.metabolism.inputPerBundleWithoutCache,
     skillsListed: counts.metabolism.skillsListed,
-    skillFirings: counts.metabolism.skillFirings,
-    hookFirings: counts.metabolism.hookFirings,
-    mcpFirings: counts.metabolism.mcpFirings,
+    skillFirings: windowedCounts.metabolism.skillFirings,
+    hookFirings: windowedCounts.metabolism.hookFirings,
+    mcpFirings: windowedCounts.metabolism.mcpFirings,
     mcpServersDefined: mcp.servers,
     hooksDefined: inputs.hooks.total,
     listingTruncated: counts.metabolism.listingTruncated,
@@ -410,6 +440,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // good the number looks. Dropping a deduction can only raise a result, and
     // the result would be the same name for a different quantity.
     availability: 'not_applicable',
+    // The firings are windowed; the asset set they divide by is machine-wide
+    // and declared as such. Recorded rather than scored either way.
+    basis: WINDOW_BASIS,
     lineStates: lineStatesFor(met.score !== null),
     metric: null,
     // Recorded, not scored. A later window needs the raw figures, and a
@@ -464,7 +497,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
   const up = uptake({
     artifacts: inputs.artifacts.artifacts,
     totalWeight: inputs.artifacts.totalWeight,
-    bundles: counts.taskBundles,
+    bundles: windowedCounts.taskBundles,
     mentionedElsewhereAfter: counts.mentionedElsewhereAfter,
     manuallyOverwritten: (p) => stale.has(p) || editedNames.has(basename(p)),
     firstWindow: true,
@@ -472,6 +505,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const uptakeAxis: Axis = {
     availability: up.score === null ? 'not_applicable' : 'available',
+    // The artifact set is windowed by each path's last-write day, and the
+    // bundle denominator is windowed too, so both sides leave together.
+    basis: WINDOW_BASIS,
     lineStates: lineStatesFor(up.score !== null),
     metric: null,
     score: up.score === null ? null : Math.round(up.score * 100) / 100,
@@ -515,18 +551,24 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   // Axis 3. Condition (ii) needs a past window's command set, so a first window
   // drops it -- which makes verification easier to earn and reads high.
+  // Every one of axis 3's inputs is day-keyed, so all of them come from the
+  // window. The classification behind them is unchanged and still computed over
+  // the whole corpus: a rescue is a rescue and a first-seen class is first-seen
+  // whatever the boundary, and only where the result lands is windowed.
   const ver = verification({
-    intervals: counts.verification.intervals,
-    verifiedIntervals: counts.verification.verifiedIntervals,
-    selfRepaired: counts.verification.selfRepaired,
-    humanRescued: counts.verification.humanRescued,
-    unresolved: counts.verification.unresolved,
-    repairedNotCounted: counts.verification.repairedNotCounted,
-    todoWriteUsed: counts.verification.todoWriteUsed,
+    intervals: windowedCounts.verification.intervals,
+    verifiedIntervals: windowedCounts.verification.verifiedIntervals,
+    selfRepaired: windowedCounts.verification.selfRepaired,
+    humanRescued: windowedCounts.verification.humanRescued,
+    unresolved: windowedCounts.verification.unresolved,
+    repairedNotCounted: windowedCounts.verification.repairedNotCounted,
+    todoWriteUsed: windowedCounts.verification.todoWriteUsed,
     firstWindow: true,
   })
 
   const verificationAxis: Axis = {
+    // Every one of axis 3's inputs is windowed, so the axis is.
+    basis: WINDOW_BASIS,
     availability: ver.score === null ? 'not_applicable' : 'available',
     lineStates: lineStatesFor(ver.score !== null),
     metric: null,
@@ -547,16 +589,16 @@ export function assemble(inputs: AssembleInputs): Assembled {
     ),
     detail: {
       intervals: ver.intervals,
-      verifiedIntervals: counts.verification.verifiedIntervals,
+      verifiedIntervals: windowedCounts.verification.verifiedIntervals,
       verifiedE4: Math.round((ver.v ?? 0) * 10_000),
       failures: ver.failures,
-      selfRepaired: counts.verification.selfRepaired,
-      humanRescued: counts.verification.humanRescued,
-      unresolved: counts.verification.unresolved,
+      selfRepaired: windowedCounts.verification.selfRepaired,
+      humanRescued: windowedCounts.verification.humanRescued,
+      unresolved: windowedCounts.verification.unresolved,
       // The fourth bucket. Without it the four numbers here do not sum to
       // `failures`, and a reader checking the arithmetic finds a gap with no
       // name -- which is how a term gets assumed to be zero.
-      repairedNotCounted: counts.verification.repairedNotCounted,
+      repairedNotCounted: windowedCounts.verification.repairedNotCounted,
       todoWriteUsed: counts.verification.todoWriteUsed ? 1 : 0,
     },
   }
@@ -565,18 +607,21 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // within-window repeat rate stands in and the record says which one it was --
   // two windows must never be compared across that switch.
   const rec = recurrence({
-    rIn: counts.errorRepeats.rIn,
-    rCross: crossWindowRate(counts.signaturesRepeated, inputs.previousRepeated),
-    // Two runs over an all-time count are the same corpus twice, so every
-    // repeated signature carries over and r_cross is 1.0 by construction.
-    periodsDiffer: COUNT_BASIS.period !== 'allTime',
-    errors: counts.errorRepeats.errors,
+    rIn: windowedCounts.errorRepeats.rIn,
+    rCross: crossWindowRate(windowedCounts.signaturesRepeated, inputs.previousRepeated),
+    // Both conditions. The basis has to be a window at all, and the two
+    // windows have to be different ones — a trailing window run twice in a day
+    // selects the same days, and run tomorrow shares nine of ten.
+    periodsDiffer: WINDOW_BASIS.period !== 'allTime' && inputs.windowsDisjoint,
+    errors: windowedCounts.errorRepeats.errors,
     firstWindow: inputs.previousRepeated === null,
     hasExternalHookLog: false,
   })
 
   const recurrenceAxis: Axis = {
     availability: rec.score === null ? 'not_applicable' : 'available',
+    // Both the rate and the signature set are windowed.
+    basis: WINDOW_BASIS,
     lineStates: lineStatesFor(rec.score !== null),
     metric: null,
     score: rec.score === null ? null : Math.round(rec.score * 100) / 100,
@@ -595,7 +640,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     ),
     detail: {
       errors: rec.errors,
-      distinctSignatures: counts.errorRepeats.distinctSignatures,
+      distinctSignatures: windowedCounts.errorRepeats.distinctSignatures,
       repeatRateE4: Math.round((rec.rate ?? 0) * 10_000),
       // 1 while this is a baseline rather than a score. The report must say so.
       baselineOnly: rec.baselineOnly ? 1 : 0,

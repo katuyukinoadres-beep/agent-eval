@@ -87,6 +87,22 @@ export function readWrite(toolUseResult: unknown): WriteRecord | null {
 export interface PathTally {
   /** Latest write timestamp seen, ISO 8601. */
   readonly lastWrite: string
+  /**
+   * The first write's timestamp, so both anchors can be measured.
+   *
+   * A window has to pick one, and the choice is not obvious. Anchoring on the
+   * last write means the artifact set is not a partition of the writes: a file
+   * written on day 3 and rewritten on day 12 appears in the day-12 window and
+   * not the day-3 one, and across two disjoint windows it can appear in both or
+   * — if its last write falls in a gap — in neither. Anchoring on the first
+   * systematically drops long-lived files that keep being revisited, which are
+   * the ones uptake exists to reward.
+   *
+   * The spec's 「窓内に確定した成果物」 favours the last write, so that is what
+   * is used; this is carried so the divergence is a number rather than an
+   * argument.
+   */
+  readonly firstWrite: string
   /** Cumulative newLines across writes in the window. */
   readonly newLines: number
   /** True if any write to this path reported a line count. */
@@ -98,6 +114,7 @@ export interface PathTally {
 
 export interface MutPathTally {
   lastWrite: string
+  firstWrite: string
   newLines: number
   newLinesKnown: boolean
   writes: number
@@ -114,6 +131,7 @@ export function recordWrite(
   if (existing === undefined) {
     tally.set(write.path, {
       lastWrite: timestamp ?? '',
+      firstWrite: timestamp ?? '',
       newLines: write.newLines,
       newLinesKnown: write.newLinesKnown,
       writes: 1,
@@ -122,6 +140,10 @@ export function recordWrite(
     return
   }
   existing.writes += 1
+  // Earliest wins, and an empty string loses to any real timestamp.
+  if (timestamp !== null && (existing.firstWrite === '' || timestamp < existing.firstWrite)) {
+    existing.firstWrite = timestamp
+  }
   existing.newLines += write.newLines
   existing.newLinesKnown = existing.newLinesKnown || write.newLinesKnown
   // Latest wins. The right-censoring rule turns on the last write, so an

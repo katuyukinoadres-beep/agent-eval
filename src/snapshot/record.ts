@@ -139,6 +139,17 @@ export interface ObservedSpan {
   readonly evidenceDays: number
   /** Timestamps that would not parse. One counter, never one lost window. */
   readonly daysMalformed: number
+  /**
+   * The active days this window actually covered.
+   *
+   * Stored because the next window needs it to decide whether the two are
+   * comparable at all. A trailing ten-active-day window run twice on the same
+   * day selects the same ten days, and run tomorrow shares nine of them — so a
+   * cross-window rate taken across them measures the overlap, not the
+   * environment. Without the day set on disk there is nothing to compare
+   * against and the only honest answer is to refuse.
+   */
+  readonly windowActiveDays: readonly Day[]
 }
 
 export interface ScanRecord {

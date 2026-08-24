@@ -46,14 +46,18 @@ const counts = {
   userRowDates: ['2026-08-19', '2026-08-20'],
   humanTurnDates: ['2026-08-19'], humanTurnDatesUtc: [], perDay: {},
   perProject: {},
+  dayedNames: { skillFirings: {}, hookFirings: {}, mcpFirings: {}, editedNames: {}, staleRecoveredPaths: {} },
+  clusterDays: { bundles: {}, intervals: {}, errors: {} },
   perSession: {
     s1: { intervals: 6, bundles: 3, failures: 2, writeRepeats: 1, investigationRepeats: 0, timedOut: 0, largeOutput: 0, errors: 2, lines: 60 },
     s2: { intervals: 4, bundles: 2, failures: 1, writeRepeats: 0, investigationRepeats: 1, timedOut: 0, largeOutput: 0, errors: 1, lines: 40 },
   },
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
   signaturesRepeated: [],
+  signatureKeysPerDay: {},
+  macsPerDay: {},
   signaturesSigned: true,
-  taskBundles: 5, rootBundles: 0, orphanBundles: 0, toolActivityRows: 50,
+  taskBundles: 5, rootBundles: 0, bundlesPerDay: {}, orphanBundles: 0, toolActivityRows: 50,
   environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null,
   mentionedElsewhereAfter: () => false, ambiguousBasenames: 0, referenceTokens: 0,
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
@@ -64,6 +68,7 @@ const counts = {
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
+  verificationPerDay: {},
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
     // Three episodes against the three failures the attribution routed to axis
@@ -71,6 +76,7 @@ const counts = {
     // boundary, which is where it is worth pinning.
     selfRepaired: 2, humanRescued: 1, unresolved: 0, repairedNotCounted: 0,
   },
+  wastedPerDay: {},
   wasted: {
     failures: 3, hookOriginated: 0, writeRepeats: 1, investigationRepeats: 1,
     timedOut: 0, largeOutput: 0, callsPerBundle: { b1: 4 },
@@ -86,6 +92,7 @@ const inputs = (over: Partial<BuildInputs> = {}): BuildInputs =>
     axes: BASE_PAYLOAD.axes,
     gate: { availability: 'available', reasons: [], totalAllowed: true },
     countBasis: COUNT_BASIS,
+    windowActiveDays: ['2026-08-19'],
     chain: { seq: 1, prev: { kind: 'genesis' } },
     key: { epoch: 1, fingerprint: fingerprintOf(KEY) },
     toolVersion: '0.0.0',

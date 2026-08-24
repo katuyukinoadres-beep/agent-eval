@@ -150,6 +150,8 @@ export interface BuildInputs {
    * number the product exists to produce.
    */
   readonly compositeE4: number | null
+  /** The active days this window covered. Stored so the next one can compare. */
+  readonly windowActiveDays: readonly string[]
   readonly chain: ChainLink
   readonly key: KeyRef
   readonly toolVersion: string
@@ -190,7 +192,7 @@ function block<T>(
   }
 }
 
-const spanOf = (counts: ScanCounts): ObservedSpan => {
+const spanOf = (counts: ScanCounts, windowDays: readonly string[]): ObservedSpan => {
   const days = counts.dates.filter((d): d is string => dayOf(d) !== null)
   const malformed = counts.dates.length - days.length
   const first = days.length > 0 ? day(days[0] as string) : null
@@ -207,6 +209,7 @@ const spanOf = (counts: ScanCounts): ObservedSpan => {
     userRowDays: int(counts.userRowDates.length),
     evidenceDays: int(counts.dates.length),
     daysMalformed: int(malformed),
+    windowActiveDays: windowDays.map((d) => day(d)),
   }
 }
 
@@ -343,7 +346,7 @@ export function buildSnapshot(inputs: BuildInputs): Built {
   const measured = SCORED_AXES.filter((k) => axes[k].state === 'measured')
   const axesAbsent = SCORED_AXES.filter((k) => axes[k].state !== 'measured')
 
-  const span = spanOf(counts)
+  const span = spanOf(counts, inputs.windowActiveDays)
   const scan = scanOf(counts, gate, inputs.filesRead)
 
   const sidecar = signatures?.sidecar ?? null

@@ -1,4 +1,8 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -149,7 +153,15 @@ describe('what the view says about itself', () => {
     const { basis } = restrict(c, scope)
     expect(basis.windowed.length).toBeGreaterThan(0)
     expect(basis.allTime).toContain('linesParseFailed')
-    expect(basis.allTime).toContain('taskBundles')
+    // `taskBundles` moved out of this list when it started being windowed —
+    // the list is only worth having if editing it is what moving a counter
+    // costs.
+    expect(basis.windowed).toContain('taskBundles')
+    expect(basis.windowed).toContain('errorRepeats')
+    expect(basis.windowed).toContain('verification')
+    expect(basis.windowed).toContain('editedPaths')
+    expect(basis.windowed).toContain('clusterDays')
+    expect(basis.allTime).toContain('perSession.counts')
     for (const key of Object.keys(ALL_TIME_REASONS)) {
       expect(ALL_TIME_REASONS[key], key).toBeTruthy()
     }
@@ -160,5 +172,47 @@ describe('what the view says about itself', () => {
     // zero by construction and the gate built on it becomes a detector that
     // returns a well-formed zero.
     expect(ALL_TIME_REASONS['linesParseFailed']).toContain('zero by construction')
+  })
+})
+
+describe('what stays inside the process', () => {
+  /**
+   * `rIn` is `1 - distinct/count`, which does not add: summing per-day distinct
+   * counts over-counts every signature seen on two days. So the members have to
+   * survive per day, and the key that identifies one is derived from the same
+   * tuple the MAC is taken over.
+   *
+   * It is a truncated local digest and it must never reach a payload. The
+   * comment saying so is worth nothing on its own; this is the part that holds.
+   */
+  it('is not reachable from anything that builds a payload or a snapshot', () => {
+    // Asserted against the source, because asserting it against this fixture
+    // would pass for the wrong reason: the fixture has no failures, so there
+    // are no keys to leak and an absence proves nothing.
+    //
+    // The positive control is the second half — the collector does name it, so
+    // the search is known to be able to find it.
+    const src = join(here, '..', 'src')
+    const mentions = (dir: string): string[] =>
+      readdirSync(join(src, dir))
+        .filter((f) => f.endsWith('.ts'))
+        .filter((f) => readFileSync(join(src, dir, f), 'utf8').includes('signatureKeysPerDay'))
+
+    expect(mentions('payload')).toEqual([])
+    expect(mentions('snapshot')).toEqual([])
+    expect(mentions('collect')).toContain('scan.ts')
+    expect(mentions('collect')).toContain('restrict.ts')
+  })
+
+  it('re-derives the rate from members rather than summing day rates', () => {
+    // Over every day the scan saw, the recomputed figures must equal the ones
+    // the scan reported. That is the proof the per-day decomposition is
+    // complete: a lost member shows up here as a smaller count.
+    const c = scanned()
+    const everyDay = windowScope(Object.keys(c.perDay).filter((d) => d !== UNDATED), 999, 'Z', '2099-01-01')
+    const all = restrict(c, null).counts
+    const over = restrict(c, everyDay).counts
+    expect(over.errorRepeats.errors).toBe(all.errorRepeats.errors)
+    expect(over.errorRepeats.distinctSignatures).toBe(all.errorRepeats.distinctSignatures)
   })
 })

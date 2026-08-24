@@ -36,6 +36,20 @@ export function isEnvironmentNoise(row: Record<string, unknown>): boolean {
   return false
 }
 
+/**
+ * A row's bundle, and how that bundle came to exist.
+ *
+ * The kind is returned rather than only tallied because the caller has to know
+ * whether this row is the one that *opened* the bundle. A bundle belongs to the
+ * day of its opening row — every count that divides by bundles has to leave the
+ * window with the bundle it divides by, or a repeat can be charged on a day the
+ * bundle it belongs to is not counted on.
+ */
+export interface Assigned {
+  readonly id: number
+  readonly kind: 'human' | 'root' | 'orphan' | 'inherited'
+}
+
 export interface BundleTracker {
   /**
    * Places a row in a bundle and returns the id, or null if the row is not part
@@ -56,7 +70,7 @@ export interface BundleTracker {
     uuid: string | null,
     parentUuid: string | null,
     isHumanTurn: boolean,
-  ) => number | null
+  ) => Assigned | null
   /** Bundles opened by a human turn. */
   readonly opened: () => number
   /** Chain roots that were not human turns. 13 rows carry a null parent here. */
@@ -89,28 +103,33 @@ export function bundleTracker(nextId: () => number): BundleTracker {
     uuid: string | null,
     parentUuid: string | null,
     isHumanTurn: boolean,
-  ): number | null => {
+  ): Assigned | null => {
     // Not in the tree. Metadata rows have no uuid and no place in a bundle.
     if (uuid === null) return null
 
     let id: number
+    let kind: Assigned['kind']
     if (isHumanTurn) {
       id = nextId()
       opened += 1
+      kind = 'human'
     } else if (parentUuid === null) {
       id = nextId()
       roots += 1
+      kind = 'root'
     } else {
       const inherited = ofUuid.get(parentUuid)
       if (inherited === undefined) {
         id = nextId()
         orphans += 1
+        kind = 'orphan'
       } else {
         id = inherited
+        kind = 'inherited'
       }
     }
     ofUuid.set(uuid, id)
-    return id
+    return { id, kind }
   }
 
   return { assign, opened: () => opened, roots: () => roots, orphans: () => orphans }
