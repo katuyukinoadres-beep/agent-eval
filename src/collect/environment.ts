@@ -13,8 +13,7 @@
  * answers the same question without carrying any of that.
  */
 
-import { readFileSync } from 'node:fs'
-import { globSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, type Dirent } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -179,12 +178,42 @@ export interface SkillCount {
 
 type Globber = (pattern: string, cwd: string) => readonly string[]
 
+/**
+ * The two skill layouts, read directly rather than globbed.
+ *
+ * `SKILL_GLOBS` has exactly two entries and both are one level deep, so no
+ * general glob engine is needed — and needing one was a distribution problem.
+ * `globSync` is a recent addition to `node:fs`, newer than the Node version
+ * this package declares support for, and a missing named export from a builtin
+ * is a link-time SyntaxError: it happens before any code runs, so the
+ * try/catch that used to wrap this could never have caught it. The whole tool
+ * would have failed to start on a supported runtime.
+ *
+ * A pattern this does not recognise returns nothing rather than guessing, and a
+ * test asserts both halves — that the two known shapes find files, and that an
+ * unknown one finds none.
+ */
 const defaultGlobber: Globber = (pattern, cwd) => {
+  const base = join(cwd, 'skills')
+  let entries: Dirent[]
   try {
-    return globSync(pattern, { cwd }).map(String)
+    entries = readdirSync(base, { withFileTypes: true })
   } catch {
+    // No skills directory is not an error; it is an environment with no skills.
     return []
   }
+  if (pattern === 'skills/*.md') {
+    return entries
+      .filter((e) => e.isFile() && e.name.endsWith('.md'))
+      .map((e) => `skills/${e.name}`)
+  }
+  if (pattern === 'skills/*/SKILL.md') {
+    return entries
+      .filter((e) => e.isDirectory())
+      .filter((e) => existsSync(join(base, e.name, 'SKILL.md')))
+      .map((e) => `skills/${e.name}/SKILL.md`)
+  }
+  return []
 }
 
 /**

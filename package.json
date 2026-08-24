@@ -1,17 +1,42 @@
 {
-  "name": "agent-eval",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@katuyukinoadres-beep/agent-eval",
+  "version": "0.1.0",
+  "description": "Scores an AI agent environment from its own Claude Code logs. Analysis stays on the machine.",
+  "keywords": [
+    "claude-code",
+    "ai-agent",
+    "developer-experience",
+    "local-first"
+  ],
+  "license": "MIT",
+  "author": "katuyukinoadres-beep",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/katuyukinoadres-beep/agent-eval.git"
+  },
+  "bugs": {
+    "url": "https://github.com/katuyukinoadres-beep/agent-eval/issues"
+  },
+  "homepage": "https://github.com/katuyukinoadres-beep/agent-eval#readme",
   "type": "module",
-  "description": "Local-first scoring engine for AI agent environments",
   "bin": {
     "agent-eval": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs/PRIVACY.md",
+    "docs/INSTALL.md",
+    "docs/GUIDE.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "engines": {
     "node": ">=20"

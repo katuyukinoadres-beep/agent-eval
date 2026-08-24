@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   INTERPRETERS,
   SKILL_GLOBS,
@@ -313,5 +316,57 @@ describe('counting skills across the directories they live in', () => {
     expect(isDisabledSkill('skills/live/SKILL.md')).toBe(false)
     // Not a substring match: an underscore anywhere else is not the marker.
     expect(isDisabledSkill('skills/my_skill.md')).toBe(false)
+  })
+})
+
+describe('finding the skills on disk', () => {
+  /**
+   * `SKILL_GLOBS` has two entries and both are one level deep, so this reads
+   * the directory instead of globbing. Needing a glob engine was a distribution
+   * problem: `globSync` is newer than the Node this package supports, and a
+   * missing named export from a builtin is a link-time SyntaxError — it happens
+   * before any code runs, so the try/catch around it could never have caught
+   * it. The tool would have failed to start on a supported runtime.
+   */
+  let root = ''
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'agent-eval-skills-'))
+    mkdirSync(join(root, 'skills', 'alpha'), { recursive: true })
+    mkdirSync(join(root, 'skills', 'beta'), { recursive: true })
+    mkdirSync(join(root, 'skills', 'notaskill'), { recursive: true })
+    writeFileSync(join(root, 'skills', 'alpha', 'SKILL.md'), '')
+    writeFileSync(join(root, 'skills', 'beta', 'SKILL.md'), '')
+    writeFileSync(join(root, 'skills', 'flat.md'), '')
+    writeFileSync(join(root, 'skills', 'notes.txt'), '')
+  })
+
+  afterAll(() => {
+    if (root !== '') rmSync(root, { recursive: true, force: true })
+  })
+
+  it('finds both layouts', () => {
+    const c = countSkills([root])
+    expect(c.byGlob['skills/*/SKILL.md']).toBe(2)
+    expect(c.byGlob['skills/*.md']).toBe(1)
+    expect(c.total).toBe(3)
+  })
+
+  it('ignores a directory with no SKILL.md and a file that is not markdown', () => {
+    const c = countSkills([root])
+    expect(c.total).toBe(3)
+  })
+
+  it('reports nothing for a directory that does not exist', () => {
+    // Not an error. An environment with no skills is an environment with no
+    // skills, and it is a large fraction of installs.
+    expect(countSkills([join(root, 'nowhere')]).total).toBe(0)
+  })
+
+  it('is not a globber that always returns nothing', () => {
+    // The other half of the case above. A reader has to be able to tell "found
+    // nothing because the directory is absent" from "finds nothing ever".
+    expect(countSkills([root]).total).toBeGreaterThan(0)
+    expect(countSkills([join(root, 'nowhere')]).total).toBe(0)
   })
 })
