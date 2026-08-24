@@ -158,7 +158,8 @@ describe('what the view says about itself', () => {
     // costs.
     expect(basis.windowed).toContain('taskBundles')
     expect(basis.windowed).toContain('errorRepeats')
-    expect(basis.allTime).toContain('verification')
+    expect(basis.windowed).toContain('verification')
+    expect(basis.allTime).toContain('editedPaths')
     for (const key of Object.keys(ALL_TIME_REASONS)) {
       expect(ALL_TIME_REASONS[key], key).toBeTruthy()
     }

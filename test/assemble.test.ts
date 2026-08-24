@@ -83,6 +83,7 @@ const counts = {
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
+  verificationPerDay: {},
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
     selfRepaired: 2, humanRescued: 1, unresolved: 1, repairedNotCounted: 0,

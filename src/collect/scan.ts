@@ -278,6 +278,8 @@ export interface ScanCounts {
   readonly manualEdits: ManualEditCounts
   /** Axis 3's raw counts: edit intervals, the ones a verification touched, and repair. */
   readonly verification: VerificationCounts
+  /** The same, by the day each interval or episode opened on. */
+  readonly verificationPerDay: Readonly<Record<string, Omit<VerificationCounts, 'todoWriteUsed'>>>
 
   readonly denialRows: number
   readonly denialUserRejected: number
@@ -700,11 +702,47 @@ interface MutMetabolism {
  * failures whose error class was new to the session. Without it, alternating a
  * command that always fails with one that always succeeds drives S to 1.0.
  */
+/**
+ * A write waiting to see whether anything looked at it again.
+ *
+ * `openedOn` is the day the write happened. The interval is charged there, and
+ * a verification that arrives later still counts — including one dated after
+ * the window ends. An interval opened on day 3 and verified on day 12 is a
+ * verified interval on day 3; cutting the verification off at the boundary
+ * would make every window's newest edits look unverified, which is the
+ * right-edge bias that filtering rows would have introduced.
+ */
+interface OpenEdit {
+  verified: boolean
+  openedOn: Day | null
+}
+
 interface PendingFailure {
   attempts: number
   humanSince: boolean
   firstSeenClass: boolean
+  /** The day the first failing attempt happened. Where the episode is charged. */
+  openedOn: Day | null
 }
+
+/** Axis 3's counters for one day. */
+interface VerificationDay {
+  intervals: number
+  verifiedIntervals: number
+  selfRepaired: number
+  humanRescued: number
+  unresolved: number
+  repairedNotCounted: number
+}
+
+const emptyVerificationDay = (): VerificationDay => ({
+  intervals: 0,
+  verifiedIntervals: 0,
+  selfRepaired: 0,
+  humanRescued: 0,
+  unresolved: 0,
+  repairedNotCounted: 0,
+})
 
 interface MutWasted {
   failures: number
@@ -795,7 +833,9 @@ function reduceLine(
   wOf: (bundle: number | null) => MutWasted,
   met: MutMetabolism,
   manual: MutManualEdits,
-  openEdits: Map<string, boolean>,
+  openEdits: Map<string, OpenEdit>,
+  verificationOn: (day: Day | null) => VerificationDay,
+  closeInterval: (open: OpenEdit) => void,
   pending: Map<string, PendingFailure>,
   seenClasses: Set<string>,
   dayOffsetMinutes: number,
@@ -1086,10 +1126,13 @@ function reduceLine(
             // the only one the score deducts for, and deducting for a failure
             // the agent fixed would be a penalty for recovering slowly or for
             // recovering from something familiar.
-            if (settled.humanSince) m.humanRescued += 1
+            // Charged to the day the episode opened, so the failure and its
+            // recovery land together however far apart they are.
+            const bucket = verificationOn(settled.openedOn)
+            if (settled.humanSince) bucket.humanRescued += 1
             else if (settled.attempts <= MAX_REPAIR_ATTEMPTS && settled.firstSeenClass) {
-              m.selfRepaired += 1
-            } else m.repairedNotCounted += 1
+              bucket.selfRepaired += 1
+            } else bucket.repairedNotCounted += 1
             pending.delete(okKey)
           }
         }
@@ -1139,6 +1182,7 @@ function reduceLine(
                 attempts: 1,
                 humanSince: false,
                 firstSeenClass: !seenClasses.has(errorClass),
+                openedOn: day,
               })
             } else {
               open.attempts += 1
@@ -1191,13 +1235,12 @@ function reduceLine(
           if (typeof path === 'string' && path.length > 0) {
             const key = normalisePath(path)
             // A second write to the same path closes the first interval.
-            const wasVerified = openEdits.get(key)
-            if (wasVerified !== undefined) {
-              m.intervals += 1
+            const previous = openEdits.get(key)
+            if (previous !== undefined) {
+              closeInterval(previous)
               st.intervals += 1
-              if (wasVerified) m.verifiedIntervals += 1
             }
-            openEdits.set(key, false)
+            openEdits.set(key, { verified: false, openedOn: day })
           }
         } else if (INSPECT_TOOLS.has(toolName)) {
           // The path itself or its parent directory appearing in any argument.
@@ -1208,10 +1251,10 @@ function reduceLine(
             .filter((v): v is string => typeof v === 'string')
             .join(' ')
           const haystack = normalisePath(args)
-          for (const [key] of openEdits) {
+          for (const [key, open] of openEdits) {
             const parent = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : ''
             if (haystack.includes(key) || (parent !== '' && haystack.includes(parent))) {
-              openEdits.set(key, true)
+              open.verified = true
             }
           }
         }
@@ -1349,6 +1392,29 @@ export function scan(
    * to it leave the window together.
    */
   const bundleDay = new Map<number, { day: Day | null; kind: BundleKind }>()
+  /**
+   * Axis 3's counters by the day the interval or the episode opened on.
+   *
+   * The classification is unchanged and still computed over the whole corpus:
+   * `humanSince`, `seenClasses` and the attempt count all see every row, so
+   * v1's first-seen-class rule keeps binding and a rescue is still a rescue.
+   * Only where the result is charged is windowed.
+   */
+  const verificationByDay = new Map<string, VerificationDay>()
+  const verificationOn = (day: Day | null): VerificationDay => {
+    const key = day ?? 'undated'
+    let bucket = verificationByDay.get(key)
+    if (bucket === undefined) {
+      bucket = emptyVerificationDay()
+      verificationByDay.set(key, bucket)
+    }
+    return bucket
+  }
+  const closeInterval = (open: OpenEdit): void => {
+    const bucket = verificationOn(open.openedOn)
+    bucket.intervals += 1
+    if (open.verified) bucket.verifiedIntervals += 1
+  }
   const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
@@ -1429,7 +1495,7 @@ export function scan(
       perProject.set(file.project, proj)
     }
     const bundles = bundleTracker(nextBundleId)
-    const openEdits = new Map<string, boolean>()
+    const openEdits = new Map<string, OpenEdit>()
     const pending = new Map<string, PendingFailure>()
     // Per session, not per file: v1 says "first seen in that session", and a
     // session is one main transcript plus the subagent files hanging off it.
@@ -1461,18 +1527,22 @@ export function scan(
       }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, pending, seenClasses, dayOffsetMinutes)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, verificationOn, closeInterval, pending, seenClasses, dayOffsetMinutes)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
     // missing one.
-    for (const verified of openEdits.values()) {
-      m.intervals += 1
+    for (const open of openEdits.values()) {
+      closeInterval(open)
       st.intervals += 1
-      if (verified) m.verifiedIntervals += 1
     }
-    // Failures nothing ever cleared.
-    m.unresolved += pending.size
+    // Failures nothing ever cleared. Charged to the day each one opened on, so
+    // a failure that arrived inside the window and was never fixed counts
+    // there rather than at the end of the scan.
+    for (const open of pending.values()) {
+      const bucket = verificationOn(open.openedOn)
+      bucket.unresolved += 1
+    }
     // Every bundle that exists, not only the ones a human turn opened. A chain
     // root and an orphan are bundles: their calls are charged to axis 2's
     // numerator, so leaving them out of the denominator raises W by counting
@@ -1511,6 +1581,20 @@ export function scan(
       bucket.task += 1
       if (b.kind === 'root') bucket.root += 1
       if (b.kind === 'orphan') bucket.orphan += 1
+    }
+    return out
+  }
+
+  /** Every day's axis-3 counters folded into one. What the all-time view reports. */
+  const verificationTotal = (): VerificationDay => {
+    const out = emptyVerificationDay()
+    for (const b of verificationByDay.values()) {
+      out.intervals += b.intervals
+      out.verifiedIntervals += b.verifiedIntervals
+      out.selfRepaired += b.selfRepaired
+      out.humanRescued += b.humanRescued
+      out.unresolved += b.unresolved
+      out.repairedNotCounted += b.repairedNotCounted
     }
     return out
   }
@@ -1560,13 +1644,13 @@ export function scan(
       userModifiedTrue: total((c) => c.userModifiedTrue),
     },
     verification: {
-      intervals: m.intervals,
-      verifiedIntervals: m.verifiedIntervals,
+      intervals: verificationTotal().intervals,
+      verifiedIntervals: verificationTotal().verifiedIntervals,
       todoWriteUsed: [...byDay.values()].some((c) => c.todoWriteUsed),
-      selfRepaired: m.selfRepaired,
-      humanRescued: m.humanRescued,
-      unresolved: m.unresolved,
-      repairedNotCounted: m.repairedNotCounted,
+      selfRepaired: verificationTotal().selfRepaired,
+      humanRescued: verificationTotal().humanRescued,
+      unresolved: verificationTotal().unresolved,
+      repairedNotCounted: verificationTotal().repairedNotCounted,
     },
     rootBundles: countKind('root'),
     orphanBundles: countKind('orphan'),
@@ -1623,6 +1707,9 @@ export function scan(
             callsPerBundle: Object.fromEntries(b.callsPerBundle),
           },
         ]),
+    ),
+    verificationPerDay: Object.fromEntries(
+      [...verificationByDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
     ),
     perSession: Object.fromEntries([...perSession.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     signatures: macs,

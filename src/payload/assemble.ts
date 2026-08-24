@@ -527,20 +527,25 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   // Axis 3. Condition (ii) needs a past window's command set, so a first window
   // drops it -- which makes verification easier to earn and reads high.
+  // Every one of axis 3's inputs is day-keyed, so all of them come from the
+  // window. The classification behind them is unchanged and still computed over
+  // the whole corpus: a rescue is a rescue and a first-seen class is first-seen
+  // whatever the boundary, and only where the result lands is windowed.
   const ver = verification({
-    intervals: counts.verification.intervals,
-    verifiedIntervals: counts.verification.verifiedIntervals,
-    selfRepaired: counts.verification.selfRepaired,
-    humanRescued: counts.verification.humanRescued,
-    unresolved: counts.verification.unresolved,
-    repairedNotCounted: counts.verification.repairedNotCounted,
-    todoWriteUsed: counts.verification.todoWriteUsed,
+    intervals: windowedCounts.verification.intervals,
+    verifiedIntervals: windowedCounts.verification.verifiedIntervals,
+    selfRepaired: windowedCounts.verification.selfRepaired,
+    humanRescued: windowedCounts.verification.humanRescued,
+    unresolved: windowedCounts.verification.unresolved,
+    repairedNotCounted: windowedCounts.verification.repairedNotCounted,
+    todoWriteUsed: windowedCounts.verification.todoWriteUsed,
     firstWindow: true,
   })
 
   const verificationAxis: Axis = {
+    // Every one of axis 3's inputs is windowed, so the axis is.
+    basis: WINDOW_BASIS,
     availability: ver.score === null ? 'not_applicable' : 'available',
-    basis: null,
     lineStates: lineStatesFor(ver.score !== null),
     metric: null,
     score: ver.score === null ? null : Math.round(ver.score * 100) / 100,
@@ -560,16 +565,16 @@ export function assemble(inputs: AssembleInputs): Assembled {
     ),
     detail: {
       intervals: ver.intervals,
-      verifiedIntervals: counts.verification.verifiedIntervals,
+      verifiedIntervals: windowedCounts.verification.verifiedIntervals,
       verifiedE4: Math.round((ver.v ?? 0) * 10_000),
       failures: ver.failures,
-      selfRepaired: counts.verification.selfRepaired,
-      humanRescued: counts.verification.humanRescued,
-      unresolved: counts.verification.unresolved,
+      selfRepaired: windowedCounts.verification.selfRepaired,
+      humanRescued: windowedCounts.verification.humanRescued,
+      unresolved: windowedCounts.verification.unresolved,
       // The fourth bucket. Without it the four numbers here do not sum to
       // `failures`, and a reader checking the arithmetic finds a gap with no
       // name -- which is how a term gets assumed to be zero.
-      repairedNotCounted: counts.verification.repairedNotCounted,
+      repairedNotCounted: windowedCounts.verification.repairedNotCounted,
       todoWriteUsed: counts.verification.todoWriteUsed ? 1 : 0,
     },
   }

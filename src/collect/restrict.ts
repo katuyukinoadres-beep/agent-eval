@@ -112,7 +112,7 @@ const mergeMaps = (
 }
 
 /** The row-level counts this view windows. Everything else is copied through. */
-const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures'] as const
+const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification'] as const
 
 /**
  * Families still taken from the corpus because they are not day-keyed yet.
@@ -121,7 +121,6 @@ const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBun
  * windowed numerator over an all-time denominator is a rate nobody can name.
  */
 const NOT_YET_WINDOWED = [
-  'verification',
   'editedPaths',
   'perSession',
   'perProject',
@@ -230,6 +229,30 @@ function repeatedOver(counts: ScanCounts, days: readonly string[]): readonly Hma
     .sort()
 }
 
+/** Axis 3's counters over the selected days. Plain sums: every term is additive. */
+function verificationOver(
+  counts: ScanCounts,
+  days: readonly string[],
+): Omit<ScanCounts['verification'], 'todoWriteUsed'> {
+  let intervals = 0
+  let verifiedIntervals = 0
+  let selfRepaired = 0
+  let humanRescued = 0
+  let unresolved = 0
+  let repairedNotCounted = 0
+  for (const day of days) {
+    const b = counts.verificationPerDay[day]
+    if (b === undefined) continue
+    intervals += b.intervals
+    verifiedIntervals += b.verifiedIntervals
+    selfRepaired += b.selfRepaired
+    humanRescued += b.humanRescued
+    unresolved += b.unresolved
+    repairedNotCounted += b.repairedNotCounted
+  }
+  return { intervals, verifiedIntervals, selfRepaired, humanRescued, unresolved, repairedNotCounted }
+}
+
 export function restrict(counts: ScanCounts, scope: WindowScope | null): Restricted {
   const days = scope === null ? null : scope.ordered
   const perDay = counts.perDay
@@ -282,8 +305,12 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
         userModifiedPresent: sumOver(perDay, days, (c) => c.userModifiedPresent),
         userModifiedTrue: sumOver(perDay, days, (c) => c.userModifiedTrue),
       },
+      // Intervals and repair episodes are charged to the day they opened on, so
+      // a verification or a recovery that arrives later still lands with the
+      // thing it belongs to. Cutting the follow-up at the boundary would make
+      // every window's newest edits read unverified.
       verification: {
-        ...counts.verification,
+        ...verificationOver(counts, selected),
         todoWriteUsed: anyOver(perDay, days, (c) => c.todoWriteUsed),
       },
       // Bundles and the terms divided by them leave the window together. A

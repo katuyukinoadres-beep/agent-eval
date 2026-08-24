@@ -66,6 +66,7 @@ const counts = {
   manualEdits: {
     editedNames: [], staleRecoveredPaths: [], userModifiedPresent: 0, userModifiedTrue: 0,
   },
+  verificationPerDay: {},
   verification: {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
     // Three episodes against the three failures the attribution routed to axis
