@@ -22,6 +22,7 @@ import { readWrite, recordWrite, type MutPathTally, type PathTally } from './art
 import { normalisePath, referenceIndex, type Mention, type ReferenceIndex } from './reference.js'
 import { classifyError, repeatRate, type ErrorClass, type RepeatRate } from './errorClass.js'
 import {
+  ATTRIBUTIONS,
   IN_AXIS2_NUMERATOR,
   IN_REPAIR_SPLIT,
   isExternalTool,
@@ -173,6 +174,13 @@ export interface ScanCounts {
   readonly taskBundles: number
   /** Bundles begun by a row whose parent was not in the file. Zero here. */
   readonly rootBundles: number
+  /**
+   * Bundles by the day they opened on, with roots and orphans split out.
+   *
+   * What the window selects over. Counted at emit from one map rather than
+   * tallied as the scan goes, so a bundle and its day cannot disagree.
+   */
+  readonly bundlesPerDay: Readonly<Record<string, { task: number; root: number; orphan: number }>>
   readonly orphanBundles: number
   /** P3 rows dropped from every numerator and denominator: 15 here. */
   readonly environmentNoiseRows: number
@@ -199,6 +207,8 @@ export interface ScanCounts {
   readonly errorRepeats: RepeatRate
   /** Axis 2's numerator terms, before weighting. */
   readonly wasted: WastedCounts
+  /** The same, by the day each bundle opened on. The window selects over this. */
+  readonly wastedPerDay: Readonly<Record<string, WastedCounts>>
   /**
    * The same terms again, split by session cluster.
    *
@@ -729,6 +739,9 @@ const repeatedOf = (macs: readonly Hmac128[]): readonly Hmac128[] => {
     .sort()
 }
 
+/** How a bundle came to exist. A delegation is opened by the request that spawned it. */
+type BundleKind = 'human' | 'root' | 'orphan' | 'delegation'
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -750,6 +763,7 @@ function reduceLine(
   st: MutSessionTally,
   notHuman: Map<string, number>,
   bundles: BundleTracker,
+  bundleDay: Map<number, { day: Day | null; kind: BundleKind }>,
   subBundle: number | null,
   paths: Map<string, MutPathTally>,
   refs: ReferenceIndex,
@@ -758,7 +772,7 @@ function reduceLine(
   macs: Hmac128[],
   sign: Signer | null,
   wasted: WastedTracker,
-  w: MutWasted,
+  wOf: (bundle: number | null) => MutWasted,
   met: MutMetabolism,
   manual: MutManualEdits,
   openEdits: Map<string, boolean>,
@@ -923,7 +937,35 @@ function reduceLine(
   // collapsed 294 files into one pseudo-bundle, which put every subagent
   // artifact the machine ever produced under a single three-per-bundle cap and
   // made repeat detection compare unrelated agents with each other.
-  const bundle = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : subBundle
+  const assigned = kind === 'main' ? bundles.assign(rowUuid, rowParent, human) : null
+  const bundle = kind === 'main' ? (assigned?.id ?? null) : subBundle
+
+  // A bundle belongs to the day of the row that opened it, and is recorded once.
+  // Every count that divides by bundles has to leave the window together with
+  // the bundle it divides by: charging a repeat to the row's day while the
+  // bundle it belongs to sits on another lets a numerator count on a day its
+  // denominator does not, and W moves for a boundary reason with nothing to
+  // show it.
+  if (assigned !== null && assigned.kind !== 'inherited' && !bundleDay.has(assigned.id)) {
+    bundleDay.set(assigned.id, { day, kind: assigned.kind })
+  }
+  // A delegation's id is allocated when its file opens, but its day is the day
+  // of its first row. Stamping it at file-open charged a bundle to the window
+  // before a single line had been read, so a delegation whose rows all fall
+  // outside the window still inflated the denominator.
+  if (kind === 'sub' && subBundle !== null && !bundleDay.has(subBundle)) {
+    bundleDay.set(subBundle, { day, kind: 'delegation' })
+    // Counted against the parent session here rather than at file-open, so the
+    // per-session tally and the machine-wide one register the same bundle at
+    // the same moment. `axis-denominator-close` compares them.
+    st.bundles += 1
+  }
+
+  // Axis 2's numerator lives on the same day as the bundle it will be divided
+  // by. Charging it to the row's day instead lets a repeat count on a day its
+  // bundle does not, which inflates W for a boundary reason with no counter
+  // moving to show it.
+  const w = wOf(bundle)
 
   // P6 — a write's landing place and size, from the result rather than the
   // call: the call says where, the result says how much.
@@ -1251,6 +1293,14 @@ export function scan(
   const perSession = new Map<string, MutSessionTally>()
   const seenClassBySession = new Map<string, Set<string>>()
   const subBundles = new Map<string, number>()
+  /**
+   * Each bundle's opening day, recorded once.
+   *
+   * The tallies for task bundles, chain roots and orphans are derived from this
+   * at emit rather than counted as they go, so a bundle and everything charged
+   * to it leave the window together.
+   */
+  const bundleDay = new Map<number, { day: Day | null; kind: BundleKind }>()
   const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
@@ -1263,10 +1313,44 @@ export function scan(
     inputPerBundleWithoutCache: new Map<number, number>(),
   }
   const wasted = wastedTracker()
-  const w: MutWasted = {
+  const emptyWasted = (): MutWasted => ({
     failures: 0, hookOriginated: 0, errorsObserved: 0, attribution: emptyTally(),
     writeRepeats: 0, investigationRepeats: 0,
     timedOut: 0, largeOutput: 0, callsPerBundle: new Map<string, number>(),
+  })
+  /**
+   * Axis 2's counters, keyed by the day the bundle opened on.
+   *
+   * Anchored by the denominator they are divided by. `w = numerator / bundles`,
+   * so a numerator term charged to the row's day while its bundle sits on
+   * another would let the numerator count on a day the denominator does not,
+   * and W would move for a boundary reason with no counter showing it.
+   */
+  const wByDay = new Map<string, MutWasted>()
+  const wOf = (bundle: number | null): MutWasted => {
+    const key = (bundle === null ? null : (bundleDay.get(bundle)?.day ?? null)) ?? 'undated'
+    let bucket = wByDay.get(key)
+    if (bucket === undefined) {
+      bucket = emptyWasted()
+      wByDay.set(key, bucket)
+    }
+    return bucket
+  }
+  /** Every day's counters folded into one. What the all-time view reports. */
+  const wTotal = (): MutWasted => {
+    const out = emptyWasted()
+    for (const b of wByDay.values()) {
+      out.failures += b.failures
+      out.hookOriginated += b.hookOriginated
+      out.errorsObserved += b.errorsObserved
+      out.writeRepeats += b.writeRepeats
+      out.investigationRepeats += b.investigationRepeats
+      out.timedOut += b.timedOut
+      out.largeOutput += b.largeOutput
+      for (const id of ATTRIBUTIONS) out.attribution[id] += b.attribution[id]
+      for (const [k, n] of b.callsPerBundle) out.callsPerBundle.set(k, (out.callsPerBundle.get(k) ?? 0) + n)
+    }
+    return out
   }
   let bundleSeq = 0
   const nextBundleId = (): number => { bundleSeq += 1; return bundleSeq }
@@ -1324,14 +1408,12 @@ export function scan(
       if (existing === undefined) {
         subBundle = nextBundleId()
         subBundles.set(file.group, subBundle)
-        m.taskBundles += 1
-        st.bundles += 1
       } else {
         subBundle = existing
       }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, w, met, manual, openEdits, pending, seenClasses, dayOffsetMinutes)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, wOf, met, manual, openEdits, pending, seenClasses, dayOffsetMinutes)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
@@ -1354,11 +1436,35 @@ export function scan(
       perSession.delete(file.sessionId)
       m.filesWithoutRows += 1
     }
-    const opened = bundles.opened() + bundles.roots() + bundles.orphans()
-    st.bundles += opened
-    m.taskBundles += opened
-    m.rootBundles += bundles.roots()
-    m.orphanBundles += bundles.orphans()
+    // Per-session tallies still count as they go; the machine-wide ones are
+    // derived from `bundleDay` at emit so a bundle and its day cannot disagree.
+    st.bundles += bundles.opened() + bundles.roots() + bundles.orphans()
+  }
+
+  const countKind = (want: BundleKind): number => {
+    let n = 0
+    for (const b of bundleDay.values()) if (b.kind === want) n += 1
+    return n
+  }
+
+  /**
+   * Bundles by the day they opened on.
+   *
+   * The window selects over this. A bundle and everything charged to it have to
+   * leave the window together — charging a repeat to the row's day while its
+   * bundle sits on another lets a numerator count on a day its denominator does
+   * not, and W moves for a boundary reason with nothing to show it.
+   */
+  const bundlesPerDay = (): Record<string, { task: number; root: number; orphan: number }> => {
+    const out: Record<string, { task: number; root: number; orphan: number }> = {}
+    for (const b of bundleDay.values()) {
+      const key = b.day ?? 'undated'
+      const bucket = (out[key] ??= { task: 0, root: 0, orphan: 0 })
+      bucket.task += 1
+      if (b.kind === 'root') bucket.root += 1
+      if (b.kind === 'orphan') bucket.orphan += 1
+    }
+    return out
   }
 
   let repeated = 0
@@ -1385,7 +1491,7 @@ export function scan(
     humanTurns: total((c) => c.humanTurns),
     originHumanRows: total((c) => c.originHumanRows),
     notHumanCounts: Object.fromEntries([...notHuman.entries()].sort()),
-    taskBundles: m.taskBundles,
+    taskBundles: bundleDay.size,
     toolActivityRows: total((c) => c.toolActivityRows),
     metabolism: {
       skillsListed: [...met.skillsListed].sort(),
@@ -1414,8 +1520,9 @@ export function scan(
       unresolved: m.unresolved,
       repairedNotCounted: m.repairedNotCounted,
     },
-    rootBundles: m.rootBundles,
-    orphanBundles: m.orphanBundles,
+    rootBundles: countKind('root'),
+    orphanBundles: countKind('orphan'),
+    bundlesPerDay: bundlesPerDay(),
     environmentNoiseRows: total((c) => c.environmentNoiseRows),
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
@@ -1424,7 +1531,9 @@ export function scan(
     ambiguousBasenames: refs.ambiguousBasenames(),
     referenceTokens: refs.size(),
     errorRepeats: repeatRate(tuples),
-    wasted: {
+    wasted: (() => {
+      const w = wTotal()
+      return {
       failures: w.failures,
       hookOriginated: w.hookOriginated,
       errorsObserved: w.errorsObserved,
@@ -1435,7 +1544,34 @@ export function scan(
       timedOut: w.timedOut,
       largeOutput: w.largeOutput,
       callsPerBundle: Object.fromEntries(w.callsPerBundle),
-    },
+      }
+    })(),
+    /**
+     * The same, by the day each bundle opened on. What the window selects over.
+     *
+     * `closure` is recomputed per day rather than apportioned, because a
+     * partition that closes in aggregate can fail for one day — which is the
+     * class of mistake day-keying introduces.
+     */
+    wastedPerDay: Object.fromEntries(
+      [...wByDay.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([day, b]) => [
+          day,
+          {
+            failures: b.failures,
+            hookOriginated: b.hookOriginated,
+            errorsObserved: b.errorsObserved,
+            attribution: { ...b.attribution },
+            closure: closure(b.attribution, b.errorsObserved),
+            writeRepeats: b.writeRepeats,
+            investigationRepeats: b.investigationRepeats,
+            timedOut: b.timedOut,
+            largeOutput: b.largeOutput,
+            callsPerBundle: Object.fromEntries(b.callsPerBundle),
+          },
+        ]),
+    ),
     perSession: Object.fromEntries([...perSession.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     signatures: macs,
     signaturesRepeated: repeatedOf(macs),

@@ -60,7 +60,7 @@ const counts = {
   perProject: { p1: { lines: 1_000, subLines: 400, humanRows: 15 } },
   notHumanCounts: {},
   taskBundles: 40,
-  rootBundles: 0,
+  rootBundles: 0, bundlesPerDay: {},
   orphanBundles: 0,
   environmentNoiseRows: 0,
   editedPaths: {},
@@ -85,6 +85,7 @@ const counts = {
     intervals: 30, verifiedIntervals: 10, todoWriteUsed: true,
     selfRepaired: 2, humanRescued: 1, unresolved: 1, repairedNotCounted: 0,
   },
+  wastedPerDay: {},
   wasted: {
     failures: 10,
     hookOriginated: 0,

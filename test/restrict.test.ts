@@ -149,7 +149,11 @@ describe('what the view says about itself', () => {
     const { basis } = restrict(c, scope)
     expect(basis.windowed.length).toBeGreaterThan(0)
     expect(basis.allTime).toContain('linesParseFailed')
-    expect(basis.allTime).toContain('taskBundles')
+    // `taskBundles` moved out of this list when it started being windowed —
+    // the list is only worth having if editing it is what moving a counter
+    // costs.
+    expect(basis.windowed).toContain('taskBundles')
+    expect(basis.allTime).toContain('errorRepeats')
     for (const key of Object.keys(ALL_TIME_REASONS)) {
       expect(ALL_TIME_REASONS[key], key).toBeTruthy()
     }

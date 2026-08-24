@@ -17,6 +17,8 @@
  * everything and a filter that did nothing at all would look correct.
  */
 
+import { closure, emptyTally, ATTRIBUTIONS } from './attribution.js'
+import type { WastedCounts } from './wasted.js'
 import type { DayCounts, ScanCounts } from './scan.js'
 import type { WindowScope } from './scope.js'
 
@@ -108,7 +110,7 @@ const mergeMaps = (
 }
 
 /** The row-level counts this view windows. Everything else is copied through. */
-const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds'] as const
+const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted'] as const
 
 /**
  * Families still taken from the corpus because they are not day-keyed yet.
@@ -117,8 +119,6 @@ const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds'] as const
  * windowed numerator over an all-time denominator is a rate nobody can name.
  */
 const NOT_YET_WINDOWED = [
-  'taskBundles',
-  'wasted',
   'errorRepeats',
   'signatures',
   'verification',
@@ -132,6 +132,56 @@ const NOT_YET_WINDOWED = [
 export interface Restricted {
   readonly counts: ScanCounts
   readonly basis: WindowBasis
+}
+
+/**
+ * Axis 2's counters over the selected days.
+ *
+ * `closure` is recomputed from the filtered tally rather than summed from the
+ * per-day ones. A partition that closes in aggregate can be wrong for a single
+ * day, and a `balanced` carried forward from the daily buckets would be true
+ * for free — which is worse than no check, because it reports success.
+ */
+function wastedOver(
+  perDay: Readonly<Record<string, WastedCounts>>,
+  days: readonly string[],
+): WastedCounts {
+  const attribution = emptyTally()
+  const callsPerBundle: Record<string, number> = {}
+  let failures = 0
+  let hookOriginated = 0
+  let errorsObserved = 0
+  let writeRepeats = 0
+  let investigationRepeats = 0
+  let timedOut = 0
+  let largeOutput = 0
+  for (const day of days) {
+    const b = perDay[day]
+    if (b === undefined) continue
+    failures += b.failures
+    hookOriginated += b.hookOriginated
+    errorsObserved += b.errorsObserved
+    writeRepeats += b.writeRepeats
+    investigationRepeats += b.investigationRepeats
+    timedOut += b.timedOut
+    largeOutput += b.largeOutput
+    for (const id of ATTRIBUTIONS) attribution[id] += b.attribution[id]
+    for (const [k, n] of Object.entries(b.callsPerBundle)) {
+      callsPerBundle[k] = (callsPerBundle[k] ?? 0) + n
+    }
+  }
+  return {
+    failures,
+    hookOriginated,
+    errorsObserved,
+    attribution,
+    closure: closure(attribution, errorsObserved),
+    writeRepeats,
+    investigationRepeats,
+    timedOut,
+    largeOutput,
+    callsPerBundle,
+  }
 }
 
 export function restrict(counts: ScanCounts, scope: WindowScope | null): Restricted {
@@ -151,6 +201,9 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
   // from the day buckets would make the negative control test the rebuild
   // rather than the original.
   if (scope === null) return { counts, basis }
+
+  // Non-null past this point, which the day-indexed lookups below rely on.
+  const selected: readonly string[] = scope.ordered
 
   return {
     counts: {
@@ -187,6 +240,13 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
         ...counts.verification,
         todoWriteUsed: anyOver(perDay, days, (c) => c.todoWriteUsed),
       },
+      // Bundles and the terms divided by them leave the window together. A
+      // windowed denominator under a corpus-wide numerator inflates W, and no
+      // counter moves to show it.
+      taskBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.task ?? 0), 0),
+      rootBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.root ?? 0), 0),
+      orphanBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.orphan ?? 0), 0),
+      wasted: wastedOver(counts.wastedPerDay, selected),
     },
     basis,
   }

@@ -54,7 +54,7 @@ const counts = {
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
   signaturesRepeated: [],
   signaturesSigned: true,
-  taskBundles: 5, rootBundles: 0, orphanBundles: 0, toolActivityRows: 50,
+  taskBundles: 5, rootBundles: 0, bundlesPerDay: {}, orphanBundles: 0, toolActivityRows: 50,
   environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null, referenceTokens: 0,
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
   metabolism: {
@@ -71,6 +71,7 @@ const counts = {
     // boundary, which is where it is worth pinning.
     selfRepaired: 2, humanRescued: 1, unresolved: 0, repairedNotCounted: 0,
   },
+  wastedPerDay: {},
   wasted: {
     failures: 3, hookOriginated: 0, writeRepeats: 1, investigationRepeats: 1,
     timedOut: 0, largeOutput: 0, callsPerBundle: { b1: 4 },
