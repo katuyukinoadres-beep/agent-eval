@@ -152,7 +152,7 @@ export const ACTIVE_DAYS_METHOD = /^union-of-observed\(([a-zA-Z, ]+)\)$/
 // from a statistic without losing the submission. Everything here describes a
 // reading that is probably wrong rather than certainly malformed.
 
-export const FLAG_IDS = ['W-1', 'W-2', 'W-3', 'W-5', 'W-6', 'W-7', 'W-8'] as const
+export const FLAG_IDS = ['W-1', 'W-2', 'W-3', 'W-5', 'W-6', 'W-7', 'W-8', 'W-9'] as const
 
 export type FlagId = (typeof FLAG_IDS)[number]
 
@@ -171,6 +171,11 @@ export const FLAG_REASONS: Readonly<Record<FlagId, string>> = {
   'W-6': 'a boolean-derived numerator is zero over a large denominator — indistinguishable from a field that never fires',
   'W-7': 'a rate with a zero denominator, which passes V-4 and sits under W-6 threshold',
   'W-8': 'an axis excluded from the composite is parse_failed rather than merely not_applicable — the log could not be read, not the environment quiet',
+  // Local, not from the spec. The numbered W rules above are the spec's; this
+  // one exists because the sending side can be honest about a gap the spec
+  // never anticipated: a meaning string that promises a window over a count
+  // that was taken over the whole corpus.
+  'W-9': 'a count declares a period its basis does not match — comparing it with a genuinely windowed submission compares two different quantities',
 }
 
 /** v2 §12.2: below this nominal weight, one axis can carry 39% of the total. */

@@ -340,6 +340,16 @@ export interface ScanCounts {
   /** The same cut on UTC, so the effect of the boundary is visible. */
   readonly humanTurnDatesUtc: readonly Day[]
   /**
+   * Every day-keyed counter, by day, plus the `undated` bucket.
+   *
+   * The window is a selection over these rather than a filter over rows. Rows
+   * are never dropped during the pass, so the parentUuid chain, the repeat
+   * detector's first occurrences, the per-session first-seen classes and the
+   * artifact censor all see the corpus they always saw. Only the attribution of
+   * a count to a day is windowed.
+   */
+  readonly perDay: Readonly<Record<string, DayCounts>>
+  /**
    * Per-project line tallies, keyed by project directory name.
    *
    * The aggregate cannot show a partial miss. Four of five projects on this
@@ -495,14 +505,17 @@ interface DateSets {
   readonly humanTurnUtc: Set<Day>
 }
 
-interface Mut {
-  linesRead: number
-  linesParseFailed: number
-  filesUnreadable: number
-  filesWithoutRows: number
-  bytesRead: number
-  mainLines: number
-  subLines: number
+/**
+ * Counters that belong to a calendar day.
+ *
+ * Kept per day rather than summed, so the window is a selection over aggregates
+ * instead of a filter over rows. Nothing is dropped during the pass: the
+ * reducer sees the same corpus it always did, so the parentUuid chain, the
+ * repeat detector's first occurrences, the per-session first-seen classes and
+ * the artifact censor all keep working. Only the attribution of a count to a
+ * day is windowed.
+ */
+export interface DayCounts {
   toolResultTotal: number
   toolUseTotal: number
   toolUseFiltered: number
@@ -516,22 +529,10 @@ interface Mut {
   denialRows: number
   denialUserRejected: number
   denialKinds: Map<string, number>
-  sessionIdMismatchRows: number
-  taskBundles: number
   toolActivityRows: number
-  listingChars: number
-  listingTruncated: boolean
   userModifiedPresent: number
   userModifiedTrue: number
-  intervals: number
-  verifiedIntervals: number
   todoWriteUsed: boolean
-  selfRepaired: number
-  humanRescued: number
-  unresolved: number
-  repairedNotCounted: number
-  rootBundles: number
-  orphanBundles: number
   environmentNoiseRows: number
   stopHookSummaryRows: number
   hookErrorsNonEmpty: number
@@ -539,7 +540,77 @@ interface Mut {
   output: number
   cacheRead: number
   cacheCreation: number
+  /** Rows charged to this day. The windowed counterpart of `linesRead`. */
+  rows: number
 }
+
+/**
+ * Counters that belong to the corpus and cannot be windowed.
+ *
+ * Declared rather than defaulted into. `linesParseFailed` is the sharpest case:
+ * a line that will not parse has no timestamp, so a windowed version is zero by
+ * construction and the parse-failure gate becomes decoration — a detector
+ * returning a well-formed zero. The file counters come from `statSync` and
+ * belong to files rather than rows.
+ */
+interface AllTime {
+  linesRead: number
+  linesParseFailed: number
+  filesUnreadable: number
+  filesWithoutRows: number
+  bytesRead: number
+  mainLines: number
+  subLines: number
+  sessionIdMismatchRows: number
+  taskBundles: number
+  listingChars: number
+  listingTruncated: boolean
+  intervals: number
+  verifiedIntervals: number
+  selfRepaired: number
+  humanRescued: number
+  unresolved: number
+  repairedNotCounted: number
+  rootBundles: number
+  orphanBundles: number
+}
+
+interface Mut extends AllTime {
+  /** Per-day counters, and the `undated` bucket for rows with no timestamp. */
+  readonly byDay: Map<string, DayCounts>
+  /** The bucket for a day, created on first use. Null is the undated bucket. */
+  on(day: string | null): DayCounts
+}
+
+const UNDATED = 'undated'
+
+const emptyDayCounts = (): DayCounts => ({
+  toolResultTotal: 0,
+  toolUseTotal: 0,
+  toolUseFiltered: 0,
+  toolResultWithIsErrorKey: 0,
+  toolResultIsErrorTrue: 0,
+  attributionSkillRows: 0,
+  userRows: 0,
+  originBearingUserRows: 0,
+  humanTurns: 0,
+  originHumanRows: 0,
+  denialRows: 0,
+  denialUserRejected: 0,
+  denialKinds: new Map<string, number>(),
+  toolActivityRows: 0,
+  userModifiedPresent: 0,
+  userModifiedTrue: 0,
+  todoWriteUsed: false,
+  environmentNoiseRows: 0,
+  stopHookSummaryRows: 0,
+  hookErrorsNonEmpty: 0,
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheCreation: 0,
+  rows: 0,
+})
 
 /** The text of a tool_result, flattened. Read locally, classified, discarded. */
 function resultText(block: Record<string, unknown>): string {
@@ -722,6 +793,14 @@ function reduceLine(
     return
   }
 
+  // The day first, because every counter below belongs to one. Rows with no
+  // parsable timestamp go to the undated bucket, which is never in any window.
+  const tsEarly = row['timestamp']
+  const day = dayOf(tsEarly, dayOffsetMinutes)
+  const dayUtc = dayOffsetMinutes === 0 ? day : dayOf(tsEarly, 0)
+  const d = m.on(day)
+  d.rows += 1
+
   const rowUuid = typeof row['uuid'] === 'string' ? (row['uuid'] as string) : null
   const rowParent = typeof row['parentUuid'] === 'string' ? (row['parentUuid'] as string) : null
 
@@ -733,7 +812,7 @@ function reduceLine(
   // the chain orphans their children, which showed up as 7 orphan bundles
   // against a measured zero unresolvable parents.
   if (isEnvironmentNoise(row)) {
-    m.environmentNoiseRows += 1
+    d.environmentNoiseRows += 1
     if (kind === 'main') bundles.assign(rowUuid, rowParent, false)
     return
   }
@@ -749,18 +828,12 @@ function reduceLine(
   const sessionId = row['sessionId']
   if (typeof sessionId === 'string' && sessionId !== fileSession) m.sessionIdMismatchRows += 1
 
-  const ts = row['timestamp']
-  // Parsed, not sliced, and against a named boundary. `ts.slice(0, 10)` reads
-  // the UTC day out of the string without saying so, and this corpus has 10
-  // human-turn days under UTC and 11 under +09:00 -- against a ten-day window,
-  // that is the difference between a filter and a no-op.
-  const day = dayOf(ts, dayOffsetMinutes)
-  const dayUtc = dayOffsetMinutes === 0 ? day : dayOf(ts, 0)
+  const ts = tsEarly
   if (day !== null) dates.all.add(day)
 
   const skill = row['attributionSkill']
   if (typeof skill === 'string' && skill.length > 0) {
-    m.attributionSkillRows += 1
+    d.attributionSkillRows += 1
     skills.add(skill)
     met.skillFirings.set(skill, (met.skillFirings.get(skill) ?? 0) + 1)
   }
@@ -808,29 +881,29 @@ function reduceLine(
   const denial = row['toolDenialKind']
   const denialKind = typeof denial === 'string' && denial.length > 0 ? denial : null
   if (denialKind !== null) {
-    m.denialRows += 1
-    if (denialKind === 'user-rejected') m.denialUserRejected += 1
+    d.denialRows += 1
+    if (denialKind === 'user-rejected') d.denialUserRejected += 1
     // Kept by name. The spec's union has two members and this machine emits
     // four; the two extra carry 95 of 412 failures here and none at all on the
     // machine the spec was written against. A value nobody enumerated is how an
     // environment-specific figure gets read as an environment difference.
-    m.denialKinds.set(denialKind, (m.denialKinds.get(denialKind) ?? 0) + 1)
+    d.denialKinds.set(denialKind, (d.denialKinds.get(denialKind) ?? 0) + 1)
   }
 
   let human = false
   if (row['type'] === 'user') {
-    m.userRows += 1
+    d.userRows += 1
     if (day !== null) dates.userRow.add(day)
     const origin = row['origin']
     if (isObj(origin)) {
-      m.originBearingUserRows += 1
+      d.originBearingUserRows += 1
       // Supporting signal only. v1: a missing key does not mean not human.
-      if (origin['kind'] === 'human') m.originHumanRows += 1
+      if (origin['kind'] === 'human') d.originHumanRows += 1
     }
     const why = notHumanBecause(row, kind === 'sub')
     if (why === null) {
       human = true
-      m.humanTurns += 1
+      d.humanTurns += 1
       // A human turn between a failure and its recovery makes the recovery a
       // rescue rather than a repair. v1 splits the two and deducts for neither.
       for (const st of pending.values()) st.humanSince = true
@@ -859,8 +932,8 @@ function reduceLine(
     // Counted, not consulted. Present 766 times and true 0 times here, which is
     // the fourth uniformly dead boolean this log has produced.
     if ('userModified' in result) {
-      m.userModifiedPresent += 1
-      if (result['userModified'] === true) m.userModifiedTrue += 1
+      d.userModifiedPresent += 1
+      if (result['userModified'] === true) d.userModifiedTrue += 1
     }
     if (result['staleRecovered'] === true) {
       const fp = result['filePath']
@@ -886,12 +959,12 @@ function reduceLine(
   if (human) refs.note(userText(row), typeof ts === 'string' ? ts : null, bundle)
 
   if (row['subtype'] === 'stop_hook_summary') {
-    m.stopHookSummaryRows += 1
+    d.stopHookSummaryRows += 1
     const errs = row['hookErrors']
     // Non-empty hookErrors, not preventedContinuation. The boolean is false on
     // every one of these rows on both machines, including the ones where a hook
     // really did refuse the response.
-    if (Array.isArray(errs) && errs.length > 0) m.hookErrorsNonEmpty += 1
+    if (Array.isArray(errs) && errs.length > 0) d.hookErrorsNonEmpty += 1
   }
 
   const message = row['message']
@@ -900,10 +973,10 @@ function reduceLine(
   const usage = message['usage']
   if (isObj(usage)) {
     const n = (k: string): number => (typeof usage[k] === 'number' ? (usage[k] as number) : 0)
-    m.input += n('input_tokens')
-    m.output += n('output_tokens')
-    m.cacheRead += n('cache_read_input_tokens')
-    m.cacheCreation += n('cache_creation_input_tokens')
+    d.input += n('input_tokens')
+    d.output += n('output_tokens')
+    d.cacheRead += n('cache_read_input_tokens')
+    d.cacheCreation += n('cache_creation_input_tokens')
     const effective = n('input_tokens') + n('cache_read_input_tokens')
     if (effective > 0) met.effectiveInputPerCall.push(effective)
     // Per bundle, which is what the axis is defined on. A row with no bundle
@@ -928,14 +1001,14 @@ function reduceLine(
   if (!Array.isArray(content)) return
   // Counted once per row, not per block: lineStates has to sum to linesRead.
   if (content.some((b) => isObj(b) && (b['type'] === 'tool_use' || b['type'] === 'tool_result'))) {
-    m.toolActivityRows += 1
+    d.toolActivityRows += 1
   }
   for (const block of content) {
     if (!isObj(block)) continue
     if (block['type'] === 'tool_result') {
-      m.toolResultTotal += 1
+      d.toolResultTotal += 1
       if ('is_error' in block) {
-        m.toolResultWithIsErrorKey += 1
+        d.toolResultWithIsErrorKey += 1
         const okId = block['tool_use_id']
         if (block['is_error'] !== true && typeof okId === 'string') {
           const okCall = toolOf.get(okId)
@@ -959,7 +1032,7 @@ function reduceLine(
           }
         }
         if (block['is_error'] === true) {
-          m.toolResultIsErrorTrue += 1
+          d.toolResultIsErrorTrue += 1
           w.errorsObserved += 1
           const text = resultText(block)
           // Joined to the call by tool_use_id. Without the join the class is
@@ -1027,15 +1100,15 @@ function reduceLine(
     } else if (block['type'] === 'tool_use') {
       const id = block['id']
       const toolName = block['name']
-      m.toolUseTotal += 1
+      d.toolUseTotal += 1
       // Axis 2's availability is defined on filtered tool_use. The network is
       // not the environment under test, so it does not count towards having
       // enough evidence to judge one.
-      if (typeof toolName !== 'string' || !isExternalTool(toolName)) m.toolUseFiltered += 1
+      if (typeof toolName !== 'string' || !isExternalTool(toolName)) d.toolUseFiltered += 1
       if (typeof id === 'string' && typeof toolName === 'string') {
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
       }
-      if (toolName === 'TodoWrite') m.todoWriteUsed = true
+      if (toolName === 'TodoWrite') d.todoWriteUsed = true
       if (typeof toolName === 'string' && isObj(block['input'])) {
         const input = block['input'] as Record<string, unknown>
         if (EDIT_TOOLS.has(toolName)) {
@@ -1130,14 +1203,37 @@ export function scan(
    */
   dayOffsetMinutes: number,
 ): ScanCounts {
+  const byDay = new Map<string, DayCounts>()
   const m: Mut = {
     linesRead: 0, linesParseFailed: 0, filesUnreadable: 0, filesWithoutRows: 0, bytesRead: 0, mainLines: 0, subLines: 0,
-    toolResultTotal: 0, toolUseTotal: 0, toolUseFiltered: 0, toolResultWithIsErrorKey: 0, toolResultIsErrorTrue: 0,
-    attributionSkillRows: 0, userRows: 0, originBearingUserRows: 0, humanTurns: 0, originHumanRows: 0,
-    denialRows: 0, denialUserRejected: 0, denialKinds: new Map<string, number>(), sessionIdMismatchRows: 0, taskBundles: 0, toolActivityRows: 0, listingChars: 0, listingTruncated: false, userModifiedPresent: 0, userModifiedTrue: 0,
-    intervals: 0, verifiedIntervals: 0, todoWriteUsed: false,
-    selfRepaired: 0, humanRescued: 0, unresolved: 0, repairedNotCounted: 0, rootBundles: 0, orphanBundles: 0, environmentNoiseRows: 0, stopHookSummaryRows: 0, hookErrorsNonEmpty: 0,
-    input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
+    sessionIdMismatchRows: 0, taskBundles: 0, listingChars: 0, listingTruncated: false,
+    intervals: 0, verifiedIntervals: 0,
+    selfRepaired: 0, humanRescued: 0, unresolved: 0, repairedNotCounted: 0, rootBundles: 0, orphanBundles: 0,
+    byDay,
+    on(day: string | null): DayCounts {
+      const key = day ?? UNDATED
+      let bucket = byDay.get(key)
+      if (bucket === undefined) {
+        bucket = emptyDayCounts()
+        byDay.set(key, bucket)
+      }
+      return bucket
+    },
+  }
+  /** The per-day denial-kind maps merged. */
+  const mergedDenialKinds = (): Map<string, number> => {
+    const out = new Map<string, number>()
+    for (const c of byDay.values()) {
+      for (const [k, n] of c.denialKinds) out.set(k, (out.get(k) ?? 0) + n)
+    }
+    return out
+  }
+
+  /** Every day-keyed counter summed. What the all-time view reports. */
+  const total = (pick: (c: DayCounts) => number): number => {
+    let n = 0
+    for (const c of byDay.values()) n += pick(c)
+    return n
   }
   const skills = new Set<string>()
   const mcp = new Set<string>()
@@ -1276,21 +1372,21 @@ export function scan(
     bytesRead: m.bytesRead,
     mainLines: m.mainLines,
     subLines: m.subLines,
-    toolResultTotal: m.toolResultTotal,
-    toolUseTotal: m.toolUseTotal,
-    toolUseFiltered: m.toolUseFiltered,
-    toolResultWithIsErrorKey: m.toolResultWithIsErrorKey,
-    toolResultIsErrorTrue: m.toolResultIsErrorTrue,
-    attributionSkillRows: m.attributionSkillRows,
+    toolResultTotal: total((c) => c.toolResultTotal),
+    toolUseTotal: total((c) => c.toolUseTotal),
+    toolUseFiltered: total((c) => c.toolUseFiltered),
+    toolResultWithIsErrorKey: total((c) => c.toolResultWithIsErrorKey),
+    toolResultIsErrorTrue: total((c) => c.toolResultIsErrorTrue),
+    attributionSkillRows: total((c) => c.attributionSkillRows),
     attributionSkillDistinct: skills.size,
     mcpServerDistinct: mcp.size,
-    userRows: m.userRows,
-    originBearingUserRows: m.originBearingUserRows,
-    humanTurns: m.humanTurns,
-    originHumanRows: m.originHumanRows,
+    userRows: total((c) => c.userRows),
+    originBearingUserRows: total((c) => c.originBearingUserRows),
+    humanTurns: total((c) => c.humanTurns),
+    originHumanRows: total((c) => c.originHumanRows),
     notHumanCounts: Object.fromEntries([...notHuman.entries()].sort()),
     taskBundles: m.taskBundles,
-    toolActivityRows: m.toolActivityRows,
+    toolActivityRows: total((c) => c.toolActivityRows),
     metabolism: {
       skillsListed: [...met.skillsListed].sort(),
       listingChars: m.listingChars,
@@ -1306,13 +1402,13 @@ export function scan(
     manualEdits: {
       editedNames: [...manual.editedNames].sort(),
       staleRecoveredPaths: [...manual.staleRecoveredPaths].sort(),
-      userModifiedPresent: m.userModifiedPresent,
-      userModifiedTrue: m.userModifiedTrue,
+      userModifiedPresent: total((c) => c.userModifiedPresent),
+      userModifiedTrue: total((c) => c.userModifiedTrue),
     },
     verification: {
       intervals: m.intervals,
       verifiedIntervals: m.verifiedIntervals,
-      todoWriteUsed: m.todoWriteUsed,
+      todoWriteUsed: [...byDay.values()].some((c) => c.todoWriteUsed),
       selfRepaired: m.selfRepaired,
       humanRescued: m.humanRescued,
       unresolved: m.unresolved,
@@ -1320,7 +1416,7 @@ export function scan(
     },
     rootBundles: m.rootBundles,
     orphanBundles: m.orphanBundles,
-    environmentNoiseRows: m.environmentNoiseRows,
+    environmentNoiseRows: total((c) => c.environmentNoiseRows),
     editedPaths: Object.fromEntries([...paths.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     lastMention: refs.lastMention,
     lastMentionIn: refs.lastMentionIn,
@@ -1344,18 +1440,18 @@ export function scan(
     signatures: macs,
     signaturesRepeated: repeatedOf(macs),
     signaturesSigned: sign !== null,
-    denialRows: m.denialRows,
-    denialUserRejected: m.denialUserRejected,
-    denialKinds: Object.fromEntries([...m.denialKinds.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
+    denialRows: total((c) => c.denialRows),
+    denialUserRejected: total((c) => c.denialUserRejected),
+    denialKinds: Object.fromEntries([...mergedDenialKinds().entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     editedFilesDistinct: edits.size,
     editedFilesRepeated: repeated,
-    stopHookSummaryRows: m.stopHookSummaryRows,
-    hookErrorsNonEmpty: m.hookErrorsNonEmpty,
+    stopHookSummaryRows: total((c) => c.stopHookSummaryRows),
+    hookErrorsNonEmpty: total((c) => c.hookErrorsNonEmpty),
     tokens: {
-      input: m.input,
-      output: m.output,
-      cacheRead: m.cacheRead,
-      cacheCreation: m.cacheCreation,
+      input: total((c) => c.input),
+      output: total((c) => c.output),
+      cacheRead: total((c) => c.cacheRead),
+      cacheCreation: total((c) => c.cacheCreation),
     },
     toolVersions: Object.fromEntries([...versions.entries()].sort()),
     sessionIds: [...sessions].sort(),
@@ -1364,6 +1460,7 @@ export function scan(
     userRowDates: [...dates.userRow].sort(),
     humanTurnDates: [...dates.humanTurn].sort(),
     humanTurnDatesUtc: [...dates.humanTurnUtc].sort(),
+    perDay: Object.fromEntries([...byDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     perProject: Object.fromEntries([...perProject.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
   }
 }

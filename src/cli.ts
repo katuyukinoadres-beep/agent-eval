@@ -10,6 +10,8 @@
 import { FIXTURE_NAMES, emit, isFixtureName } from './payload/emit.js'
 import { defaultOptions, run as runScan } from './run.js'
 import type { Flag, Violation } from './validate/index.js'
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { VERSION } from './version.js'
 
 const HELP = [
@@ -165,6 +167,10 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // Printed even at zero. A file that failed to open leaves every total short
     // together, so the identities still close and the gate still passes.
     `           ${m.filesUnreadable} unreadable, ${m.filesWithoutRows} with no rows`,
+    // A row with no timestamp belongs to no window, so this is the standing
+    // difference between a windowed count and its corpus-wide twin. Too large
+    // here to leave a reader to infer from a gap between two totals.
+    `           ${m.undatedRows} undated (in no window), ${m.rowsOutOfWindow.total} rows out of window`,
     `           main ${m.mainLines} / sub ${m.subLines} (share ${m.subLineRatio})`,
     `projects   ${payload.environment.projectCount}`,
     `versions   ${m.toolVersionDistinct}`,
@@ -175,8 +181,23 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // means the window cut nothing — a figure that did not move is not evidence
     // it works.
     `           ${w.activeDaysInWindow}/${w.activeDays} in window (${w.windowStart ?? '-'}..${w.windowEnd ?? '-'}), boundary ${w.dayBoundary}, ${w.activeDaysUtc} under UTC`,
+    // The day the run happened on is reported and not scored. A day still being
+    // written is a fraction of a day, and a window slot spent on it evicts a
+    // whole one.
+    `           ${w.inFlightDay === null ? 'no work today yet' : `today ${w.inFlightDay} in flight, not scored`}${w.includesInFlightDay ? ' (first window: used anyway)' : ''}`,
+    // Said plainly while it is true. The window applies to the manifest's rate
+    // metrics and not to the axis scores, and a reader who takes the block
+    // above for the scope of the scores below has been misled by layout alone.
+    ...(m.countBasis.period === 'window'
+      ? []
+      : [
+          '           🚨 the window applies to the rates above; the axis scores below are over the whole corpus',
+          ...(m.basisMismatch.length === 0
+            ? []
+            : [`           🚨 ${m.basisMismatch.length} count(s) declare a period their basis does not match`]),
+        ]),
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
-    `record     ${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`,
+    `record     ${m.externalLog.recordRate === null ? 'no day to divide by' : `${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`}`,
     '',
     // The path is not printed. It is `<home>/.agent-eval`, so it carries the
     // OS username, and this output is meant to be pasteable into an issue.
@@ -244,9 +265,36 @@ export function run(argv: readonly string[]): { readonly code: number; readonly 
   return { code: 2, out: `unknown argument: ${cmd}` }
 }
 
+/**
+ * Whether two paths name the same file on disk.
+ *
+ * Resolved, not compared as text. The check this replaces was
+ * `import.meta.url.endsWith(argv[1])`, and those are not the same kind of
+ * string: `import.meta.url` is a percent-encoded `file://` URL while `argv[1]`
+ * is a raw path. A home directory called `C:\Users\First Last` gives
+ * `with%20space` on one side and a literal space on the other, and they differ
+ * again whenever a symlink is involved — which is precisely what `npm i -g`
+ * creates on POSIX.
+ *
+ * The failure was silent in the worst way available. No match meant the body
+ * below never ran, so the command printed nothing and exited 0: no message, no
+ * stack, nothing to paste into an issue. Reproduced here — `--version` from a
+ * path containing a space produced zero bytes and exit 0.
+ *
+ * No test caught it because not one of the suite's tests spawns the built
+ * binary. The shipped artifact was the only thing never exercised.
+ */
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    return realpathSync(a) === realpathSync(b)
+  } catch {
+    return false
+  }
+}
+
 // Only act when executed directly, so importing this from a test does not run it.
 const entry = process.argv[1]
-if (entry !== undefined && import.meta.url.endsWith(entry.split('\\').join('/'))) {
+if (entry !== undefined && sameFile(fileURLToPath(import.meta.url), entry)) {
   const { code, out } = run(process.argv.slice(2))
   ;(code === 0 ? process.stdout : process.stderr).write(`${out}\n`)
   process.exit(code)

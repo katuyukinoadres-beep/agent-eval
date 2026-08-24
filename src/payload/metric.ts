@@ -115,6 +115,16 @@ export interface Metric {
   readonly denominator: number
   readonly denominatorMeaning: DenominatorMeaning
   readonly sourceField: SourceField
+  /**
+   * How this one was counted, when it differs from the manifest's.
+   *
+   * Absent means the manifest's `countBasis` applies, which is what the manifest
+   * says. Present means this count was taken on a different basis and says so
+   * where a reader will look — the alternative is a single manifest-level word
+   * covering two periods, which is the under-specified number this module
+   * exists to make unbuildable.
+   */
+  readonly basis?: CountBasis
 }
 
 // ── how a count was counted ───────────────────────────────────────────────────

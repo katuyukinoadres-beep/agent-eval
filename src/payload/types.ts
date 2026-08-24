@@ -12,7 +12,7 @@
  * A number never travels without its denominator. See ./metric.ts.
  */
 
-import type { Count, CountBasis, Metric } from './metric.js'
+import type { Count, CountBasis, Metric, CountPeriod } from './metric.js'
 import type { Composite, OmittedTerm } from '../score/composite.js'
 
 // ── branded leaves ────────────────────────────────────────────────────────────
@@ -234,6 +234,17 @@ export interface Window {
   readonly windowStart: string | null
   readonly windowEnd: string | null
   /**
+   * The day this run happened on, when it carried work. Reported, not scored.
+   *
+   * The window is built from complete days: the median day here is 6.9% written
+   * by 09:00 and 76.1% by 18:00, so counting the current one as a full active
+   * day measures the hour of the run. Worse, it evicts a complete day to do it
+   * — measured on 2026-08-24, a day of 77 rows pushed a day of 2,285 out.
+   */
+  readonly inFlightDay: string | null
+  /** True only on a first run, where no complete active day exists yet. */
+  readonly includesInFlightDay: boolean
+  /**
    * Days carrying a user row of any kind — the ceiling on `activeDays` under
    * this scan, and the figure that says how much of it origin coverage decided.
    *
@@ -274,10 +285,17 @@ export interface ExternalLog {
    */
   readonly activeDays: number
   readonly activeDaysMethod: ActiveDaysMethod
-  /** Of days with evidence of work, the share that reached the external log. */
-  readonly recordRate: Metric
-  /** Of calendar days, the share with any record. Answers work frequency, not coverage. */
-  readonly recordRateCalendar: Metric
+  /**
+   * Of days with evidence of work, the share that reached the external log.
+   *
+   * Null when there is no day to divide by. It used to floor the denominator at
+   * one while `activeDays` beside it shipped the true zero, so a machine with
+   * no logs emitted a payload its own validator refused under V-13 — which is
+   * the first run of every fresh install.
+   */
+  readonly recordRate: Metric | null
+  /** Of calendar days, the share with any record. Work frequency, not coverage. */
+  readonly recordRateCalendar: Metric | null
 }
 
 /**
@@ -305,6 +323,31 @@ export interface FailureAttribution {
    * failures here and none on the machine the spec was written against.
    */
   readonly denialKinds: Readonly<Record<string, number>>
+}
+
+/**
+ * A count whose declared meaning and actual basis disagree.
+ *
+ * `DENOMINATOR_MEANINGS` is a closed union on purpose: a receiver compares the
+ * exact string to decide whether two environments measured the same thing, so
+ * paraphrasing one would break that comparison while looking correct. Which
+ * means a meaning that says `window 内の` cannot simply be reworded when the
+ * build counts over all time — the honest move is to say so in a field a
+ * receiver can act on.
+ *
+ * Without this, a payload asserts window scoping in prose while
+ * `countBasis.period` says `allTime`, and a receiver matching on the meaning
+ * string compares it against a genuinely windowed submission.
+ */
+export interface BasisMismatch {
+  /** Where the count sits in the payload. */
+  readonly path: string
+  /** The period the declared meaning implies. */
+  readonly declared: CountPeriod
+  /** The period this build actually counted over. */
+  readonly actual: CountPeriod
+  /** Why, in one line. */
+  readonly reason: string
 }
 
 export interface ScanManifest {
@@ -345,6 +388,30 @@ export interface ScanManifest {
    * 1.33x across four published figures, none of which stated its basis.
    */
   readonly countBasis: CountBasis
+  /**
+   * Counts whose declared meaning does not match the basis they were taken on.
+   *
+   * Empty is the goal. A non-empty list is a build that has not finished
+   * windowing, said out loud rather than left for a receiver to discover by
+   * comparing two submissions that were never comparable.
+   */
+  readonly basisMismatch: readonly BasisMismatch[]
+  /**
+   * Rows carrying no parsable timestamp.
+   *
+   * They are in no window — a row with no day put into the newest one is a
+   * fabricated observation, not a recovered one — so they are the standing
+   * difference between a windowed count and its corpus-wide twin. 5,127 of
+   * 46,184 here, 11.1%, which is too large to leave for a reader to infer from
+   * a gap between two totals.
+   */
+  readonly undatedRows: number
+  /** Rows the window left out, by day, with the undated bucket counted apart. */
+  readonly rowsOutOfWindow: {
+    readonly total: number
+    readonly undated: number
+    readonly byDay: Readonly<Record<string, number>>
+  }
   readonly failureAttribution: FailureAttribution
   readonly window: Window
   readonly externalLog: ExternalLog

@@ -353,6 +353,21 @@ export function validate(payload: unknown): Verdict {
       }
     }
 
+    // ── W-9: a declared period the basis does not match ──────────────────────
+    //
+    // The meaning strings are a closed union because a receiver matches on them
+    // to decide whether two environments measured the same thing. That makes a
+    // meaning saying `window 内の` over an all-time count worse than a wrong
+    // number: it makes two incomparable submissions look comparable.
+    const mismatch = manifest['basisMismatch']
+    if (Array.isArray(mismatch)) {
+      for (const entry of mismatch) {
+        if (!isObj(entry)) continue
+        const path = typeof entry['path'] === 'string' ? entry['path'] : 'scanManifest.basisMismatch'
+        flag('W-9', path, `declared ${String(entry['declared'])}, counted ${String(entry['actual'])} — ${FLAG_REASONS['W-9']}`)
+      }
+    }
+
     // ── W-3: version spread ──────────────────────────────────────────────────
     const distinct = manifest['toolVersionDistinct']
     if (isNum(distinct) && distinct > TOOL_VERSION_CEILING) {
