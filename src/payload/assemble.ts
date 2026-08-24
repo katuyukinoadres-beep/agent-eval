@@ -122,6 +122,17 @@ export interface AssembleInputs {
    * produce an empty set that reads as a perfect score.
    */
   readonly previousRepeated: readonly string[] | null
+  /**
+   * Whether the previous window covered entirely different days.
+   *
+   * Only a disjoint pair may be differenced. A trailing ten-active-day window
+   * shares nine of its ten days with yesterday's, so a rate taken across them
+   * measures the overlap — and correcting for that needs a factor nobody has
+   * measured.
+   */
+  readonly windowsDisjoint: boolean
+  /** Days this window has that the previous one did not. Null when unknown. */
+  readonly daysRolled: number | null
 }
 
 /**
@@ -475,7 +486,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
   const up = uptake({
     artifacts: inputs.artifacts.artifacts,
     totalWeight: inputs.artifacts.totalWeight,
-    bundles: counts.taskBundles,
+    bundles: windowedCounts.taskBundles,
     mentionedElsewhereAfter: counts.mentionedElsewhereAfter,
     manuallyOverwritten: (p) => stale.has(p) || editedNames.has(basename(p)),
     firstWindow: true,
@@ -483,7 +494,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const uptakeAxis: Axis = {
     availability: up.score === null ? 'not_applicable' : 'available',
-    basis: null,
+    // The artifact set is windowed by each path's last-write day, and the
+    // bundle denominator is windowed too, so both sides leave together.
+    basis: WINDOW_BASIS,
     lineStates: lineStatesFor(up.score !== null),
     metric: null,
     score: up.score === null ? null : Math.round(up.score * 100) / 100,
@@ -583,19 +596,21 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // within-window repeat rate stands in and the record says which one it was --
   // two windows must never be compared across that switch.
   const rec = recurrence({
-    rIn: counts.errorRepeats.rIn,
-    rCross: crossWindowRate(counts.signaturesRepeated, inputs.previousRepeated),
-    // Two runs over an all-time count are the same corpus twice, so every
-    // repeated signature carries over and r_cross is 1.0 by construction.
-    periodsDiffer: COUNT_BASIS.period !== 'allTime',
-    errors: counts.errorRepeats.errors,
+    rIn: windowedCounts.errorRepeats.rIn,
+    rCross: crossWindowRate(windowedCounts.signaturesRepeated, inputs.previousRepeated),
+    // Both conditions. The basis has to be a window at all, and the two
+    // windows have to be different ones — a trailing window run twice in a day
+    // selects the same days, and run tomorrow shares nine of ten.
+    periodsDiffer: WINDOW_BASIS.period !== 'allTime' && inputs.windowsDisjoint,
+    errors: windowedCounts.errorRepeats.errors,
     firstWindow: inputs.previousRepeated === null,
     hasExternalHookLog: false,
   })
 
   const recurrenceAxis: Axis = {
     availability: rec.score === null ? 'not_applicable' : 'available',
-    basis: null,
+    // Both the rate and the signature set are windowed.
+    basis: WINDOW_BASIS,
     lineStates: lineStatesFor(rec.score !== null),
     metric: null,
     score: rec.score === null ? null : Math.round(rec.score * 100) / 100,
@@ -614,7 +629,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     ),
     detail: {
       errors: rec.errors,
-      distinctSignatures: counts.errorRepeats.distinctSignatures,
+      distinctSignatures: windowedCounts.errorRepeats.distinctSignatures,
       repeatRateE4: Math.round((rec.rate ?? 0) * 10_000),
       // 1 while this is a baseline rather than a score. The report must say so.
       baselineOnly: rec.baselineOnly ? 1 : 0,

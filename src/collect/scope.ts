@@ -34,7 +34,7 @@
  * day is used and `includesInFlightDay` says so.
  */
 
-import type { Day } from './day.js'
+import { offsetMinutesOf, type Day } from './day.js'
 
 export interface WindowScope {
   /** The selected active days. Membership is by this set. */
@@ -53,6 +53,15 @@ export interface WindowScope {
   readonly truncated: boolean
   /** The offset the days were cut on, as written. Published, never inferred. */
   readonly dayBoundary: string
+  /**
+   * The same offset in minutes, so a later stage can cut a day the same way.
+   *
+   * Carried rather than re-parsed. A consumer that slices ten characters off a
+   * timestamp gets the UTC day whatever this says, which is the bug the day
+   * function exists to remove — and it is easy to reintroduce one filter at a
+   * time.
+   */
+  readonly offsetMinutes: number
   /**
    * The day the run happened on, when it carries work. Reported, not scored.
    *
@@ -112,6 +121,7 @@ export function windowScope(
     // a truncation that is not one.
     truncated: usable.length < windowDays,
     dayBoundary,
+    offsetMinutes: offsetMinutesOf(dayBoundary),
     inFlightDay,
     includesInFlightDay,
   }

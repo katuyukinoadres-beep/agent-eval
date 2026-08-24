@@ -90,6 +90,7 @@ const inputs = (over: Partial<BuildInputs> = {}): BuildInputs =>
     axes: BASE_PAYLOAD.axes,
     gate: { availability: 'available', reasons: [], totalAllowed: true },
     countBasis: COUNT_BASIS,
+    windowActiveDays: ['2026-08-19'],
     chain: { seq: 1, prev: { kind: 'genesis' } },
     key: { epoch: 1, fingerprint: fingerprintOf(KEY) },
     toolVersion: '0.0.0',

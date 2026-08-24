@@ -21,6 +21,7 @@ import { closure, emptyTally, ATTRIBUTIONS } from './attribution.js'
 import type { WastedCounts } from './wasted.js'
 import type { Hmac128 } from '../snapshot/types.js'
 import type { DayCounts, ScanCounts } from './scan.js'
+import { dayOf } from './day.js'
 import type { WindowScope } from './scope.js'
 
 /**
@@ -112,7 +113,7 @@ const mergeMaps = (
 }
 
 /** The row-level counts this view windows. Everything else is copied through. */
-const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification'] as const
+const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification', 'editedPaths', 'manualEdits'] as const
 
 /**
  * Families still taken from the corpus because they are not day-keyed yet.
@@ -121,7 +122,6 @@ const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBun
  * windowed numerator over an all-time denominator is a rate nobody can name.
  */
 const NOT_YET_WINDOWED = [
-  'editedPaths',
   'perSession',
   'perProject',
   'metabolism',
@@ -313,6 +313,20 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
         ...verificationOver(counts, selected),
         todoWriteUsed: anyOver(perDay, days, (c) => c.todoWriteUsed),
       },
+      // Membership by the day of the last write, and the tally itself is left
+      // whole. `lastWrite` stays the corpus-wide maximum and `newLines` stays
+      // cumulative: an artifact's weight has to be the same figure in every
+      // window that contains it, and the right-censor turns on the real last
+      // write rather than on the last one inside some boundary.
+      editedPaths: Object.fromEntries(
+        Object.entries(counts.editedPaths).filter(([, tally]) => {
+          // Cut on the window's own boundary. Slicing ten characters off the
+          // timestamp gives the UTC day regardless, which is the bug the day
+          // function exists to remove.
+          const day = dayOf(tally.lastWrite, scope.offsetMinutes)
+          return day !== null && selected.includes(day)
+        }),
+      ),
       // Bundles and the terms divided by them leave the window together. A
       // windowed denominator under a corpus-wide numerator inflates W, and no
       // counter moves to show it.

@@ -122,6 +122,8 @@ const inputs: AssembleInputs = {
   // Only the day-keyed counters differ, and this fixture has no per-day
   // buckets, so the two views are the same object here.
   windowedCounts: counts,
+  windowsDisjoint: false,
+  daysRolled: null,
   artifacts: {
     artifacts: [], totalWeight: 0, consideredPaths: 0,
     notSettled: { 'written-too-recently': 0, 'no-longer-exists': 0 },

@@ -13,7 +13,7 @@ import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import { dayOf, localIso, offsetLabelOf, offsetMinutesOf } from './collect/day.js'
 import { restrict, rowsOutOfWindow } from './collect/restrict.js'
-import { windowScope } from './collect/scope.js'
+import { daysRolled, windowScope } from './collect/scope.js'
 import { walkProjects } from './collect/walk.js'
 import { scan } from './collect/scan.js'
 import { gitCommitDates } from './collect/git.js'
@@ -260,10 +260,25 @@ export function run(options: RunOptions): RunResult {
     windowDays: options.windowDays,
   })
 
+  // The window, applied. Only the day-keyed counters move; every other field in
+  // the returned view is the corpus-wide value, and `restrict` names which is
+  // which so a reader never has to infer it.
+  //
+  // Computed before the artifact set, because that set is axis 4's denominator
+  // and has to be the windowed one.
+  const scope = windowScope(
+    counts.humanTurnDates,
+    options.windowDays,
+    dayBoundary,
+    dayOf(options.measuredAt, dayOffsetMinutes) ?? options.measuredAt.slice(0, 10),
+  )
+  const windowedCounts = restrict(counts, scope).counts
+  const outOfWindow = rowsOutOfWindow(counts, scope)
+
   // §8.6 -- the artifact set is what axis 4 divides by, so it has to be
   // computed here rather than left to a later stage.
   const artifacts = settleArtifacts({
-    paths: counts.editedPaths,
+    paths: windowedCounts.editedPaths,
     windowEnd: `${counts.dates[counts.dates.length - 1] ?? options.measuredAt.slice(0, 10)}T23:59:59Z`,
     lastMention: counts.lastMention,
   })
@@ -281,17 +296,26 @@ export function run(options: RunOptions): RunResult {
   const previousKey = (previousBody?.['key'] as Record<string, unknown> | undefined)?.['fingerprint']
   const sameKey = typeof previousKey === 'string' && previousKey === key?.ref.fingerprint
 
-  // The window, applied. Only the day-keyed counters move; every other field in
-  // the returned view is the corpus-wide value, and `restrict` names which is
-  // which so a reader never has to infer it.
-  const scope = windowScope(
-    counts.humanTurnDates,
-    options.windowDays,
-    dayBoundary,
-    dayOf(options.measuredAt, dayOffsetMinutes) ?? options.measuredAt.slice(0, 10),
-  )
-  const windowedCounts = restrict(counts, scope).counts
-  const outOfWindow = rowsOutOfWindow(counts, scope)
+  /**
+   * Whether the previous window covered different days from this one.
+   *
+   * A trailing ten-active-day window run twice in one day selects the same ten
+   * days; run tomorrow it shares nine. A cross-window rate over those measures
+   * the overlap, not the environment — so only fully disjoint windows are
+   * compared, which is the one rule that needs no correction factor nobody has
+   * measured.
+   *
+   * A previous snapshot with no stored day set gives null rather than zero.
+   * Every snapshot written before the set existed is in that state, and an
+   * all-time previous set intersected with a window-scoped current one inflates
+   * the carried share.
+   */
+  const previousSpan = previousBody?.['span'] as Record<string, unknown> | undefined
+  const previousWindowDays = Array.isArray(previousSpan?.['windowActiveDays'])
+    ? (previousSpan['windowActiveDays'] as unknown[]).filter((d): d is string => typeof d === 'string')
+    : null
+  const rolled = scope === null ? null : daysRolled(scope, previousWindowDays)
+  const windowsDisjoint = rolled !== null && scope !== null && rolled >= scope.windowDays
 
   const { payload, gate } = assemble({
     inventory,
@@ -313,7 +337,12 @@ export function run(options: RunOptions): RunResult {
     rowsOutOfWindow: outOfWindow,
     submissionId: options.submissionId,
     hashProject,
-    previousRepeated: sameKey && previousSidecar !== null ? previousSidecar.repeated : null,
+    // Only a disjoint previous window supplies a set to intersect. Anything
+    // less and the carried share is mostly the overlap.
+    previousRepeated:
+      windowsDisjoint && sameKey && previousSidecar !== null ? previousSidecar.repeated : null,
+    windowsDisjoint,
+    daysRolled: rolled,
   })
 
   // Round-tripped through JSON first, because that is how a receiver will see
@@ -336,6 +365,7 @@ export function run(options: RunOptions): RunResult {
         axes: payload.axes,
         gate,
         countBasis: COUNT_BASIS,
+        windowActiveDays: scope === null ? [] : [...scope.ordered],
         compositeE4:
           payload.composite.score === null ? null : Math.round(payload.composite.score * 10_000),
         chain: { seq: head.seq, prev: head.prev },
