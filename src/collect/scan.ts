@@ -240,6 +240,14 @@ export interface ScanCounts {
    * and intersecting one-offs would measure coincidence.
    */
   readonly signaturesRepeated: readonly Hmac128[]
+  /**
+   * Signature keys by day, so a window can recompute a rate that does not add.
+   *
+   * Local and opaque. Never put in a payload; a test asserts it.
+   */
+  readonly signatureKeysPerDay: Readonly<Record<string, readonly string[]>>
+  /** The MACs by day, for the windowed recurrence set. */
+  readonly macsPerDay: Readonly<Record<string, readonly Hmac128[]>>
   readonly signaturesSigned: boolean
   /** Rows carrying a tool_use or tool_result block — axis 2's evidence lines. */
   readonly toolActivityRows: number
@@ -742,6 +750,16 @@ const repeatedOf = (macs: readonly Hmac128[]): readonly Hmac128[] => {
 /** How a bundle came to exist. A delegation is opened by the request that spawned it. */
 type BundleKind = 'human' | 'root' | 'orphan' | 'delegation'
 
+/**
+ * A local, opaque key for one failure signature.
+ *
+ * Truncated, and never emitted: the payload carries the MAC and the aggregate
+ * rate, and this exists only so a window can recompute a rate that does not add
+ * up. Same construction as the `other:<digest>` bucket in `errorClass`.
+ */
+const signatureKey = (tuple: readonly [string, ErrorClass, string]): string =>
+  createHash('sha256').update(tuple.join(SIG_SEPARATOR), 'utf8').digest('hex').slice(0, 16)
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -770,6 +788,8 @@ function reduceLine(
   toolOf: Map<string, { name: string; target: string }>,
   tuples: Array<readonly [string, ErrorClass, string]>,
   macs: Hmac128[],
+  signatureKeysPerDay: Map<string, string[]>,
+  macsPerDay: Map<string, Hmac128[]>,
   sign: Signer | null,
   wasted: WastedTracker,
   wOf: (bundle: number | null) => MutWasted,
@@ -1135,7 +1155,20 @@ function reduceLine(
               call?.target ?? '',
             ]
             tuples.push(tuple)
-            if (sign !== null) macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+            // Keyed by the failing row's own day, not by its bundle. `rIn` is
+            // `1 - distinct/count` over this same set, so numerator and
+            // denominator share an anchor by construction — and axis 6, which
+            // the set also feeds, divides by nothing bundle-shaped.
+            const dayKey = day ?? 'undated'
+            const perDay = signatureKeysPerDay.get(dayKey) ?? []
+            perDay.push(signatureKey(tuple))
+            signatureKeysPerDay.set(dayKey, perDay)
+            if (sign !== null) {
+              macs.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+              const macDay = macsPerDay.get(dayKey) ?? []
+              macDay.push(sign('sig/e', tuple.join(SIG_SEPARATOR)))
+              macsPerDay.set(dayKey, macDay)
+            }
           }
         }
       }
@@ -1290,6 +1323,21 @@ export function scan(
   const toolOf = new Map<string, { name: string; target: string }>()
   const tuples: Array<readonly [string, ErrorClass, string]> = []
   const macs: Hmac128[] = []
+  /**
+   * Signature keys by the day the failure happened on.
+   *
+   * `rIn` is `1 - distinct/count`, which is not additive: summing per-day
+   * distinct counts over-counts every signature that appears on two days. The
+   * window therefore has to re-derive it from the members, which means the
+   * members have to survive per day.
+   *
+   * The key is a truncated local digest of the same tuple the MAC is taken
+   * over, not the tuple. It stays inside this process — `assemble` and
+   * `buildSnapshot` both pick their fields by name and neither reaches for it —
+   * and a test asserts it never appears in a payload.
+   */
+  const signatureKeysPerDay = new Map<string, string[]>()
+  const macsPerDay = new Map<string, Hmac128[]>()
   const perSession = new Map<string, MutSessionTally>()
   const seenClassBySession = new Map<string, Set<string>>()
   const subBundles = new Map<string, number>()
@@ -1413,7 +1461,7 @@ export function scan(
       }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, sign, wasted, wOf, met, manual, openEdits, pending, seenClasses, dayOffsetMinutes)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, pending, seenClasses, dayOffsetMinutes)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
@@ -1531,6 +1579,10 @@ export function scan(
     ambiguousBasenames: refs.ambiguousBasenames(),
     referenceTokens: refs.size(),
     errorRepeats: repeatRate(tuples),
+    signatureKeysPerDay: Object.fromEntries(
+      [...signatureKeysPerDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+    ),
+    macsPerDay: Object.fromEntries([...macsPerDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
     wasted: (() => {
       const w = wTotal()
       return {

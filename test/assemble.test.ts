@@ -73,6 +73,8 @@ const counts = {
   signatures: [],
   signaturesSigned: false,
   signaturesRepeated: [],
+  signatureKeysPerDay: {},
+  macsPerDay: {},
   metabolism: {
     skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
     skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},

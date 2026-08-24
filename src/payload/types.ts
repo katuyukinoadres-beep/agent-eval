@@ -517,6 +517,15 @@ export interface Axis {
   readonly availability: Availability
   readonly lineStates: LineStates
   /**
+   * How this axis's inputs were counted, when it differs from the manifest's.
+   *
+   * Null means the manifest's `countBasis` applies. An axis whose numerator and
+   * denominator are windowed says so here rather than leaving a reader to infer
+   * it from which release they are on — and an axis that mixes the two would
+   * have to declare both, which is why it is not allowed to.
+   */
+  readonly basis: CountBasis | null
+  /**
    * The rate this axis scores, or null when it has none to give.
    *
    * A Metric rather than loose numerator/denominator/denominatorMeaning fields,

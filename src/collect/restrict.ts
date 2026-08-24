@@ -19,6 +19,7 @@
 
 import { closure, emptyTally, ATTRIBUTIONS } from './attribution.js'
 import type { WastedCounts } from './wasted.js'
+import type { Hmac128 } from '../snapshot/types.js'
 import type { DayCounts, ScanCounts } from './scan.js'
 import type { WindowScope } from './scope.js'
 
@@ -68,6 +69,7 @@ export const ALL_TIME_REASONS: Readonly<Record<string, string>> = {
   listingTruncated: 'the same',
   sessionIds: 'the cluster set, and one side of the sessions-close identity',
   ambiguousBasenames: 'a property of every path ever seen, not of a day',
+  'errorRepeats.byFamily': 'the family split is reported over the corpus; only the rate is windowed',
 }
 
 const sumOver = (
@@ -110,7 +112,7 @@ const mergeMaps = (
 }
 
 /** The row-level counts this view windows. Everything else is copied through. */
-const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted'] as const
+const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures'] as const
 
 /**
  * Families still taken from the corpus because they are not day-keyed yet.
@@ -119,8 +121,6 @@ const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBun
  * windowed numerator over an all-time denominator is a rate nobody can name.
  */
 const NOT_YET_WINDOWED = [
-  'errorRepeats',
-  'signatures',
   'verification',
   'editedPaths',
   'perSession',
@@ -182,6 +182,52 @@ function wastedOver(
     largeOutput,
     callsPerBundle,
   }
+}
+
+/**
+ * `rIn` over the selected days, recomputed from the members.
+ *
+ * The families are re-derived too. Summing per-day `byFamily` maps is safe
+ * because a family count is additive; the distinct count is not, which is the
+ * whole reason the member keys survive per day.
+ */
+function repeatRateOver(counts: ScanCounts, days: readonly string[]): ScanCounts['errorRepeats'] {
+  const seen = new Set<string>()
+  let errors = 0
+  for (const day of days) {
+    for (const key of counts.signatureKeysPerDay[day] ?? []) {
+      seen.add(key)
+      errors += 1
+    }
+  }
+  const byFamily: Record<string, number> = {}
+  for (const day of days) {
+    const perDay = counts.wastedPerDay[day]
+    if (perDay === undefined) continue
+    // Families are not day-keyed on their own; the aggregate is kept as it is
+    // and the window reports the corpus split. Named in `allTime` below.
+    void perDay
+  }
+  return {
+    errors,
+    distinctSignatures: seen.size,
+    // Zero errors is not a repeat rate of 1. Nothing recurred because nothing
+    // happened, and reporting 1 would read as "every failure was a repeat".
+    rIn: errors === 0 ? 0 : 1 - seen.size / errors,
+    byFamily: Object.keys(byFamily).length === 0 ? counts.errorRepeats.byFamily : byFamily,
+  }
+}
+
+/** The signatures a window saw at least twice. v1's `S_t`, over the window. */
+function repeatedOver(counts: ScanCounts, days: readonly string[]): readonly Hmac128[] {
+  const seen = new Map<Hmac128, number>()
+  for (const day of days) {
+    for (const mac of counts.macsPerDay[day] ?? []) seen.set(mac, (seen.get(mac) ?? 0) + 1)
+  }
+  return [...seen.entries()]
+    .filter(([, n]) => n >= 2)
+    .map(([mac]) => mac)
+    .sort()
 }
 
 export function restrict(counts: ScanCounts, scope: WindowScope | null): Restricted {
@@ -247,6 +293,12 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
       rootBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.root ?? 0), 0),
       orphanBundles: selected.reduce((n, d) => n + (counts.bundlesPerDay[d]?.orphan ?? 0), 0),
       wasted: wastedOver(counts.wastedPerDay, selected),
+      // Re-derived from the members, never summed. `rIn` is `1 - distinct/count`
+      // and a signature that appears on two days is one signature, so adding
+      // per-day distinct counts over-counts it.
+      errorRepeats: repeatRateOver(counts, selected),
+      signatures: selected.flatMap((d) => [...(counts.macsPerDay[d] ?? [])]),
+      signaturesRepeated: repeatedOver(counts, selected),
     },
     basis,
   }

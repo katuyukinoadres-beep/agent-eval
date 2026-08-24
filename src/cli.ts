@@ -191,7 +191,15 @@ function summarise(result: ReturnType<typeof runScan>): string {
     ...(m.countBasis.period === 'window'
       ? []
       : [
-          '           🚨 the window applies to the rates above; the axis scores below are over the whole corpus',
+          // Derived, not asserted. Each axis carries the basis its inputs were
+          // taken on, so this line cannot drift from what actually happened as
+          // more families move into the window.
+          `           🚨 windowed: ${
+            axes
+              .filter(([, a]) => a.basis?.period === 'window')
+              .map(([k]) => k)
+              .join(', ') || 'none'
+          } — every other score is over the whole corpus`,
           ...(m.basisMismatch.length === 0
             ? []
             : [`           🚨 ${m.basisMismatch.length} count(s) declare a period their basis does not match`]),

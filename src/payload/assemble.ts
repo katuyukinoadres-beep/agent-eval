@@ -299,15 +299,23 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // a change between windows may be called an improvement, which is a different
   // question from whether the rate exists. Conflating them reported a machine
   // with 8,502 tool calls as having nothing to measure.
-  const motion = wastedMotion(counts.wasted, counts.errorRepeats.rIn, counts.taskBundles)
+  // All three of axis 2's inputs are day-keyed now, so all three come from the
+  // window. Two of three would be the same mistake as none: the terms have to
+  // leave together or W measures the boundary.
+  const motion = wastedMotion(
+    windowedCounts.wasted,
+    windowedCounts.errorRepeats.rIn,
+    windowedCounts.taskBundles,
+  )
   // Filtered tool_use, which is what v1 and v2 both name. It used to be fed
   // `toolResultTotal` -- a different block type, unfiltered, and designated a
   // reference value by the same spec that sets this threshold.
-  const toolCalls = counts.toolUseFiltered
+  const toolCalls = windowedCounts.toolUseFiltered
   const axis2Available = toolCalls >= MIN_FILTERED_CALLS && motion.score !== null
 
   const axisFor = (key: string): Axis => ({
     availability: 'not_applicable',
+    basis: null,
     // Every line got a verdict, and they sum to linesRead. A tally that does not
     // close is a parser that dropped rows without saying so.
     lineStates: lineStatesFor(false),
@@ -346,6 +354,8 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const wastedAxis: Axis = {
     availability: axis2Available ? 'available' : 'not_applicable',
+    // Every one of axis 2's three inputs is windowed, so the axis is.
+    basis: WINDOW_BASIS,
     // Rows carrying a tool_use or tool_result are the axis's evidence; the rest
     // had nothing for it to judge. The three states still sum to linesRead.
     lineStates: lineStatesFor(axis2Available),
@@ -375,17 +385,17 @@ export function assemble(inputs: AssembleInputs): Assembled {
       bundleCount: motion.bundles,
       wastedPerBundle: Math.round(motion.w * 10_000) / 10_000,
       repeatRate: Math.round(motion.rIn * 10_000) / 10_000,
-      failures: counts.wasted.failures,
-      writeRepeats: counts.wasted.writeRepeats,
-      investigationRepeats: counts.wasted.investigationRepeats,
+      failures: windowedCounts.wasted.failures,
+      writeRepeats: windowedCounts.wasted.writeRepeats,
+      investigationRepeats: windowedCounts.wasted.investigationRepeats,
       // All five numerator terms, so the visible parts reconcile to
       // `wastedTotal`. Two of the five were collected, weighted into the sum,
       // and then left out of the detail -- on the one axis that carries a score,
       // and against this payload's own promise that the detail is what a
       // receiver recomputes from.
-      timedOut: counts.wasted.timedOut,
-      largeOutput: counts.wasted.largeOutput,
-      hookOriginatedExcluded: counts.wasted.hookOriginated,
+      timedOut: windowedCounts.wasted.timedOut,
+      largeOutput: windowedCounts.wasted.largeOutput,
+      hookOriginatedExcluded: windowedCounts.wasted.hookOriginated,
     },
   }
 
@@ -410,6 +420,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // good the number looks. Dropping a deduction can only raise a result, and
     // the result would be the same name for a different quantity.
     availability: 'not_applicable',
+    basis: null,
     lineStates: lineStatesFor(met.score !== null),
     metric: null,
     // Recorded, not scored. A later window needs the raw figures, and a
@@ -472,6 +483,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const uptakeAxis: Axis = {
     availability: up.score === null ? 'not_applicable' : 'available',
+    basis: null,
     lineStates: lineStatesFor(up.score !== null),
     metric: null,
     score: up.score === null ? null : Math.round(up.score * 100) / 100,
@@ -528,6 +540,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const verificationAxis: Axis = {
     availability: ver.score === null ? 'not_applicable' : 'available',
+    basis: null,
     lineStates: lineStatesFor(ver.score !== null),
     metric: null,
     score: ver.score === null ? null : Math.round(ver.score * 100) / 100,
@@ -577,6 +590,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
 
   const recurrenceAxis: Axis = {
     availability: rec.score === null ? 'not_applicable' : 'available',
+    basis: null,
     lineStates: lineStatesFor(rec.score !== null),
     metric: null,
     score: rec.score === null ? null : Math.round(rec.score * 100) / 100,

@@ -52,6 +52,8 @@ const counts = {
   },
   signatures: [SIGN('sig/e', 'a'), SIGN('sig/e', 'b')],
   signaturesRepeated: [],
+  signatureKeysPerDay: {},
+  macsPerDay: {},
   signaturesSigned: true,
   taskBundles: 5, rootBundles: 0, bundlesPerDay: {}, orphanBundles: 0, toolActivityRows: 50,
   environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null,
