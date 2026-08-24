@@ -5,16 +5,17 @@
  * a number about a real machine rather than about a fixture. Two consequences
  * are deliberate.
  *
- * Every axis comes out `not_applicable`. That is not a shortcut — this machine
- * has 11 session clusters against a minimum of 20, so no first-wave axis can
- * carry a rate no matter what the rate would have been. What each axis does
- * carry is why, in `unavailableReasons`, so "your environment is small" is
+ * Most axes come out `not_applicable`, and that is not a shortcut. An axis is
+ * only scored when its own denominator clears the minimum; below it the rate
+ * would be arithmetic on too little evidence. What each unscored axis carries
+ * instead is why, in `unavailableReasons`, so "your environment is small" stays
  * distinguishable from "this axis is not implemented yet".
  *
- * And no score is produced anywhere. The rate-to-score formula lives in the v1
- * axes document, which is not in this repository. Inventing one would put a
- * number on a screen that nobody could defend, which is the failure this whole
- * project was built in response to.
+ * No number is ever invented to fill a gap. Where a term of a scored axis is
+ * missing it is named in `omittedTerms` with the direction it would move the
+ * result, so a reader can see which way the figure is wrong rather than being
+ * told it is right. Putting an undefendable number on a screen is the failure
+ * this whole project was built in response to.
  */
 
 import { makeCount, makeMetric } from './metric.js'

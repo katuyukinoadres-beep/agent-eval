@@ -1,1 +1,27 @@
-*
+# This file used to be a single `*`, which ignored the whole repository. Tracked
+# files kept working, so nothing looked wrong -- but every new file was invisible
+# to `git status` unless somebody remembered `git add -f`. LICENSE, the privacy
+# document, and two test files had already been missed that way. A clone would
+# have had no licence at all.
+#
+# So: name what must stay out, and let everything else be seen.
+
+# Conversation logs. These must never enter a commit, and no fixture may be
+# built from one -- a fixture made from a real transcript carries whatever the
+# transcript carried.
+*.jsonl
+
+# The snapshot store. It holds keyed hashes of session ids, project names, and
+# command tokens; committing it publishes them. `snapshot/stateDir.ts` refuses
+# to run against a store that git tracks, and this is the other half of that.
+snapshots/
+.agent-eval/
+.agent-eval-key
+*.key
+
+node_modules/
+dist/
+coverage/
+*.tgz
+.env
+.env.*

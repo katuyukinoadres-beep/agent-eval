@@ -2,10 +2,11 @@
 /**
  * agent-eval — scores an AI agent environment from its own Claude Code logs.
  *
- * `scan` runs end to end and prints a payload. It does not print a score: the
- * rate-to-score formula lives in the v1 axes document, which is not in this
- * repository, and a number invented to fill the gap is the failure this project
- * was built in response to. Every axis reports why it has none.
+ * `scan` runs end to end and prints a payload. Four of eleven axes carry a
+ * score; the rest report why they do not, so "your environment is small" stays
+ * distinguishable from "this axis is not implemented yet". No axis is ever
+ * given an invented number to fill a gap -- that is the failure this project
+ * was built in response to.
  */
 import { FIXTURE_NAMES, emit, isFixtureName } from './payload/emit.js'
 import { defaultOptions, run as runScan } from './run.js'
@@ -33,7 +34,12 @@ const HELP = [
   '  --store                open ~/.agent-eval, so signatures are MAC-signed',
   '  --state-dir <path>     put the store somewhere else',
   '',
-  'No scores yet — the rate-to-score formula is unresolved. See docs/PHASE0_PLAN.md.',
+  'Scores 4 of 11 axes. The other 7 say why they have no number rather than',
+  'carrying an invented one. Comparison against the previous window needs a',
+  'second run with --store, and a window is the last 10 active days.',
+  '',
+  'Nothing is sent anywhere. See docs/PRIVACY.md for what is read and written,',
+  'and docs/GUIDE.md for how to read the output.',
 ].join('\n')
 
 interface Parsed {
