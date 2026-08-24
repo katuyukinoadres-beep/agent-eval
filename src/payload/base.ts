@@ -166,6 +166,8 @@ export const BASE_PAYLOAD = {
     truncated: false,
     windowStart: '2026-08-11',
     windowEnd: '2026-08-20',
+    inFlightDay: null,
+    includesInFlightDay: false,
       // Between 17 and 18: a user spoke on every day that carried a user row in
       // the sample this fixture keeps the components of. On the machine as it
       // stands today the two are 5 and 9, because origin coverage is 3.11%.

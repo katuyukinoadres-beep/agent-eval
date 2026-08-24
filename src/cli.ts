@@ -175,6 +175,10 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // means the window cut nothing — a figure that did not move is not evidence
     // it works.
     `           ${w.activeDaysInWindow}/${w.activeDays} in window (${w.windowStart ?? '-'}..${w.windowEnd ?? '-'}), boundary ${w.dayBoundary}, ${w.activeDaysUtc} under UTC`,
+    // The day the run happened on is reported and not scored. A day still being
+    // written is a fraction of a day, and a window slot spent on it evicts a
+    // whole one.
+    `           ${w.inFlightDay === null ? 'no work today yet' : `today ${w.inFlightDay} in flight, not scored`}${w.includesInFlightDay ? ' (first window: used anyway)' : ''}`,
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`,
     '',

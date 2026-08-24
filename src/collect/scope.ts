@@ -13,10 +13,25 @@
  * the cost is real: those days can be dense in failures. It is published as a
  * number rather than left as a policy inside a branch.
  *
- * Both ends are inclusive, and the newest day is included while it is still
- * being written. That makes the boundary depend on the hour a run happens, so
- * two runs on the same day select the same days and must not be differenced —
- * refused by comparing the stored day sets rather than by excluding the day.
+ * Both ends are inclusive, and the window is built from *complete* active days
+ * only. The day a run happens on is still being written, and counting it as one
+ * active day measures the hour of the run rather than the environment: the
+ * median day here is 6.9% written by 09:00, 37.8% by noon, 46.3% by 15:00 and
+ * 76.1% by 18:00.
+ *
+ * The cost of including it is not the missing fraction, it is the eviction. A
+ * partial day takes a slot, and the slot it takes belongs to a complete one.
+ * Measured on this corpus on 2026-08-24: a day holding 77 rows pushed a day
+ * holding 2,285 rows out of the window — 5.7% of the corpus left because 0.2%
+ * of it arrived.
+ *
+ * So the in-flight day is reported and not scored, and the window is a function
+ * of complete days alone. Two runs on the same day then select exactly the same
+ * evidence, which is the property a tool that compares windows needs most.
+ *
+ * The exception is a first run with no complete active day at all. Refusing
+ * there would mean a new user is told to come back tomorrow, so the in-flight
+ * day is used and `includesInFlightDay` says so.
  */
 
 import type { Day } from './day.js'
@@ -38,6 +53,18 @@ export interface WindowScope {
   readonly truncated: boolean
   /** The offset the days were cut on, as written. Published, never inferred. */
   readonly dayBoundary: string
+  /**
+   * The day the run happened on, when it carries work. Reported, not scored.
+   *
+   * Null when the run's own day has no human turn — a run on a quiet morning
+   * about yesterday's work.
+   */
+  readonly inFlightDay: Day | null
+  /**
+   * True when the window had to use the in-flight day for want of a complete
+   * one. Only a first run, and it is said rather than hidden.
+   */
+  readonly includesInFlightDay: boolean
 }
 
 /**
@@ -55,11 +82,20 @@ export function windowScope(
   humanTurnDates: readonly Day[],
   windowDays: number,
   dayBoundary: string,
+  /** The day the run happens on. Everything on or after it is still in flight. */
+  measuredOn: Day,
 ): WindowScope | null {
   const active = [...new Set(humanTurnDates)].sort()
   if (active.length === 0 || windowDays <= 0) return null
 
-  const ordered = active.slice(Math.max(0, active.length - windowDays))
+  // Complete days only. A day still being written is a fraction of a day, and
+  // spending a window slot on it evicts a whole one.
+  const complete = active.filter((d) => d < measuredOn)
+  const inFlightDay = active.includes(measuredOn) ? measuredOn : null
+  const includesInFlightDay = complete.length === 0
+  const usable = includesInFlightDay ? active : complete
+
+  const ordered = usable.slice(Math.max(0, usable.length - windowDays))
   const start = ordered[0] as Day
   const end = ordered[ordered.length - 1] as Day
 
@@ -71,8 +107,13 @@ export function windowScope(
     windowDays,
     activeDaysInWindow: ordered.length,
     activeDaysAll: active.length,
-    truncated: active.length < windowDays,
+    // Against the days that could have filled it, not against every day seen:
+    // the in-flight day was never a candidate, so counting it here would report
+    // a truncation that is not one.
+    truncated: usable.length < windowDays,
     dayBoundary,
+    inFlightDay,
+    includesInFlightDay,
   }
 }
 

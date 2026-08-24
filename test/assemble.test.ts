@@ -24,6 +24,7 @@ const window = assembleWindow({
   humanTurnDates: ['2026-08-16', '2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20'],
   humanTurnDatesUtc: [],
   dayBoundary: 'Z',
+  measuredOn: '2099-01-01',
   gitDates: [],
   externalDates: [],
   externalExists: false,

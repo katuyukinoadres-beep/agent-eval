@@ -234,6 +234,17 @@ export interface Window {
   readonly windowStart: string | null
   readonly windowEnd: string | null
   /**
+   * The day this run happened on, when it carried work. Reported, not scored.
+   *
+   * The window is built from complete days: the median day here is 6.9% written
+   * by 09:00 and 76.1% by 18:00, so counting the current one as a full active
+   * day measures the hour of the run. Worse, it evicts a complete day to do it
+   * — measured on 2026-08-24, a day of 77 rows pushed a day of 2,285 out.
+   */
+  readonly inFlightDay: string | null
+  /** True only on a first run, where no complete active day exists yet. */
+  readonly includesInFlightDay: boolean
+  /**
    * Days carrying a user row of any kind — the ceiling on `activeDays` under
    * this scan, and the figure that says how much of it origin coverage decided.
    *

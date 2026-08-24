@@ -25,6 +25,13 @@ export interface WindowInputs {
   /** The offset the days were cut on, as written. Published, never inferred. */
   readonly dayBoundary: string
   /**
+   * The day the run happens on, cut on the same boundary.
+   *
+   * The window is built from days strictly before it: a day still being written
+   * is a fraction of a day, and giving it a window slot evicts a whole one.
+   */
+  readonly measuredOn: string
+  /**
    * Days carrying at least one human turn under P1. The window's own unit.
    *
    * Not `origin.kind === 'human'`, which is what this said while the code did
@@ -123,7 +130,7 @@ export function methodFor(hasGit: boolean, hasExternal: boolean): ActiveDaysMeth
 
 export function assembleWindow(inputs: WindowInputs): AssembledWindow {
   const {
-    jsonlDates, userRowDates, humanTurnDates, humanTurnDatesUtc, dayBoundary,
+    jsonlDates, userRowDates, humanTurnDates, humanTurnDatesUtc, dayBoundary, measuredOn,
     gitDates, externalDates,
     externalExists, externalRows, cleanupPeriodDays, cleanupFoundAt, windowDays,
   } = inputs
@@ -168,7 +175,7 @@ export function assembleWindow(inputs: WindowInputs): AssembledWindow {
   // this corpus -- ten active days against a window of ten -- and not a
   // property of the window. A figure that did not move is not evidence the
   // window works.
-  const scope = windowScope(humanTurnDates, windowDays, dayBoundary)
+  const scope = windowScope(humanTurnDates, windowDays, dayBoundary, measuredOn)
 
   const window: Window = {
     unit: 'activeDays',
@@ -184,6 +191,8 @@ export function assembleWindow(inputs: WindowInputs): AssembledWindow {
     truncated: scope?.truncated ?? true,
     windowStart: scope?.start ?? null,
     windowEnd: scope?.end ?? null,
+    inFlightDay: scope?.inFlightDay ?? null,
+    includesInFlightDay: scope?.includesInFlightDay ?? false,
     userRowDays: new Set(userRowDates).size,
     contiguousDays: longestRun([...evidence]),
     gapCount: Math.max(0, spanDays - evidenceDays),

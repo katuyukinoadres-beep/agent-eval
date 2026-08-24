@@ -21,6 +21,7 @@ const base: WindowInputs = {
   humanTurnDates: ['2026-08-17', '2026-08-18'],
   humanTurnDatesUtc: [],
   dayBoundary: 'Z',
+  measuredOn: '2099-01-01',
   gitDates: [],
   externalDates: [],
   externalExists: false,

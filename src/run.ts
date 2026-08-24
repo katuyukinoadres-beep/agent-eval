@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
-import { localIso, offsetLabelOf, offsetMinutesOf } from './collect/day.js'
+import { dayOf, localIso, offsetLabelOf, offsetMinutesOf } from './collect/day.js'
 import { walkProjects } from './collect/walk.js'
 import { scan } from './collect/scan.js'
 import { gitCommitDates } from './collect/git.js'
@@ -248,6 +248,7 @@ export function run(options: RunOptions): RunResult {
     humanTurnDates: counts.humanTurnDates,
     humanTurnDatesUtc: counts.humanTurnDatesUtc,
     dayBoundary,
+    measuredOn: dayOf(options.measuredAt, dayOffsetMinutes) ?? options.measuredAt.slice(0, 10),
     gitDates: git.dates,
     externalDates: log.dates,
     externalExists: log.exists,
