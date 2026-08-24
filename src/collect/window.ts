@@ -55,8 +55,16 @@ export interface AssembledWindow {
   /** Days with evidence of work from any source — the record rate's denominator. */
   readonly evidenceDays: number
   readonly evidenceDaysMethod: ActiveDaysMethod
-  readonly recordRate: Metric
-  readonly recordRateCalendar: Metric
+  /**
+   * Null when there is no day to divide by.
+   *
+   * It used to floor the denominator at 1 while `externalLog.activeDays` shipped
+   * the real count of 0, so a machine with no logs emitted `activeDays: 0`
+   * beside `denominator: 1` and the tool's own validator refused the payload
+   * with V-13. That is the first run on any fresh install.
+   */
+  readonly recordRate: Metric | null
+  readonly recordRateCalendar: Metric | null
   readonly recordedDays: number
   /**
    * Rows in the external log, carried through unchanged.
@@ -204,18 +212,27 @@ export function assembleWindow(inputs: WindowInputs): AssembledWindow {
     evidenceDaysMethod: method,
     recordedDays,
     externalOnlyDays: externalOnly,
-    recordRate: makeMetric({
-      numerator: recordedDays,
-      denominator: Math.max(1, evidenceDays),
-      denominatorMeaning: '作業した証拠のある日のうち、外部ログに入っている割合',
-      sourceField: 'externalLog.dates',
-    }),
-    recordRateCalendar: makeMetric({
-      numerator: recordedDays,
-      denominator: Math.max(1, spanDays),
-      denominatorMeaning: '暦日のうち記録がある日の割合（作業頻度を答える別指標）',
-      sourceField: 'jsonl.timestamps',
-    }),
+    // No day is not one day. The floor made the denominator disagree with the
+    // `activeDays` shipped beside it, which V-13 exists to catch -- and it
+    // caught it, on the first run of every fresh install.
+    recordRate:
+      evidenceDays === 0
+        ? null
+        : makeMetric({
+            numerator: recordedDays,
+            denominator: evidenceDays,
+            denominatorMeaning: '作業した証拠のある日のうち、外部ログに入っている割合',
+            sourceField: 'externalLog.dates',
+          }),
+    recordRateCalendar:
+      spanDays === 0
+        ? null
+        : makeMetric({
+            numerator: recordedDays,
+            denominator: spanDays,
+            denominatorMeaning: '暦日のうち記録がある日の割合（作業頻度を答える別指標）',
+            sourceField: 'jsonl.timestamps',
+          }),
     externalRows,
   }
 }

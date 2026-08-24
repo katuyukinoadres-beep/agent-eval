@@ -285,10 +285,17 @@ export interface ExternalLog {
    */
   readonly activeDays: number
   readonly activeDaysMethod: ActiveDaysMethod
-  /** Of days with evidence of work, the share that reached the external log. */
-  readonly recordRate: Metric
-  /** Of calendar days, the share with any record. Answers work frequency, not coverage. */
-  readonly recordRateCalendar: Metric
+  /**
+   * Of days with evidence of work, the share that reached the external log.
+   *
+   * Null when there is no day to divide by. It used to floor the denominator at
+   * one while `activeDays` beside it shipped the true zero, so a machine with
+   * no logs emitted a payload its own validator refused under V-13 — which is
+   * the first run of every fresh install.
+   */
+  readonly recordRate: Metric | null
+  /** Of calendar days, the share with any record. Work frequency, not coverage. */
+  readonly recordRateCalendar: Metric | null
 }
 
 /**

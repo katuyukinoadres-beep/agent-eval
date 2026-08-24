@@ -55,7 +55,7 @@ describe('the record rate cannot exceed one', () => {
     const a = assembleWindow(shape)
     expect(a.evidenceDays).toBe(6)
     expect(a.recordedDays).toBe(4)
-    expect(a.recordRate.denominator).toBe(6)
+    expect(a.recordRate!.denominator).toBe(6)
   })
 
   it('reports log-only days as non-zero on the shape that actually ships', () => {
@@ -85,7 +85,7 @@ describe('the record rate cannot exceed one', () => {
     expect(a.evidenceDays).toBe(3)
     expect(a.recordedDays).toBe(1)
     expect(a.externalOnlyDays).toBe(3)
-    expect(a.recordRate.numerator).toBeLessThanOrEqual(a.recordRate.denominator)
+    expect(a.recordRate!.numerator).toBeLessThanOrEqual(a.recordRate!.denominator)
   })
 })
 
@@ -194,5 +194,68 @@ describe('span and run', () => {
     const a = assembleWindow(withInputs({ jsonlDates: ['2026-08-16', '2026-08-20'] }))
     expect(a.window.calendarSpanDays).toBe(5)
     expect(a.window.gapCount).toBe(3)
+  })
+})
+
+describe('a machine with nothing on it', () => {
+  /**
+   * The first run of every fresh install. The record rate used to floor its
+   * denominator at one while `externalLog.activeDays` shipped the true zero
+   * beside it, so the payload contradicted itself and the tool's own validator
+   * refused it under V-13 — on the one run a new user will judge it by.
+   */
+  const empty = () =>
+    assembleWindow({
+      jsonlDates: [],
+      userRowDates: [],
+      humanTurnDates: [],
+      humanTurnDatesUtc: [],
+      dayBoundary: 'Z',
+      measuredOn: '2026-08-24',
+      gitDates: [],
+      externalDates: [],
+      externalExists: false,
+      externalRows: 0,
+      cleanupPeriodDays: null,
+      cleanupFoundAt: null,
+      windowDays: 10,
+    })
+
+  it('carries no rate rather than a rate over one imaginary day', () => {
+    const a = empty()
+    expect(a.evidenceDays).toBe(0)
+    expect(a.recordRate).toBeNull()
+    expect(a.recordRateCalendar).toBeNull()
+  })
+
+  it('still carries a rate the moment there is a day to divide by', () => {
+    // The other direction. Without it, a null returned unconditionally would
+    // look exactly like this fix.
+    const a = assembleWindow({
+      jsonlDates: ['2026-08-20'],
+      userRowDates: ['2026-08-20'],
+      humanTurnDates: ['2026-08-20'],
+      humanTurnDatesUtc: ['2026-08-20'],
+      dayBoundary: 'Z',
+      measuredOn: '2026-08-24',
+      gitDates: [],
+      externalDates: [],
+      externalExists: false,
+      externalRows: 0,
+      cleanupPeriodDays: null,
+      cleanupFoundAt: null,
+      windowDays: 10,
+    })
+    expect(a.evidenceDays).toBe(1)
+    expect(a.recordRate).not.toBeNull()
+    expect(a.recordRate!.denominator).toBe(1)
+  })
+
+  it('has no window at all, and says so rather than inventing one', () => {
+    const a = empty()
+    expect(a.window.activeDays).toBe(0)
+    expect(a.window.activeDaysInWindow).toBe(0)
+    expect(a.window.windowStart).toBeNull()
+    expect(a.window.windowEnd).toBeNull()
   })
 })

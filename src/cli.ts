@@ -180,7 +180,7 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // whole one.
     `           ${w.inFlightDay === null ? 'no work today yet' : `today ${w.inFlightDay} in flight, not scored`}${w.includesInFlightDay ? ' (first window: used anyway)' : ''}`,
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
-    `record     ${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`,
+    `record     ${m.externalLog.recordRate === null ? 'no day to divide by' : `${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`}`,
     '',
     // The path is not printed. It is `<home>/.agent-eval`, so it carries the
     // OS username, and this output is meant to be pasteable into an issue.

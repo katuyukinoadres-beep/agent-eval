@@ -1825,3 +1825,25 @@ after   10/11 in window (2026-07-08..2026-08-23)   ← 完了10日
 `taskBundles` / `wasted` / `errorRepeats` / `signatures` / `verification` / `editedPaths` / `perSession` / `perProject` / `metabolism` / `manualEdits`。
 
 **窓の分子を全期間の分母で割ると、誰にも名前の付けられない率になる。** 列挙してあるのは、この変更が失敗する主な形が「窓を当てた軸の中に1個だけ全期間のカウンタが残る」だから。リストは、カウンタが動いたら誰かが編集しないといけない形にしてある。
+
+---
+
+## 2026-08-24 — 新規インストールの初回実行が、自分のバリデータに拒否されていた
+
+一般配布の棚卸しの前段として、**ログが1件も無いマシン**で走らせた。
+
+```
+filesRead   0
+gate        too-few-active-days
+composite   null (too-few-active-days)
+validation  1 violations
+  V-13  scanManifest.externalLog.recordRate.denominator
+```
+
+**payload は出る。そして自分自身のバリデータが拒否する。** これは全ての新規インストールの初回実行。
+
+原因は `Math.max(1, evidenceDays)`。記録率の分母を1で下支えする一方、隣の `externalLog.activeDays` は真値の0を出していた。payload spec §2 は両者の一致を要求し、V-13 がそれを検査している — **検査は正しく働いていて、出す側が矛盾していた**。
+
+**「日が無い」は「1日」ではない。** 分母が無いときは率を null にする（欠測は表現できる。矛盾は表現できない）。
+
+陽性対照は両方向: 証拠日0で null、証拠日1で分母1の率が出る。**無条件に null を返す実装でも片方向テストは通る。**
