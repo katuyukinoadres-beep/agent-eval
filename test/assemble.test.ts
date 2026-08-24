@@ -56,6 +56,7 @@ const counts = {
   userRowDates: ['2026-08-16'],
   humanTurnDates: ['2026-08-16'],
   humanTurnDatesUtc: [],
+  perDay: {},
   perProject: { p1: { lines: 1_000, subLines: 400, humanRows: 15 } },
   notHumanCounts: {},
   taskBundles: 40,
