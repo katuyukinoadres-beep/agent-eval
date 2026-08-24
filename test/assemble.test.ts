@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { meetsMinimum } from '@/score/minimum.js'
 import { UPTAKE_REFERENCED } from '@/score/artifact.js'
-import { crossWindowRate, assemble, type AssembleInputs } from '@/payload/assemble.js'
+import { basisMismatchesFor, crossWindowRate, assemble, type AssembleInputs } from '@/payload/assemble.js'
 import { validate } from '@/validate/index.js'
 import { assembleWindow } from '@/collect/window.js'
 import { AXIS_KEYS } from '@/payload/types.js'
@@ -422,5 +422,42 @@ describe('the cross-window recurrence rate', () => {
     expect(crossWindowRate(['a'], null)).toBeNull()
     expect(crossWindowRate([], ['a'])).toBeNull()
     expect(crossWindowRate([], null)).toBeNull()
+  })
+})
+
+describe('a count whose declared meaning outruns its basis', () => {
+  /**
+   * `DENOMINATOR_MEANINGS` is a closed union because a receiver matches the
+   * exact string to decide whether two environments measured the same thing.
+   * Two metrics carry `window 内の tool_result ブロック総数（…）` while
+   * `countBasis.period` is `allTime`, and the string cannot be paraphrased
+   * without breaking the comparison it exists for.
+   *
+   * So the payload says so instead. A prose claim of window scoping over an
+   * all-time count is worse than a wrong number: it makes two incomparable
+   * submissions look comparable.
+   */
+  it('names each count, what it declared, and what it actually counted', () => {
+    const m = basisMismatchesFor('allTime')
+    expect(m.map((x) => x.path)).toEqual(['metrics.toolError', 'metrics.toolErrorAlt'])
+    expect(m.every((x) => x.declared === 'window')).toBe(true)
+    expect(m.every((x) => x.actual === 'allTime')).toBe(true)
+    expect(m.every((x) => x.reason.length > 0)).toBe(true)
+  })
+
+  it('is empty once the basis matches', () => {
+    // The other direction. A list built unconditionally would look exactly like
+    // this declaration and would keep flagging after the gap closed.
+    expect(basisMismatchesFor('window')).toEqual([])
+  })
+
+  it('ships in the payload while the gap is open', () => {
+    const { payload } = assemble(inputs)
+    const declared = payload.scanManifest.countBasis.period
+    if (declared === 'window') {
+      expect(payload.scanManifest.basisMismatch).toEqual([])
+    } else {
+      expect(payload.scanManifest.basisMismatch.length).toBeGreaterThan(0)
+    }
   })
 })

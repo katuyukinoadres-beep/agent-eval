@@ -123,6 +123,7 @@ export const BASE_PAYLOAD = {
       unit: 'row',
       excludes: [],
     },
+    basisMismatch: [],
     // The attribution split, measured. Every failure lands in exactly one id,
     // and `balanced` is what says so: an unbalanced table has lost events, and
     // a lost event is indistinguishable from one that never happened.

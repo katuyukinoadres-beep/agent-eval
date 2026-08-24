@@ -12,7 +12,7 @@
  * A number never travels without its denominator. See ./metric.ts.
  */
 
-import type { Count, CountBasis, Metric } from './metric.js'
+import type { Count, CountBasis, Metric, CountPeriod } from './metric.js'
 import type { Composite, OmittedTerm } from '../score/composite.js'
 
 // ── branded leaves ────────────────────────────────────────────────────────────
@@ -325,6 +325,31 @@ export interface FailureAttribution {
   readonly denialKinds: Readonly<Record<string, number>>
 }
 
+/**
+ * A count whose declared meaning and actual basis disagree.
+ *
+ * `DENOMINATOR_MEANINGS` is a closed union on purpose: a receiver compares the
+ * exact string to decide whether two environments measured the same thing, so
+ * paraphrasing one would break that comparison while looking correct. Which
+ * means a meaning that says `window 内の` cannot simply be reworded when the
+ * build counts over all time — the honest move is to say so in a field a
+ * receiver can act on.
+ *
+ * Without this, a payload asserts window scoping in prose while
+ * `countBasis.period` says `allTime`, and a receiver matching on the meaning
+ * string compares it against a genuinely windowed submission.
+ */
+export interface BasisMismatch {
+  /** Where the count sits in the payload. */
+  readonly path: string
+  /** The period the declared meaning implies. */
+  readonly declared: CountPeriod
+  /** The period this build actually counted over. */
+  readonly actual: CountPeriod
+  /** Why, in one line. */
+  readonly reason: string
+}
+
 export interface ScanManifest {
   readonly parserVersion: '1'
   readonly scope: Scope
@@ -363,6 +388,14 @@ export interface ScanManifest {
    * 1.33x across four published figures, none of which stated its basis.
    */
   readonly countBasis: CountBasis
+  /**
+   * Counts whose declared meaning does not match the basis they were taken on.
+   *
+   * Empty is the goal. A non-empty list is a build that has not finished
+   * windowing, said out loud rather than left for a receiver to discover by
+   * comparing two submissions that were never comparable.
+   */
+  readonly basisMismatch: readonly BasisMismatch[]
   readonly failureAttribution: FailureAttribution
   readonly window: Window
   readonly externalLog: ExternalLog

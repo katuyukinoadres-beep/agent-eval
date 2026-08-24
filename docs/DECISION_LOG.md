@@ -1886,3 +1886,46 @@ endsWith match  : false
 ### ついでに見つけた（製品ではない）
 
 `mkdirSync` は `日本語フォルダ` を正しく作るのに、**`cpSync` は `æ—¥æœ¬èªžãƒ•ã‚©ãƒ«ãƒ€` という文字化けした別ディレクトリに書く**（この Node/Windows で実測）。非 ASCII パスのテスト fixture が作れなかった原因。CLI 自体は非 ASCII パスから正常に動くことをシェルから確認済み。製品は log 由来のパスに対して `existsSync` を呼ぶだけでディレクトリを作らないので、この経路には当たらない。
+
+---
+
+## 2026-08-24 — 窓を謳っていた嘘を、機械可読で撤回した
+
+一般配布の棚卸しで出た最大の食い違い。**同じ payload の中で散文と機械可読フィールドが逆を言っていた。**
+
+| 出していたもの | 実際 |
+|---|---|
+| サマリの `10/11 in window` | 表示のみ。カウントに効いていない |
+| `denominatorMeaning`: **「window 内の tool_result ブロック総数」** | 全期間の総数 |
+| `countBasis.period` | `"allTime"` |
+
+`restrict()` は書いたが `src/` のどこからも呼ばれていない（未配線）。
+
+### 文字列は変えられない
+
+`DENOMINATOR_MEANINGS` は**閉じた union**で、その存在理由は「**受け取り側がこの文字列を照合して、2環境が同じものを測ったかを判定する**」こと。言い換えたら、正しく見えたまま比較が黙って壊れる。
+
+**「window 内の」を「全期間の」に書き直すのは、間違った数字より悪い。** 照合キーを勝手に変えることになる。
+
+### だから宣言する
+
+`scanManifest.basisMismatch` を追加。各エントリが「どのカウントが」「何を宣言していて」「実際は何で数えたか」を持つ。
+
+```
+W-9 metrics.toolError:    declared window, counted allTime
+W-9 metrics.toolErrorAlt: declared window, counted allTime
+```
+
+W-9 は**仕様由来ではなくローカル規則**。仕様が想定していない食い違い（照合キーが約束する窓と、実際に取った基準の不一致）を、送る側が正直に出すために足した。前例として V-9〜V-12 も Leon 提案。
+
+サマリにも1行:
+
+```
+🚨 shown only — every count below is over the whole corpus (2 declared mismatch(es))
+```
+
+**窓のブロックが上にあって、その下の数字が窓と無関係なら、レイアウトだけで読み手を誤らせる。**
+
+### 陽性対照
+
+`basisMismatchesFor(period)` を純関数に切り出した。`allTime` で2件、`window` で空。**無条件に配列を返す実装でも片方向テストは通る**ので、両方向を書いた。

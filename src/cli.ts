@@ -181,6 +181,12 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // written is a fraction of a day, and a window slot spent on it evicts a
     // whole one.
     `           ${w.inFlightDay === null ? 'no work today yet' : `today ${w.inFlightDay} in flight, not scored`}${w.includesInFlightDay ? ' (first window: used anyway)' : ''}`,
+    // Said plainly while it is true. The window block above describes a window
+    // that nothing is yet counted over, and a reader who takes those lines for
+    // the scope of the scores below has been misled by layout alone.
+    ...(m.countBasis.period === 'window'
+      ? []
+      : [`           🚨 shown only — every count below is over the whole corpus (${m.basisMismatch.length} declared mismatch(es))`]),
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate === null ? 'no day to divide by' : `${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`}`,
     '',

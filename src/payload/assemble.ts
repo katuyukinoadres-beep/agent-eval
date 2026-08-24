@@ -18,7 +18,7 @@
  */
 
 import { makeCount, makeMetric } from './metric.js'
-import type { CountBasis } from './metric.js'
+import type { CountBasis, CountPeriod } from './metric.js'
 import type { Metric } from './metric.js'
 import {
   AXIS_KEYS,
@@ -33,7 +33,8 @@ import {
   type ScanManifest,
   type UnavailableReason,
   type LineStates,
-} from './types.js'
+
+  type BasisMismatch,} from './types.js'
 import type { Inventory } from '../collect/walk.js'
 import type { ScanCounts } from '../collect/scan.js'
 import type { AssembledWindow } from '../collect/window.js'
@@ -116,6 +117,24 @@ export function crossWindowRate(
   let carried = 0
   for (const mac of now) if (before.has(mac)) carried += 1
   return carried / now.length
+}
+
+/**
+ * The counts whose declared meaning promises a window the basis does not give.
+ *
+ * A function rather than a literal so both outcomes can be tested. Two metrics
+ * carry the meaning string `window 内の tool_result ブロック総数（…）`, and that
+ * string is a closed-union member a receiver matches on to decide whether two
+ * environments measured the same thing — so it cannot be paraphrased when the
+ * build counts over the whole corpus. Saying so is the only honest option left.
+ */
+export function basisMismatchesFor(period: CountPeriod): readonly BasisMismatch[] {
+  if (period === 'window') return []
+  const reason = 'the denominator meaning says within-window; this build counts over the whole corpus'
+  return [
+    { path: 'metrics.toolError', declared: 'window', actual: period, reason },
+    { path: 'metrics.toolErrorAlt', declared: 'window', actual: period, reason },
+  ]
 }
 
 export interface Assembled {
@@ -640,6 +659,12 @@ export function assemble(inputs: AssembleInputs): Assembled {
       sourceField: 'origin.kind',
     }),
     countBasis: COUNT_BASIS,
+    // Declared where it is wrong rather than quietly reworded. `toolError` and
+    // `toolErrorAlt` carry a meaning string that says `window 内の`, and the
+    // string is a closed-union member a receiver matches on -- so it cannot be
+    // paraphrased without breaking the comparison it exists for. The count is
+    // over all time until the rest of the windowing lands.
+    basisMismatch: basisMismatchesFor(COUNT_BASIS.period),
     failureAttribution: {
       observed: counts.wasted.errorsObserved,
       inAxis2Numerator: counts.wasted.closure.numerator,
