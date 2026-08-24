@@ -51,8 +51,8 @@ describe('the MAC', () => {
   })
 
   it('carries nothing of the value', () => {
-    const m = mac(KEY_A, 'command', 'node scripts/emit-service-key.mjs')
-    expect(m).not.toContain('emit-service-key')
+    const m = mac(KEY_A, 'command', 'node scripts/deploy.mjs')
+    expect(m).not.toContain('deploy')
     expect(m).not.toContain('scripts')
     expect(m).not.toContain('node')
   })

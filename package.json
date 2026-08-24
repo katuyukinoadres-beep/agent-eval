@@ -9,7 +9,7 @@
     "local-first"
   ],
   "license": "MIT",
-  "author": "katuyukinoadres-beep",
+  "author": "Katsuyuki Yamamoto",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/katuyukinoadres-beep/agent-eval.git"
@@ -18,6 +18,9 @@
     "url": "https://github.com/katuyukinoadres-beep/agent-eval/issues"
   },
   "homepage": "https://github.com/katuyukinoadres-beep/agent-eval#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "agent-eval": "./dist/cli.js"
@@ -36,7 +39,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+    "prepublishOnly": "npm run typecheck && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npm run build && npm run test"
   },
   "engines": {
     "node": ">=20"

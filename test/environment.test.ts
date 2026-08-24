@@ -38,7 +38,7 @@ describe('classifying a permission entry', () => {
     // as `Bash(python:*)` would report an open door where a named script sits.
     expect(classifyPermission('Bash(python scripts/redact.py:*)')).toBe('scriptPathFixed')
     expect(classifyPermission('Bash(node scripts/db-query.mjs:*)')).toBe('scriptPathFixed')
-    expect(classifyPermission('Bash(node ../anki-new/scripts/emit-service-key.mjs:*)')).toBe('scriptPathFixed')
+    expect(classifyPermission('Bash(node ../other-project/scripts/deploy.mjs:*)')).toBe('scriptPathFixed')
   })
 
   it('names a wildcard bounded to one CLI', () => {

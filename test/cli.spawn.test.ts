@@ -49,7 +49,12 @@ const runFrom = (entry: string): { out: string; code: number } => {
   }
 }
 
-describe('the binary a user actually runs', () => {
+// Every test here spawns a real node process. Vitest's 5s default is not a
+// meaningful bound on that: on Windows, first-touch of the built file plus
+// antivirus inspection routinely pushes a single spawn past it, and the run
+// then reports a correctness failure for something that is purely startup
+// latency. The assertions are about what the binary prints, never how fast.
+describe('the binary a user actually runs', { timeout: 30_000 }, () => {
   it('prints its version from an ordinary path', () => {
     const r = runFrom(built)
     expect(r.out).toMatch(/^\d+\.\d+\.\d+$/)

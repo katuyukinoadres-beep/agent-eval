@@ -19,6 +19,9 @@ snapshots/
 .agent-eval-key
 *.key
 
+# A token-bearing .npmrc must never become a tracked file.
+.npmrc
+
 node_modules/
 dist/
 coverage/

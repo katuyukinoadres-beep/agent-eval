@@ -22,13 +22,20 @@ AI エージェント環境の質を、あなたのマシンにある Claude Cod
 ## 30 秒で試す
 
 ```bash
+npm install -g @katuyukinoadres-beep/agent-eval
+agent-eval scan --summary
+```
+
+読み取り専用です。`--store` を付けない限り、1 バイトも書きません。
+
+ソースから動かす場合:
+
+```bash
 git clone https://github.com/katuyukinoadres-beep/agent-eval.git
 cd agent-eval
 npm install          # prepare がビルドまで走ります
 node dist/cli.js scan --summary
 ```
-
-読み取り専用です。`--store` を付けない限り、1 バイトも書きません。
 
 詳しい導入は [docs/INSTALL.md](docs/INSTALL.md)、出力の読み方は [docs/GUIDE.md](docs/GUIDE.md)。
 
@@ -41,9 +48,6 @@ node dist/cli.js scan --summary
 一方、静的な設定採点ツール（skill-doctor / 50-point scorecard / CLAUDE.md grader）はどれもワンショット採点で、時系列も母集団比較も持ちません。
 
 **「質で採点 × 時系列 × エージェント側と人間側の両面」を同時に満たすものが無い。** そこを狙っています。
-
-- **役割分担**: 測定軸の設計は NiKo（`katsu-agents`）、実装は Leon（本リポジトリ）
-- **やりとり**: Agent Bridge AB-63 〜（Notion）
 
 ---
 
@@ -66,7 +70,7 @@ node dist/cli.js scan --summary
 
 ## 設計上の確定事項
 
-そのまま実装制約になっています。詳細は [docs/DECISION_LOG.md](docs/DECISION_LOG.md)。
+そのまま実装制約になっています。
 
 - **時系列が先、母集団比較は後** — 時系列はゲーム化に強く、N=1 で成立します
 - **提出単位はマシン全体。** プロジェクト別内訳を全件入れ、閾値は設けません
@@ -102,10 +106,10 @@ node dist/cli.js scan --summary
 
 | # | 何の定義 | 振れ幅 | 見つけた側 |
 |---|---|---|---|
-| 1 | 走査範囲（`subagents/` を含むか） | 1.46 倍 | NiKo |
-| 2 | is_error の分母 | 1.96 倍 | NiKo |
-| 3 | human 発話の定義 | 2.63 倍 | Leon |
-| 4 | 記録率の分母 | **6.9 倍** | Leon |
+| 1 | 走査範囲（`subagents/` を含むか） | 1.46 倍 | 環境 A |
+| 2 | is_error の分母 | 1.96 倍 | 環境 A |
+| 3 | human 発話の定義 | 2.63 倍 | 環境 B |
+| 4 | 記録率の分母 | **6.9 倍** | 環境 B |
 
 **うち 2 件は「定義を明示せよ」というルールを書いた本人が直後に破ったもの。** 送る側の規律では止まらないことが 4 回証明されました。
 
@@ -132,4 +136,4 @@ TypeScript strict。パス別名 `@/*` → `./src/*`。Node 20 以上。**実行
 
 実装は MIT（[LICENSE](LICENSE)）。
 
-**`docs/spec/` は対象外です。** 測定軸の仕様と参照実装は別の著者のもので、再配布の条件はまだ合意されていません（[docs/spec/NOTICE.md](docs/spec/NOTICE.md)）。npm パッケージには含めていません。
+**`docs/spec/` は対象外です。** 測定軸の仕様と参照実装は別の著者のもので、再配布の条件はまだ合意されていません（リポジトリの `docs/spec/NOTICE.md` を参照）。npm パッケージには含めていません。

@@ -2,7 +2,7 @@
  * The effective `cleanupPeriodDays`, and which scope it came from.
  *
  * The spec's first draft read this from `~/.claude.json`. Both measured
- * machines return nothing there: on Niko's the real value (14) lives in
+ * machines return nothing there: on the other one the real value (14) lives in
  * `~/.claude/settings.json`, and on this one the key is absent from all four
  * scopes. Reading one file and reporting `null` would have looked identical to
  * reading four and finding nothing, which is why the scope is reported too.

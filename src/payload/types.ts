@@ -83,7 +83,7 @@ export type Availability = 'available' | 'not_applicable' | 'parse_failed'
  * The payload spec governs the payload, so `observed` is what ships. Recorded
  * here rather than resolved quietly, because if the receiver was built from the
  * axes document this is a one-line change and nobody would otherwise know to
- * make it. Asked as part of AB-87.
+ * make it. Raised with the spec author rather than resolved quietly.
  */
 export type WindowSource = 'setting' | 'observed'
 

@@ -72,7 +72,7 @@ const TOTAL_BYTES = PROJECT_BYTES.reduce((a, b) => a + b, 0)
 export const BASE_PAYLOAD = {
   schemaVersion: '1.0',
   runTimestamp: iso8601('2026-08-20T09:00:00+09:00'),
-  submissionId: uuid('3f2a6c18-9b7d-4e51-a0c3-7d5e2f8b41a9'),
+  submissionId: uuid('00000000-0000-4000-8000-00000000ba5e'),
 
   scanManifest: {
     parserVersion: '1',

@@ -31,41 +31,34 @@ dir $env:USERPROFILE\.claude\projects\
 
 ## 2. 入れる
 
-### 経路 A: リポジトリを clone する（推奨）
+### 経路 A: npm から入れる（推奨）
 
-いちばん確実です。ソースが手元に残るので、[docs/PRIVACY.md](PRIVACY.md) に書いてあることを自分で確かめられます。
+```bash
+npm install -g @katuyukinoadres-beep/agent-eval
+agent-eval --version
+```
+
+> スコープが付いているのは、`agent-eval` という素の名前を別のパッケージが既に取っているためです。
+
+### 経路 B: リポジトリを clone する
+
+ソースが手元に残るので、[docs/PRIVACY.md](PRIVACY.md) に書いてあることを自分で確かめられます。
 
 ```bash
 git clone https://github.com/katuyukinoadres-beep/agent-eval.git
 cd agent-eval
-npm install
-```
-
-`npm install` の最後に `prepare` が走ってビルドまで済みます。実行:
-
-```bash
+npm install          # 最後に prepare が走ってビルドまで済みます
 node dist/cli.js --version
 ```
 
-### 経路 B: グローバルに入れる
-
-`agent-eval` をどこからでも呼べるようにする場合:
-
-```bash
-cd agent-eval
-npm pack                                        # .tgz ができる
-npm install -g ./katuyukinoadres-beep-agent-eval-0.1.0.tgz
-agent-eval --version
-```
-
-> **npm レジストリからはまだ入れられません。** 公開は未実施です。`agent-eval` という名前は別のパッケージが既に取っているため、公開する場合はスコープ付き（`@katuyukinoadres-beep/agent-eval`）になります。
+この経路では、以降の `agent-eval` を **`node dist/cli.js`** に読み替えてください。
 
 ### 依存パッケージについて
 
 **実行時依存はゼロ**です。`npm install` が入れるものは全部ビルドとテスト用で、`dist/` は Node の標準ライブラリしか使いません。確かめ方:
 
 ```bash
-node -e "console.log(require('./package.json').dependencies ?? 'none')"
+npm view @katuyukinoadres-beep/agent-eval dependencies    # 空であること
 ```
 
 ---
@@ -73,7 +66,7 @@ node -e "console.log(require('./package.json').dependencies ?? 'none')"
 ## 3. 動いていることを確かめる
 
 ```bash
-node dist/cli.js scan --summary
+agent-eval scan --summary
 ```
 
 **読み取り専用です。** `--store` を付けない限り 1 バイトも書きません。
@@ -104,7 +97,7 @@ validation passed (0 violations, 1 flags)
 比較は**スナップショットが 2 つ以上**あって初めて成立します。残すには `--store` を付けます。
 
 ```bash
-node dist/cli.js scan --summary --store
+agent-eval scan --summary --store
 ```
 
 これで `~/.agent-eval/` にスナップショットと鍵ができます（中身は [docs/PRIVACY.md §4](PRIVACY.md)）。
@@ -116,14 +109,14 @@ node dist/cli.js scan --summary --store
 macOS / Linux（cron、平日 19:00）:
 
 ```
-0 19 * * 1-5 cd ~/agent-eval && /usr/bin/node dist/cli.js scan --store > /dev/null 2>&1
+0 19 * * 1-5 agent-eval scan --store > /dev/null 2>&1
 ```
 
 Windows（タスク スケジューラ）:
 
 ```powershell
-$a = New-ScheduledTaskAction -Execute "node" `
-     -Argument "dist\cli.js scan --store" -WorkingDirectory "$HOME\agent-eval"
+$a = New-ScheduledTaskAction -Execute "agent-eval" `
+     -Argument "scan --store"
 $t = New-ScheduledTaskTrigger -Daily -At 19:00
 Register-ScheduledTask -TaskName "agent-eval" -Action $a -Trigger $t
 ```
@@ -192,13 +185,16 @@ Claude Code をまだほとんど使っていない状態です。**エラーで
 
 **このツールは知らない引数を黙って無視しません。** 無視すると「間違った入力に対する、きれいで正しく見える実行結果」が出てしまうためです。値を取る引数（`--repo` など）に値を渡し忘れた場合も、次のフラグを値として飲み込まずに `--repo needs a value` で止まります。
 
-### Windows で「node が見つかりません」
+### `agent-eval` が「見つかりません」
 
-Node を入れ直すか、フルパスで呼んでください。
+グローバル install の bin が PATH に入っていません。場所を確認して、そこを PATH に加えてください。
 
 ```powershell
-& "C:\Program Files\nodejs\node.exe" dist\cli.js --version
+npm prefix -g          # ここの直下に agent-eval.cmd がある
+npm ls -g --depth=0    # パッケージが入っているかの確認
 ```
+
+経路 B（clone）で使っている場合は、そもそも PATH には入りません。リポジトリ直下で `node dist/cli.js` を使ってください。
 
 ---
 

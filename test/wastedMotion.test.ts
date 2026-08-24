@@ -168,8 +168,8 @@ describe('repeat detection', () => {
   })
 
   it('carries nothing of the argument into the key', () => {
-    const key = inputKey('Bash', { command: 'node scripts/emit-service-key.mjs' })
-    expect(key).not.toContain('emit-service-key')
+    const key = inputKey('Bash', { command: 'node scripts/deploy.mjs' })
+    expect(key).not.toContain('deploy')
     expect(key).not.toContain('scripts')
   })
 })

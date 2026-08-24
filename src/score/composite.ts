@@ -84,7 +84,7 @@ export type Tier = (typeof TIERS)[number]['tier']
  *
  * The first three are the exact strings `GateReason` already uses. v2's first
  * draft coined `parse_rate` / `roots_incomplete` / `active_days` for the same
- * three conditions; that is the shape AB-88 was about — two documents naming
+ * three conditions; that is the same shape as the field-naming mismatch — two documents naming
  * one thing differently and a receiver silently failing to match — so the spec
  * moved to the implementation's words. `too-many-missing-axes` is the only new
  * one.

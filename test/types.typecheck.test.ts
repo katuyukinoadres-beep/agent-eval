@@ -68,7 +68,7 @@ const leakedText: Count = {
   value: 1,
   noDenominatorReason: 'reference-value',
   // @ts-expect-error a payload leaf is never free text
-  sourceField: 'user said: rebuild the ledger and send it to 加藤さん',
+  sourceField: 'user said: rebuild the ledger and send it to the client',
 }
 
 // Referenced so the declarations are not dead code. The assertions that matter

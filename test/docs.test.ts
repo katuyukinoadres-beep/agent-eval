@@ -118,7 +118,13 @@ describe('the numbers the manual quotes', () => {
 
   it('quote a version that matches the package', () => {
     expect(JSON.parse(read('package.json')).version).toBe(VERSION)
-    expect(INSTALL).toContain(`agent-eval-${VERSION}.tgz`)
+    // The manuals no longer pin a version in a command, and must not start
+    // again: a tarball name or an @x.y.z goes stale on the next release and
+    // there is nothing to notice it. The positive control proves the pattern
+    // can match a version if one appears.
+    const pinned = /agent-eval[@-]\d+\.\d+\.\d+/
+    expect(`@katuyukinoadres-beep/agent-eval@${VERSION}`).toMatch(pinned)
+    for (const doc of [README, INSTALL, GUIDE]) expect(doc).not.toMatch(pinned)
   })
 })
 
@@ -141,10 +147,33 @@ describe('what the manual promises about behaviour', () => {
     }
   })
 
-  it('does not promise an npm install that would fail today', () => {
-    // The package is unpublished and the bare name is taken by someone else.
-    // "npm i -g agent-eval" in a manual is a broken first step.
-    expect(INSTALL).not.toMatch(/npm i(nstall)? -g agent-eval\s*$/m)
-    expect(INSTALL).toContain('npm レジストリからはまだ入れられません')
+  it('names the scoped package, never the bare name someone else owns', () => {
+    // `agent-eval` on the public registry is a different package by a different
+    // author. A manual that says `npm i -g agent-eval` installs that one.
+    const scoped = '@katuyukinoadres-beep/agent-eval'
+    expect(INSTALL).toContain(`npm install -g ${scoped}`)
+    expect(README).toContain(`npm install -g ${scoped}`)
+    expect(JSON.parse(read('package.json')).name).toBe(scoped)
+    // The positive control: the bare form must not appear as a command anywhere
+    // a reader could copy it from, and this pattern is what would catch it.
+    expect(`npm i -g agent-eval`).toMatch(/npm i(nstall)? -g agent-eval/)
+    for (const doc of [README, INSTALL, GUIDE]) {
+      expect(doc).not.toMatch(/npm i(nstall)? -g agent-eval(?!-)/)
+    }
+  })
+
+  it('declares the access a scoped package needs to be public', () => {
+    // Scoped packages are the one case where npm's own shipped docs disagree
+    // with each other about the default. Declaring it costs nothing and removes
+    // the question.
+    expect(JSON.parse(read('package.json')).publishConfig).toEqual({ access: 'public' })
+  })
+
+  it('builds from a clean tree before testing what it ships', () => {
+    // The old order was typecheck && test && build: the tests inspected the
+    // previous dist, and a freshly built, never-tested dist was what shipped.
+    const pre = JSON.parse(read('package.json')).scripts.prepublishOnly as string
+    expect(pre.indexOf('build')).toBeLessThan(pre.indexOf('test'))
+    expect(pre).toContain('rmSync')
   })
 })

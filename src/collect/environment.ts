@@ -4,11 +4,11 @@
  *
  * Everything here is read from configuration rather than from transcripts, and
  * everything that leaves is a count or a class name. That constraint is not
- * decorative. The permission entries on this machine include
- * `node scripts/emit-service-key.mjs:*`, `node scripts/ban-test-accounts.mjs:*`
- * and `node ../anki-new/scripts/emit-service-key.mjs:*` — script names that
- * describe what the machine is allowed to do, and a relative path naming a
- * second project. The spec sketched shipping these as strings
+ * decorative. Permission entries routinely look like
+ * `node scripts/deploy.mjs:*`, `node scripts/seed.mjs:*` and
+ * `node ../other-project/scripts/deploy.mjs:*` — script names that describe
+ * what the machine is allowed to do, and a relative path naming a second
+ * project. The spec sketched shipping these as strings
  * (`"effectivelyUnrestrictedPatterns": ["Bash(python:*)"]`); classifying them
  * answers the same question without carrying any of that.
  */

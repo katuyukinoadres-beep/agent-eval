@@ -40,8 +40,8 @@ export interface GitDays {
  *
  * Explicitly, because the transcript directory cannot supply them. Project
  * directories are named by replacing every separator in the working directory
- * with a hyphen, so `C--Users-katuy-Yama-Agent` could decode to
- * `C:\Users\katuy\Yama-Agent` or `C:\Users\katuy\Yama\Agent` with nothing in the
+ * with a hyphen, so `C--Users-x-My-Project` could decode to
+ * `C:\Users\x\My-Project` or `C:\Users\x\My\Project` with nothing in the
  * name to say which. A decoder would be right most of the time, and the times it
  * was wrong would look like a repository with no commits — the silent-zero shape
  * this project exists to stop.
