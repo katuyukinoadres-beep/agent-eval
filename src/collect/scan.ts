@@ -226,6 +226,20 @@ export interface ScanCounts {
    * has to judge it over the window. Sets rather than tallies, because the only
    * question ever asked of them is whether the count is above zero.
    */
+  /**
+   * Name-keyed collections with the days each name occurred on.
+   *
+   * A window selects over these rather than summing them: a skill that fired
+   * six weeks ago is not a fired asset for a utilisation rate taken from the
+   * last ten active days, and a distinct-name count cannot be added up.
+   */
+  readonly dayedNames: {
+    readonly skillFirings: Readonly<Record<string, readonly string[]>>
+    readonly hookFirings: Readonly<Record<string, readonly string[]>>
+    readonly mcpFirings: Readonly<Record<string, readonly string[]>>
+    readonly editedNames: Readonly<Record<string, readonly string[]>>
+    readonly staleRecoveredPaths: Readonly<Record<string, readonly string[]>>
+  }
   readonly clusterDays: {
     readonly bundles: Readonly<Record<string, readonly string[]>>
     readonly intervals: Readonly<Record<string, readonly string[]>>
@@ -800,6 +814,9 @@ const repeatedOf = (macs: readonly Hmac128[]): readonly Hmac128[] => {
 /** How a bundle came to exist. A delegation is opened by the request that spawned it. */
 type BundleKind = 'human' | 'root' | 'orphan' | 'delegation'
 
+/** Name-keyed collections that a window selects rather than sums. */
+type DayedKind = 'skillFirings' | 'hookFirings' | 'mcpFirings' | 'editedNames' | 'staleRecoveredPaths'
+
 /**
  * A local, opaque key for one failure signature.
  *
@@ -848,6 +865,7 @@ function reduceLine(
   openEdits: Map<string, OpenEdit>,
   verificationOn: (day: Day | null) => VerificationDay,
   noteCluster: (kind: 'bundles' | 'intervals' | 'errors', session: string, day: Day | null) => void,
+  noteDayed: (kind: DayedKind, name: string, day: Day | null) => void,
   closeInterval: (open: OpenEdit) => void,
   pending: Map<string, PendingFailure>,
   seenClasses: Set<string>,
@@ -923,6 +941,7 @@ function reduceLine(
     d.attributionSkillRows += 1
     skills.add(skill)
     met.skillFirings.set(skill, (met.skillFirings.get(skill) ?? 0) + 1)
+    noteDayed('skillFirings', skill, day)
   }
 
   // Axis 5's asset set. `names` is on the attachment already, so the listing's
@@ -947,11 +966,13 @@ function reduceLine(
       const filename = attachment['filename']
       if (typeof filename === 'string' && filename.length > 0) {
         manual.editedNames.add(filename.split(/[\/]/).pop()?.toLowerCase() ?? '')
+        noteDayed('editedNames', filename.split(/[\/]/).pop()?.toLowerCase() ?? '', day)
       }
     } else if (attachment['type'] === 'hook_success') {
       const name = attachment['hookName']
       if (typeof name === 'string' && name.length > 0) {
         met.hookFirings.set(name, (met.hookFirings.get(name) ?? 0) + 1)
+        noteDayed('hookFirings', name, day)
       }
     }
   }
@@ -960,6 +981,7 @@ function reduceLine(
   if (typeof server === 'string' && server.length > 0) {
     mcp.add(server)
     met.mcpFirings.set(server, (met.mcpFirings.get(server) ?? 0) + 1)
+    noteDayed('mcpFirings', server, day)
   }
 
   // Row level, not inside toolUseResult. The other machine measured 0 against
@@ -1054,7 +1076,10 @@ function reduceLine(
     }
     if (result['staleRecovered'] === true) {
       const fp = result['filePath']
-      if (typeof fp === 'string') manual.staleRecoveredPaths.add(fp)
+      if (typeof fp === 'string') {
+        manual.staleRecoveredPaths.add(fp)
+        noteDayed('staleRecoveredPaths', fp, day)
+      }
     }
     if (result['timedOutAfterMs'] !== undefined && result['timedOutAfterMs'] !== null) {
       w.timedOut += 1
@@ -1425,6 +1450,27 @@ export function scan(
     intervals: new Map<string, Set<string>>(),
     errors: new Map<string, Set<string>>(),
   }
+  /**
+   * Named things and the days they happened on.
+   *
+   * The firing maps and the manual-edit sets are keyed by name, so the window
+   * cannot be a sum — it is a selection over which names fired inside it. A
+   * skill that fired six weeks ago is not a fired asset for a utilisation rate
+   * taken from the last ten active days.
+   */
+  const dayed: Record<DayedKind, Map<string, Set<string>>> = {
+    skillFirings: new Map(),
+    hookFirings: new Map(),
+    mcpFirings: new Map(),
+    editedNames: new Map(),
+    staleRecoveredPaths: new Map(),
+  }
+  const noteDayed = (kind: DayedKind, name: string, day: Day | null): void => {
+    const set = dayed[kind].get(name) ?? new Set<string>()
+    set.add(day ?? 'undated')
+    dayed[kind].set(name, set)
+  }
+
   const noteCluster = (kind: keyof typeof clusterDays, session: string, day: Day | null): void => {
     const key = day ?? 'undated'
     const set = clusterDays[kind].get(session) ?? new Set<string>()
@@ -1566,7 +1612,7 @@ export function scan(
       }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, verificationOn, noteCluster, closeInterval, pending, seenClasses, dayOffsetMinutes)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, verificationOn, noteCluster, noteDayed, closeInterval, pending, seenClasses, dayOffsetMinutes)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
@@ -1747,6 +1793,15 @@ export function scan(
           },
         ]),
     ),
+    dayedNames: {
+      skillFirings: Object.fromEntries([...dayed.skillFirings].map(([k, v]) => [k, [...v].sort()])),
+      hookFirings: Object.fromEntries([...dayed.hookFirings].map(([k, v]) => [k, [...v].sort()])),
+      mcpFirings: Object.fromEntries([...dayed.mcpFirings].map(([k, v]) => [k, [...v].sort()])),
+      editedNames: Object.fromEntries([...dayed.editedNames].map(([k, v]) => [k, [...v].sort()])),
+      staleRecoveredPaths: Object.fromEntries(
+        [...dayed.staleRecoveredPaths].map(([k, v]) => [k, [...v].sort()]),
+      ),
+    },
     clusterDays: {
       bundles: Object.fromEntries([...clusterDays.bundles].map(([k, v]) => [k, [...v].sort()])),
       intervals: Object.fromEntries([...clusterDays.intervals].map(([k, v]) => [k, [...v].sort()])),

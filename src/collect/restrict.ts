@@ -70,6 +70,10 @@ export const ALL_TIME_REASONS: Readonly<Record<string, string>> = {
   listingTruncated: 'the same',
   sessionIds: 'the cluster set, and one side of the sessions-close identity',
   ambiguousBasenames: 'a property of every path ever seen, not of a day',
+  perProject:
+    'the environment block describes the machine, not a period; project line tallies are not an axis input',
+  'metabolism.assets':
+    'skills listed, hooks registered and MCP servers configured are owned machine-wide — a skill listed before the window is still one you own',
   'perSession.counts':
     'the per-session tallies stay corpus-wide; only the cluster day sets are windowed, and they are what the minimum reads',
   'errorRepeats.byFamily': 'the family split is reported over the corpus; only the rate is windowed',
@@ -115,7 +119,7 @@ const mergeMaps = (
 }
 
 /** The row-level counts this view windows. Everything else is copied through. */
-const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification', 'editedPaths', 'manualEdits', 'clusterDays'] as const
+const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification', 'editedPaths', 'manualEdits', 'clusterDays', 'metabolism.firings'] as const
 
 /**
  * Families still taken from the corpus because they are not day-keyed yet.
@@ -123,12 +127,7 @@ const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBun
  * Listed rather than left implicit. Each is a count an axis divides by, and a
  * windowed numerator over an all-time denominator is a rate nobody can name.
  */
-const NOT_YET_WINDOWED = [
-  'perSession.counts',
-  'perProject',
-  'metabolism',
-  'manualEdits',
-] as const
+const NOT_YET_WINDOWED = [] as const
 
 export interface Restricted {
   readonly counts: ScanCounts
@@ -255,6 +254,31 @@ function verificationOver(
   return { intervals, verifiedIntervals, selfRepaired, humanRescued, unresolved, repairedNotCounted }
 }
 
+/** The names that occurred inside the window, with their corpus-wide counts. */
+function firedWithin(
+  byName: Readonly<Record<string, readonly string[]>>,
+  counts: Readonly<Record<string, number>>,
+  days: readonly string[],
+): Readonly<Record<string, number>> {
+  const out: Record<string, number> = {}
+  for (const [name, on] of Object.entries(byName)) {
+    if (!on.some((d) => days.includes(d))) continue
+    out[name] = counts[name] ?? 0
+  }
+  return out
+}
+
+/** The names that occurred inside the window. */
+function namesWithin(
+  byName: Readonly<Record<string, readonly string[]>>,
+  days: readonly string[],
+): readonly string[] {
+  return Object.entries(byName)
+    .filter(([, on]) => on.some((d) => days.includes(d)))
+    .map(([name]) => name)
+    .sort()
+}
+
 /** Each session's days, cut to the window. A session with none drops out. */
 function withinWindow(
   bySession: Readonly<Record<string, readonly string[]>>,
@@ -315,10 +339,22 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
         cacheRead: sumOver(perDay, days, (c) => c.cacheRead),
         cacheCreation: sumOver(perDay, days, (c) => c.cacheCreation),
       },
+      // Selected, not summed. A firing count keyed by name cannot be added up
+      // across days, and a skill that fired six weeks ago is not a fired asset
+      // for a rate taken from the last ten active days. The asset *set* stays
+      // corpus-wide: a skill listed before the window is still one you own.
+      metabolism: {
+        ...counts.metabolism,
+        skillFirings: firedWithin(counts.dayedNames.skillFirings, counts.metabolism.skillFirings, selected),
+        hookFirings: firedWithin(counts.dayedNames.hookFirings, counts.metabolism.hookFirings, selected),
+        mcpFirings: firedWithin(counts.dayedNames.mcpFirings, counts.metabolism.mcpFirings, selected),
+      },
       manualEdits: {
         ...counts.manualEdits,
         userModifiedPresent: sumOver(perDay, days, (c) => c.userModifiedPresent),
         userModifiedTrue: sumOver(perDay, days, (c) => c.userModifiedTrue),
+        editedNames: namesWithin(counts.dayedNames.editedNames, selected),
+        staleRecoveredPaths: namesWithin(counts.dayedNames.staleRecoveredPaths, selected),
       },
       // Intervals and repair episodes are charged to the day they opened on, so
       // a verification or a recovery that arrives later still lands with the

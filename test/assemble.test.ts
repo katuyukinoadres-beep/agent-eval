@@ -48,6 +48,7 @@ const counts = {
   // Per-axis clusters are counted from here, not from sessionIds: a cluster is
   // a session with a non-zero denominator for that axis, and the axes do not
   // share one.
+  dayedNames: { skillFirings: {}, hookFirings: {}, mcpFirings: {}, editedNames: {}, staleRecoveredPaths: {} },
   clusterDays: { bundles: {}, intervals: {}, errors: {} },
   perSession: {
     a: { intervals: 60, bundles: 25, failures: 6, writeRepeats: 2, investigationRepeats: 6, timedOut: 0, largeOutput: 0, errors: 6, lines: 600 },
@@ -507,8 +508,11 @@ describe('a count whose declared meaning outruns its basis', () => {
     // The manifest's `countBasis` still says `allTime`, because the axes are.
     // A count that departs from it has to say where it departed, or one word
     // ends up covering two periods.
+    // The manifest now defaults to `window`, because every scored axis and
+    // every rate is one. The rates still carry it explicitly — a metric that
+    // states its own basis cannot be misread when the default moves again.
     const { payload } = assemble(inputs)
-    expect(payload.scanManifest.countBasis.period).toBe('allTime')
+    expect(payload.scanManifest.countBasis.period).toBe('window')
     expect(payload.metrics.toolError?.basis?.period).toBe('window')
     expect(payload.metrics.toolErrorAlt?.basis?.period).toBe('window')
   })

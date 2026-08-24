@@ -2174,3 +2174,48 @@ vs prev    identical, 4 axes: ... (none can be called a change: no interval yet)
 ### この機械では挙動は変わらない
 
 クラスタ 12 も 11 も `MIN_CLUSTERS = 20` を下回るので `belowMinDenominator` は両方 true。**基準の混在は直ったが、数字は動かない。** セッション数が20を超える環境で効く。
+
+---
+
+## 2026-08-24 — Stage B8: 窓の完了。既定の基準を `window` に
+
+### 名前で引く集合は「足す」のではなく「選ぶ」
+
+発火マップ（skill / hook / MCP）と手上書きの名前集合は**名前でキーされている**ので、日ごとに足せない。**6週間前に発火したスキルは、直近10稼働日から取った稼働率にとって「発火した資産」ではない。**
+
+名前ごとに「起きた日の集合」を持たせ、窓に1日でも入っていればその名前を採る形にした。
+
+**資産集合そのものは全期間のまま。** 窓の前に skill_listing に載っていたスキルは、今も自分が持っているスキル。`ALL_TIME_REASONS` に理由付きで宣言。
+
+### `NOT_YET_WINDOWED` が空になった
+
+採点される軸5本すべてが窓から採点される:
+
+```
+scored over the window: 4/4 axes
+```
+
+（軸5は非採点なので4/4。軸5の発火も窓に入っている。）
+
+### 既定を `allTime` から `window` へ
+
+マニフェストの `countBasis` は「**この値がどう数えられたか、その数が別を名乗らない限り**」。多数派が窓になったので既定を窓にし、そうでない数は `ALL_TIME_REASONS` で個別に名乗る。
+
+**これは `countBasisDigest` を変えるので、旧基準で書かれたスナップショットとの比較は `count-basis-changed` で拒否される。** 実測:
+
+```
+vs prev  no delta — count-basis-changed        ← 旧基準のスナップショットに対して
+vs prev  identical, 4 axes ... composite: 56.92 → 56.92 (+0)   ← 同基準どうし
+```
+
+**これは機構が働いている姿。** 2つの窓が違うものを数えたのだから、そのΔは方法の変化を測ってしまう。
+
+### サマリの1行も導出に変えた
+
+前は「windowed: A, B, C — every other score is over the whole corpus」。全軸が入った今、「every other」が指すものが無い。**採点された軸のうち何本が窓か**を数える形にした:
+
+```
+scored over the window: 4/4 axes
+```
+
+窓の外の軸があれば、その名前が続く。

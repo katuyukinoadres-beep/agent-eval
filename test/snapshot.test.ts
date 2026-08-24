@@ -46,6 +46,7 @@ const counts = {
   userRowDates: ['2026-08-19', '2026-08-20'],
   humanTurnDates: ['2026-08-19'], humanTurnDatesUtc: [], perDay: {},
   perProject: {},
+  dayedNames: { skillFirings: {}, hookFirings: {}, mcpFirings: {}, editedNames: {}, staleRecoveredPaths: {} },
   clusterDays: { bundles: {}, intervals: {}, errors: {} },
   perSession: {
     s1: { intervals: 6, bundles: 3, failures: 2, writeRepeats: 1, investigationRepeats: 0, timedOut: 0, largeOutput: 0, errors: 2, lines: 60 },

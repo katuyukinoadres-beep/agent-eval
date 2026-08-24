@@ -66,7 +66,16 @@ import { MIN_FILTERED_CALLS } from '../score/wastedMotion.js'
 //           decision was reached.
 export const COUNT_BASIS: CountBasis = {
   scope: 'all',
-  period: 'allTime',
+  // Every scored axis and every rate is taken over the window now. The counts
+  // that are not are named individually in `ALL_TIME_REASONS`, which is what
+  // "unless the count says otherwise" means.
+  //
+  // Changing this changes `countBasisDigest`, so a comparison against a
+  // snapshot written under the old basis is refused with
+  // `count-basis-changed`. That is the mechanism working: the two windows
+  // counted different things, and a delta across them would measure the change
+  // in method.
+  period: 'window',
   unit: 'row',
   excludes: [],
 }
@@ -418,9 +427,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     effectiveInputPerBundle: counts.metabolism.effectiveInputPerBundle,
     inputPerBundleWithoutCache: counts.metabolism.inputPerBundleWithoutCache,
     skillsListed: counts.metabolism.skillsListed,
-    skillFirings: counts.metabolism.skillFirings,
-    hookFirings: counts.metabolism.hookFirings,
-    mcpFirings: counts.metabolism.mcpFirings,
+    skillFirings: windowedCounts.metabolism.skillFirings,
+    hookFirings: windowedCounts.metabolism.hookFirings,
+    mcpFirings: windowedCounts.metabolism.mcpFirings,
     mcpServersDefined: mcp.servers,
     hooksDefined: inputs.hooks.total,
     listingTruncated: counts.metabolism.listingTruncated,
@@ -431,7 +440,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // good the number looks. Dropping a deduction can only raise a result, and
     // the result would be the same name for a different quantity.
     availability: 'not_applicable',
-    basis: null,
+    // The firings are windowed; the asset set they divide by is machine-wide
+    // and declared as such. Recorded rather than scored either way.
+    basis: WINDOW_BASIS,
     lineStates: lineStatesFor(met.score !== null),
     metric: null,
     // Recorded, not scored. A later window needs the raw figures, and a
