@@ -295,14 +295,14 @@ export function assemble(inputs: AssembleInputs): Assembled {
   // the axes do not share a denominator. Counting every session that produced a
   // line over-counts clusters on every axis at once, in the direction that lets
   // a minimum pass.
-  const sessions = Object.values(counts.perSession)
-  const clustersWith = (has: (t: (typeof sessions)[number]) => boolean): number =>
-    sessions.filter(has).length
   /** Sessions at all. The fallback where no per-session denominator exists. */
   const clusters = counts.sessionIds.length
-  const clustersByBundle = clustersWith((t) => t.bundles > 0)
-  const clustersByInterval = clustersWith((t) => t.intervals > 0)
-  const clustersByError = clustersWith((t) => t.errors > 0)
+  // Counted from the windowed view, because the denominators these gate are
+  // windowed. A session that had a bundle six weeks ago is not a cluster for a
+  // rate taken from the last ten active days.
+  const clustersByBundle = Object.keys(windowedCounts.clusterDays.bundles).length
+  const clustersByInterval = Object.keys(windowedCounts.clusterDays.intervals).length
+  const clustersByError = Object.keys(windowedCounts.clusterDays.errors).length
   const reasons = axisReasons(clusters, !verdict.totalAllowed)
 
   // Axis 2 is available on its own condition -- filtered tool_use of at least

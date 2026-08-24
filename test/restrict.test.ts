@@ -160,7 +160,8 @@ describe('what the view says about itself', () => {
     expect(basis.windowed).toContain('errorRepeats')
     expect(basis.windowed).toContain('verification')
     expect(basis.windowed).toContain('editedPaths')
-    expect(basis.allTime).toContain('perSession')
+    expect(basis.windowed).toContain('clusterDays')
+    expect(basis.allTime).toContain('perSession.counts')
     for (const key of Object.keys(ALL_TIME_REASONS)) {
       expect(ALL_TIME_REASONS[key], key).toBeTruthy()
     }

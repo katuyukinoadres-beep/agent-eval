@@ -70,6 +70,8 @@ export const ALL_TIME_REASONS: Readonly<Record<string, string>> = {
   listingTruncated: 'the same',
   sessionIds: 'the cluster set, and one side of the sessions-close identity',
   ambiguousBasenames: 'a property of every path ever seen, not of a day',
+  'perSession.counts':
+    'the per-session tallies stay corpus-wide; only the cluster day sets are windowed, and they are what the minimum reads',
   'errorRepeats.byFamily': 'the family split is reported over the corpus; only the rate is windowed',
 }
 
@@ -113,7 +115,7 @@ const mergeMaps = (
 }
 
 /** The row-level counts this view windows. Everything else is copied through. */
-const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification', 'editedPaths', 'manualEdits'] as const
+const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBundles', 'wasted', 'errorRepeats', 'signatures', 'verification', 'editedPaths', 'manualEdits', 'clusterDays'] as const
 
 /**
  * Families still taken from the corpus because they are not day-keyed yet.
@@ -122,7 +124,7 @@ const WINDOWED_FAMILIES = ['rowCounters', 'tokenTotals', 'denialKinds', 'taskBun
  * windowed numerator over an all-time denominator is a rate nobody can name.
  */
 const NOT_YET_WINDOWED = [
-  'perSession',
+  'perSession.counts',
   'perProject',
   'metabolism',
   'manualEdits',
@@ -253,6 +255,19 @@ function verificationOver(
   return { intervals, verifiedIntervals, selfRepaired, humanRescued, unresolved, repairedNotCounted }
 }
 
+/** Each session's days, cut to the window. A session with none drops out. */
+function withinWindow(
+  bySession: Readonly<Record<string, readonly string[]>>,
+  days: readonly string[],
+): Readonly<Record<string, readonly string[]>> {
+  const out: Record<string, readonly string[]> = {}
+  for (const [session, had] of Object.entries(bySession)) {
+    const kept = had.filter((d) => days.includes(d))
+    if (kept.length > 0) out[session] = kept
+  }
+  return out
+}
+
 export function restrict(counts: ScanCounts, scope: WindowScope | null): Restricted {
   const days = scope === null ? null : scope.ordered
   const perDay = counts.perDay
@@ -318,6 +333,15 @@ export function restrict(counts: ScanCounts, scope: WindowScope | null): Restric
       // cumulative: an artifact's weight has to be the same figure in every
       // window that contains it, and the right-censor turns on the real last
       // write rather than on the last one inside some boundary.
+      // A cluster is a session with a denominator for that axis, judged over
+      // the same days the denominator was taken from. Counting sessions that
+      // had a bundle at any time, against a rate taken from ten days, is a
+      // minimum judged on one basis and a rate on another.
+      clusterDays: {
+        bundles: withinWindow(counts.clusterDays.bundles, selected),
+        intervals: withinWindow(counts.clusterDays.intervals, selected),
+        errors: withinWindow(counts.clusterDays.errors, selected),
+      },
       editedPaths: Object.fromEntries(
         Object.entries(counts.editedPaths).filter(([, tally]) => {
           // Cut on the window's own boundary. Slicing ten characters off the

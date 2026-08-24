@@ -48,6 +48,7 @@ const counts = {
   // Per-axis clusters are counted from here, not from sessionIds: a cluster is
   // a session with a non-zero denominator for that axis, and the axes do not
   // share one.
+  clusterDays: { bundles: {}, intervals: {}, errors: {} },
   perSession: {
     a: { intervals: 60, bundles: 25, failures: 6, writeRepeats: 2, investigationRepeats: 6, timedOut: 0, largeOutput: 0, errors: 6, lines: 600 },
     b: { intervals: 40, bundles: 15, failures: 4, writeRepeats: 2, investigationRepeats: 4, timedOut: 0, largeOutput: 0, errors: 4, lines: 400 },
@@ -382,10 +383,33 @@ describe('the minimum denominator', () => {
   const withSessions = (artifactCount: number) =>
     assemble({
       ...inputs,
+      windowedCounts: {
+        ...inputs.counts,
+        sessionIds: Object.keys(manySessions),
+        perSession: manySessions,
+        // Clusters are counted from the windowed day sets now, so a fixture
+        // that only supplies tallies has no clusters at all.
+        clusterDays: {
+          bundles: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          intervals: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          errors: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+        },
+        // Every artifact referred to again from a different bundle, so the
+        // numerator condition is satisfied and the denominator is the only
+        // thing left that can decide the verdict.
+        mentionedElsewhereAfter: () => true,
+      },
       counts: {
         ...inputs.counts,
         sessionIds: Object.keys(manySessions),
         perSession: manySessions,
+        // Clusters are counted from the windowed day sets now, so a fixture
+        // that only supplies tallies has no clusters at all.
+        clusterDays: {
+          bundles: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          intervals: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+          errors: Object.fromEntries(Object.keys(manySessions).map((s) => [s, ['2026-08-20']])),
+        },
         // Every artifact referred to again from a different bundle, so the
         // numerator condition is satisfied and the denominator is the only
         // thing left that can decide the verdict.

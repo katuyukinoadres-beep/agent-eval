@@ -220,6 +220,18 @@ export interface ScanCounts {
    */
   readonly perSession: Readonly<Record<string, SessionTally>>
   /**
+   * Days each session had a non-zero denominator on, per axis.
+   *
+   * A cluster is a session with a denominator *for that axis*, so the window
+   * has to judge it over the window. Sets rather than tallies, because the only
+   * question ever asked of them is whether the count is above zero.
+   */
+  readonly clusterDays: {
+    readonly bundles: Readonly<Record<string, readonly string[]>>
+    readonly intervals: Readonly<Record<string, readonly string[]>>
+    readonly errors: Readonly<Record<string, readonly string[]>>
+  }
+  /**
    * Error signatures, MAC'd.
    *
    * The plaintext tuple never leaves this function. `repeatRate` is computed
@@ -835,6 +847,7 @@ function reduceLine(
   manual: MutManualEdits,
   openEdits: Map<string, OpenEdit>,
   verificationOn: (day: Day | null) => VerificationDay,
+  noteCluster: (kind: 'bundles' | 'intervals' | 'errors', session: string, day: Day | null) => void,
   closeInterval: (open: OpenEdit) => void,
   pending: Map<string, PendingFailure>,
   seenClasses: Set<string>,
@@ -1008,6 +1021,7 @@ function reduceLine(
   // show it.
   if (assigned !== null && assigned.kind !== 'inherited' && !bundleDay.has(assigned.id)) {
     bundleDay.set(assigned.id, { day, kind: assigned.kind })
+    noteCluster('bundles', fileSession, day)
   }
   // A delegation's id is allocated when its file opens, but its day is the day
   // of its first row. Stamping it at file-open charged a bundle to the window
@@ -1015,6 +1029,7 @@ function reduceLine(
   // outside the window still inflated the denominator.
   if (kind === 'sub' && subBundle !== null && !bundleDay.has(subBundle)) {
     bundleDay.set(subBundle, { day, kind: 'delegation' })
+    noteCluster('bundles', fileSession, day)
     // Counted against the parent session here rather than at file-open, so the
     // per-session tally and the machine-wide one register the same bundle at
     // the same moment. `axis-denominator-close` compares them.
@@ -1168,6 +1183,7 @@ function reduceLine(
             w.hookOriginated += 1
           }
           st.errors += 1
+          noteCluster('errors', fileSession, day)
 
           // Only what axis 2 charged supplies a signature. A refused call in the
           // recurrence set would make one guardrail firing twice look like the
@@ -1239,6 +1255,7 @@ function reduceLine(
             if (previous !== undefined) {
               closeInterval(previous)
               st.intervals += 1
+              noteCluster('intervals', fileSession, previous.openedOn)
             }
             openEdits.set(key, { verified: false, openedOn: day })
           }
@@ -1393,6 +1410,28 @@ export function scan(
    */
   const bundleDay = new Map<number, { day: Day | null; kind: BundleKind }>()
   /**
+   * Which days each session had a non-zero denominator on, per axis.
+   *
+   * A cluster is a session with a denominator *for that axis*, and the window
+   * has to judge that over the window: counting sessions that had a bundle at
+   * any time in the corpus, against a denominator taken from ten days, is a
+   * minimum judged on one basis and a rate taken on another.
+   *
+   * Day sets rather than per-day tallies, because the consumer only ever asks
+   * whether the count is above zero.
+   */
+  const clusterDays = {
+    bundles: new Map<string, Set<string>>(),
+    intervals: new Map<string, Set<string>>(),
+    errors: new Map<string, Set<string>>(),
+  }
+  const noteCluster = (kind: keyof typeof clusterDays, session: string, day: Day | null): void => {
+    const key = day ?? 'undated'
+    const set = clusterDays[kind].get(session) ?? new Set<string>()
+    set.add(key)
+    clusterDays[kind].set(session, set)
+  }
+  /**
    * Axis 3's counters by the day the interval or the episode opened on.
    *
    * The classification is unchanged and still computed over the whole corpus:
@@ -1527,7 +1566,7 @@ export function scan(
       }
     }
     for (const line of text.split('\n')) {
-      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, verificationOn, closeInterval, pending, seenClasses, dayOffsetMinutes)
+      reduceLine(line, file.kind, m, skills, mcp, versions, sessions, dates, edits, proj, file.sessionId, st, notHuman, bundles, bundleDay, subBundle, paths, refs, toolOf, tuples, macs, signatureKeysPerDay, macsPerDay, sign, wasted, wOf, met, manual, openEdits, verificationOn, noteCluster, closeInterval, pending, seenClasses, dayOffsetMinutes)
     }
     // Intervals still open when the transcript ends are closed here: a write
     // whose file was never touched again is an unverified interval, not a
@@ -1708,6 +1747,11 @@ export function scan(
           },
         ]),
     ),
+    clusterDays: {
+      bundles: Object.fromEntries([...clusterDays.bundles].map(([k, v]) => [k, [...v].sort()])),
+      intervals: Object.fromEntries([...clusterDays.intervals].map(([k, v]) => [k, [...v].sort()])),
+      errors: Object.fromEntries([...clusterDays.errors].map(([k, v]) => [k, [...v].sort()])),
+    },
     verificationPerDay: Object.fromEntries(
       [...verificationByDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
     ),
