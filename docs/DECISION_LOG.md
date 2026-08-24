@@ -1929,3 +1929,55 @@ W-9 は**仕様由来ではなくローカル規則**。仕様が想定してい
 ### 陽性対照
 
 `basisMismatchesFor(period)` を純関数に切り出した。`allTime` で2件、`window` で空。**無条件に配列を返す実装でも片方向テストは通る**ので、両方向を書いた。
+
+---
+
+## 2026-08-24 — 窓を配線した（Stage B2）。ただし軸はまだ全期間
+
+`restrict()` を `run.ts` に繋いだ。**半分だけ窓を当てる形は作らない**ようにした:
+
+> 窓の分子を全期間の分母で割ると、誰にも名前の付けられない率になる。
+
+なので `assemble` は**2つのビューを取る**:
+
+- `counts`（全期間）— ゲート・観測スパン・**軸**。軸は束・編集区間・成果物集合という全期間の分母で割るので、分子も同じ場所から来なければならない
+- `windowedCounts`（窓）— **分子と分母の両方が行カウンタである指標だけ**
+
+該当したのは `toolError` と `toolErrorAlt` の2つ。この2つがまさに `window 内の…` という意味文字列を持っていたので、**謳っていたことが本当になり、`basisMismatch` が空になった**。
+
+### 逸脱する数はどこで逸脱したかを言う
+
+`Metric` に任意の `basis` を追加。無ければマニフェストの `countBasis` が適用される、という意味。
+
+```
+countBasis           : {"period": "allTime", ...}   ← 軸はこちら
+metrics.toolError    : basis.period = "window"
+metrics.skillFired   : basis 無し（両辺とも全期間なので正しく無い）
+```
+
+**1つの語が2つの期間をまたぐのを作らない** — それがこのモジュールの存在理由。
+
+### 実測: 窓は本当に切っている
+
+| | 全期間 | 窓 | 差 |
+|---|---|---|---|
+| toolResultTotal | 12,285 | 11,938 | −347 |
+| toolResultIsErrorTrue | 434 | 424 | −10 |
+| userRows | 13,074 | 12,711 | −363 |
+
+窓外 6,375 行の内訳: **日付なし 5,131** + 2026-08-24（進行中の日）1,232。
+
+### 日付なし行 11.1% を payload に出した
+
+`undatedRows` と `rowsOutOfWindow`（日別）。**どの窓にも入らないので、窓内カウントと全期間カウントの恒常的な差はこれ。** 46,215行中5,131行＝11.1%は、2つの合計の差から読み手に推測させるには大きすぎる。
+
+サマリにも1行:
+
+```
+5131 undated (in no window), 6375 rows out of window
+🚨 the window applies to the rates above; the axis scores below are over the whole corpus
+```
+
+### まだ残っている（`NOT_YET_WINDOWED`）
+
+`taskBundles` / `wasted` / `errorRepeats` / `signatures` / `verification` / `editedPaths` / `perSession` / `perProject` / `metabolism` / `manualEdits`。軸4本はこれらで採点されているので、**スコアは全期間のまま**。サマリがそう言う。

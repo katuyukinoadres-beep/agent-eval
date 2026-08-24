@@ -396,6 +396,22 @@ export interface ScanManifest {
    * comparing two submissions that were never comparable.
    */
   readonly basisMismatch: readonly BasisMismatch[]
+  /**
+   * Rows carrying no parsable timestamp.
+   *
+   * They are in no window — a row with no day put into the newest one is a
+   * fabricated observation, not a recovered one — so they are the standing
+   * difference between a windowed count and its corpus-wide twin. 5,127 of
+   * 46,184 here, 11.1%, which is too large to leave for a reader to infer from
+   * a gap between two totals.
+   */
+  readonly undatedRows: number
+  /** Rows the window left out, by day, with the undated bucket counted apart. */
+  readonly rowsOutOfWindow: {
+    readonly total: number
+    readonly undated: number
+    readonly byDay: Readonly<Record<string, number>>
+  }
   readonly failureAttribution: FailureAttribution
   readonly window: Window
   readonly externalLog: ExternalLog

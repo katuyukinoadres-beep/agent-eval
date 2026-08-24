@@ -73,7 +73,32 @@ export const COUNT_BASIS: CountBasis = {
 
 export interface AssembleInputs {
   readonly inventory: Inventory
+  /**
+   * The corpus-wide view. What the gate, the observed span and the axes use.
+   *
+   * The axes still divide by all-time denominators — bundles, intervals, the
+   * artifact set — so their numerators have to come from the same place. A
+   * windowed numerator over a corpus-wide denominator is a rate nobody can name.
+   */
   readonly counts: ScanCounts
+  /**
+   * The same scan restricted to the window, for the counts that are day-keyed.
+   *
+   * Only the row-level counters are windowed so far, so only the metrics whose
+   * numerator *and* denominator are both row counters take this view. Each one
+   * that does carries a `basis` saying so, because the manifest's `countBasis`
+   * describes the majority and a count that departs from it has to say where it
+   * departed.
+   */
+  readonly windowedCounts: ScanCounts
+  /** Rows with no parsable timestamp. In no window, always reported. */
+  readonly undatedRows: number
+  /** What the window left out, by day. A zero at a position, not inside a sum. */
+  readonly rowsOutOfWindow: {
+    readonly total: number
+    readonly undated: number
+    readonly byDay: Readonly<Record<string, number>>
+  }
   /** The settled artifact set. Axis 4's denominator. */
   readonly artifacts: ArtifactSet
   readonly window: AssembledWindow
@@ -218,6 +243,10 @@ function axisReasons(clusters: number, gated: boolean): Readonly<Record<string, 
 }
 
 /** The same, for the three rates that also carry `booleanDerived`. */
+/** Stamps a metric with the window basis. Null passes through untouched. */
+const withBasis = <T extends Metric>(m: T | null, basis: CountBasis): T | null =>
+  m === null ? null : { ...m, basis }
+
 function booleanRate(
   numerator: number,
   denominator: number,
@@ -229,7 +258,18 @@ function booleanRate(
 }
 
 export function assemble(inputs: AssembleInputs): Assembled {
-  const { inventory, counts, window, permissions, skills, hooks, mcp } = inputs
+  const { inventory, counts, windowedCounts, window, permissions, skills, hooks, mcp } = inputs
+
+  /**
+   * The basis the row-level metrics were taken on.
+   *
+   * Attached to those metrics rather than raised to the manifest, because the
+   * manifest's `countBasis` still describes everything else. One word covering
+   * two periods is the under-specified number this whole module exists to
+   * refuse.
+   */
+  const WINDOW_BASIS: CountBasis = { ...COUNT_BASIS, period: 'window' }
+  const windowed = <T extends Metric>(m: T | null): T | null => withBasis(m, WINDOW_BASIS)
 
   const linesRead = counts.linesRead
   const verdict = gate({
@@ -664,7 +704,12 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // string is a closed-union member a receiver matches on -- so it cannot be
     // paraphrased without breaking the comparison it exists for. The count is
     // over all time until the rest of the windowing lands.
-    basisMismatch: basisMismatchesFor(COUNT_BASIS.period),
+    // Derived from what the metrics actually carry, not asserted. The two
+    // counts whose meaning promises a window are windowed now, so the list is
+    // empty — and it fills again the moment one of them stops being.
+    basisMismatch: basisMismatchesFor(WINDOW_BASIS.period),
+    undatedRows: inputs.undatedRows,
+    rowsOutOfWindow: inputs.rowsOutOfWindow,
     failureAttribution: {
       observed: counts.wasted.errorsObserved,
       inAxis2Numerator: counts.wasted.closure.numerator,
@@ -705,17 +750,24 @@ export function assemble(inputs: AssembleInputs): Assembled {
     submissionId: uuid(inputs.submissionId),
     scanManifest: manifest,
     metrics: {
-      toolError: booleanRate(
-        counts.toolResultIsErrorTrue,
-        counts.toolResultTotal,
-        'window 内の tool_result ブロック総数（キーの有無を問わない）',
-        'message.content[].tool_result.is_error',
+      // Both sides of each of these is a row counter, so both are windowed and
+      // the rate means what its denominator says it means. That is what closes
+      // the `window 内の` claim these two carry.
+      toolError: windowed(
+        booleanRate(
+          windowedCounts.toolResultIsErrorTrue,
+          windowedCounts.toolResultTotal,
+          'window 内の tool_result ブロック総数（キーの有無を問わない）',
+          'message.content[].tool_result.is_error',
+        ),
       ),
-      toolErrorAlt: booleanRate(
-        counts.toolResultIsErrorTrue,
-        counts.toolResultWithIsErrorKey,
-        '🚨 事故#2 の当事者。**両方送る**。どちらが正かは受け取り側が決める',
-        'message.content[].tool_result',
+      toolErrorAlt: windowed(
+        booleanRate(
+          windowedCounts.toolResultIsErrorTrue,
+          windowedCounts.toolResultWithIsErrorKey,
+          '🚨 事故#2 の当事者。**両方送る**。どちらが正かは受け取り側が決める',
+          'message.content[].tool_result',
+        ),
       ),
       skillFired: rateOrNull(
         counts.attributionSkillDistinct,

@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import { dayOf, localIso, offsetLabelOf, offsetMinutesOf } from './collect/day.js'
+import { restrict, rowsOutOfWindow } from './collect/restrict.js'
+import { windowScope } from './collect/scope.js'
 import { walkProjects } from './collect/walk.js'
 import { scan } from './collect/scan.js'
 import { gitCommitDates } from './collect/git.js'
@@ -279,6 +281,18 @@ export function run(options: RunOptions): RunResult {
   const previousKey = (previousBody?.['key'] as Record<string, unknown> | undefined)?.['fingerprint']
   const sameKey = typeof previousKey === 'string' && previousKey === key?.ref.fingerprint
 
+  // The window, applied. Only the day-keyed counters move; every other field in
+  // the returned view is the corpus-wide value, and `restrict` names which is
+  // which so a reader never has to infer it.
+  const scope = windowScope(
+    counts.humanTurnDates,
+    options.windowDays,
+    dayBoundary,
+    dayOf(options.measuredAt, dayOffsetMinutes) ?? options.measuredAt.slice(0, 10),
+  )
+  const windowedCounts = restrict(counts, scope).counts
+  const outOfWindow = rowsOutOfWindow(counts, scope)
+
   const { payload, gate } = assemble({
     inventory,
     counts,
@@ -294,6 +308,9 @@ export function run(options: RunOptions): RunResult {
     shell: 'unknown',
     agentTools: ['claude-code'],
     measuredAt: options.measuredAt,
+    windowedCounts,
+    undatedRows: outOfWindow.undated,
+    rowsOutOfWindow: outOfWindow,
     submissionId: options.submissionId,
     hashProject,
     previousRepeated: sameKey && previousSidecar !== null ? previousSidecar.repeated : null,

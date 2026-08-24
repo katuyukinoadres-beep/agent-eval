@@ -115,6 +115,9 @@ const inputs: AssembleInputs = {
     ],
   },
   counts,
+  // Only the day-keyed counters differ, and this fixture has no per-day
+  // buckets, so the two views are the same object here.
+  windowedCounts: counts,
   artifacts: {
     artifacts: [], totalWeight: 0, consideredPaths: 0,
     notSettled: { 'written-too-recently': 0, 'no-longer-exists': 0 },
@@ -133,7 +136,18 @@ const inputs: AssembleInputs = {
   hashProject: (n: string) => `${'0'.repeat(63)}${n === 'p1' ? '1' : '2'}`,
 } as unknown as AssembleInputs
 
-const over = (o: Partial<AssembleInputs>): AssembleInputs => ({ ...inputs, ...o })
+/**
+ * Overrides both views together unless the caller separates them.
+ *
+ * The windowed view is the same scan with the day-keyed counters selected, so a
+ * test that changes `counts` and leaves `windowedCounts` behind is testing a
+ * combination the run cannot produce.
+ */
+const over = (o: Partial<AssembleInputs>): AssembleInputs => ({
+  ...inputs,
+  ...(o.counts !== undefined && o.windowedCounts === undefined ? { windowedCounts: o.counts } : {}),
+  ...o,
+})
 
 /** The axes that carry a formula today. The rest are still not-implemented. */
 const BUILT_AXES = new Set<string>([
@@ -451,13 +465,29 @@ describe('a count whose declared meaning outruns its basis', () => {
     expect(basisMismatchesFor('window')).toEqual([])
   })
 
-  it('ships in the payload while the gap is open', () => {
+  it('is empty now that those two counts are actually windowed', () => {
+    // The gap closed for them: both sides of each rate is a row counter, both
+    // are day-keyed, and the metric carries a basis saying `window`. The list
+    // is what a receiver reads to know that, and it earns its emptiness.
     const { payload } = assemble(inputs)
-    const declared = payload.scanManifest.countBasis.period
-    if (declared === 'window') {
-      expect(payload.scanManifest.basisMismatch).toEqual([])
-    } else {
-      expect(payload.scanManifest.basisMismatch.length).toBeGreaterThan(0)
-    }
+    expect(payload.scanManifest.basisMismatch).toEqual([])
+  })
+
+  it('stamps the windowed rates with the basis they were taken on', () => {
+    // The manifest's `countBasis` still says `allTime`, because the axes are.
+    // A count that departs from it has to say where it departed, or one word
+    // ends up covering two periods.
+    const { payload } = assemble(inputs)
+    expect(payload.scanManifest.countBasis.period).toBe('allTime')
+    expect(payload.metrics.toolError?.basis?.period).toBe('window')
+    expect(payload.metrics.toolErrorAlt?.basis?.period).toBe('window')
+  })
+
+  it('leaves a count that was not windowed without a basis of its own', () => {
+    // Absent means "the manifest's". `skillFired` divides a distinct-name count
+    // that is not day-keyed by a disk count, so it is all-time on both sides
+    // and correctly carries nothing.
+    const { payload } = assemble(inputs)
+    expect(payload.metrics.skillFired?.basis).toBeUndefined()
   })
 })

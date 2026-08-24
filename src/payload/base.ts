@@ -124,6 +124,8 @@ export const BASE_PAYLOAD = {
       excludes: [],
     },
     basisMismatch: [],
+    undatedRows: 0,
+    rowsOutOfWindow: { total: 0, undated: 0, byDay: {} },
     // The attribution split, measured. Every failure lands in exactly one id,
     // and `balanced` is what says so: an unbalanced table has lost events, and
     // a lost event is indistinguishable from one that never happened.

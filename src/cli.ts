@@ -167,6 +167,10 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // Printed even at zero. A file that failed to open leaves every total short
     // together, so the identities still close and the gate still passes.
     `           ${m.filesUnreadable} unreadable, ${m.filesWithoutRows} with no rows`,
+    // A row with no timestamp belongs to no window, so this is the standing
+    // difference between a windowed count and its corpus-wide twin. Too large
+    // here to leave a reader to infer from a gap between two totals.
+    `           ${m.undatedRows} undated (in no window), ${m.rowsOutOfWindow.total} rows out of window`,
     `           main ${m.mainLines} / sub ${m.subLines} (share ${m.subLineRatio})`,
     `projects   ${payload.environment.projectCount}`,
     `versions   ${m.toolVersionDistinct}`,
@@ -181,12 +185,17 @@ function summarise(result: ReturnType<typeof runScan>): string {
     // written is a fraction of a day, and a window slot spent on it evicts a
     // whole one.
     `           ${w.inFlightDay === null ? 'no work today yet' : `today ${w.inFlightDay} in flight, not scored`}${w.includesInFlightDay ? ' (first window: used anyway)' : ''}`,
-    // Said plainly while it is true. The window block above describes a window
-    // that nothing is yet counted over, and a reader who takes those lines for
-    // the scope of the scores below has been misled by layout alone.
+    // Said plainly while it is true. The window applies to the manifest's rate
+    // metrics and not to the axis scores, and a reader who takes the block
+    // above for the scope of the scores below has been misled by layout alone.
     ...(m.countBasis.period === 'window'
       ? []
-      : [`           🚨 shown only — every count below is over the whole corpus (${m.basisMismatch.length} declared mismatch(es))`]),
+      : [
+          '           🚨 the window applies to the rates above; the axis scores below are over the whole corpus',
+          ...(m.basisMismatch.length === 0
+            ? []
+            : [`           🚨 ${m.basisMismatch.length} count(s) declare a period their basis does not match`]),
+        ]),
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate === null ? 'no day to divide by' : `${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`}`,
     '',
