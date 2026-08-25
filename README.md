@@ -26,6 +26,8 @@ npm install -g @katuyukinoadres-beep/agent-eval
 agent-eval scan --summary
 ```
 
+> **npm への公開はまだです。** 今はソースから動かしてください（下）。
+
 読み取り専用です。`--store` を付けない限り、1 バイトも書きません。
 
 ソースから動かす場合:

@@ -38,6 +38,8 @@ npm install -g @katuyukinoadres-beep/agent-eval
 agent-eval --version
 ```
 
+> **公開はまだ済んでいません。** このコマンドが `404` を返すうちは、下の経路 B を使ってください。
+>
 > スコープが付いているのは、`agent-eval` という素の名前を別のパッケージが既に取っているためです。
 
 ### 経路 B: リポジトリを clone する
