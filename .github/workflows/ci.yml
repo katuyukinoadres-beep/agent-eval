@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in package.json engines, and a current release.
+        # Both are run because a tool that reads other people's log directories
+        # should not discover its own floor from a bug report.
+        node: ['20', '24']
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # `npm ci` runs `prepare`, which builds. A separate build step would
+      # rebuild what the tests are about to inspect.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
