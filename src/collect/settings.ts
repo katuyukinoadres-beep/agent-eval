@@ -22,7 +22,7 @@ import { join } from 'node:path'
  * and win outright; below that the more local a file is, the more specific it
  * is taken to be.
  */
-export const SETTINGS_SCOPES = ['enterprise', 'local', 'project', 'user'] as const
+export const SETTINGS_SCOPES = ['enterprise', 'local', 'project', 'user', 'userLocal'] as const
 
 export type SettingsScope = (typeof SETTINGS_SCOPES)[number]
 
@@ -45,6 +45,12 @@ export function settingsPaths(cwd: string, home: string = homedir(), os: string 
     { scope: 'local', path: join(cwd, '.claude', 'settings.local.json') },
     { scope: 'project', path: join(cwd, '.claude', 'settings.json') },
     { scope: 'user', path: join(home, '.claude', 'settings.json') },
+    // The user-scope local overrides. Missing this read 16 allow entries on the
+    // development machine while the file beside it held 32 more, so two thirds
+    // of the permission surface was absent from a payload whose whole purpose
+    // is to describe the permission surface. Nothing failed: the totals were
+    // internally consistent and the scope list truthfully named what it read.
+    { scope: 'userLocal', path: join(home, '.claude', 'settings.local.json') },
   ]
 }
 

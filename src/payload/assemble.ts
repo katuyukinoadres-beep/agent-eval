@@ -258,8 +258,13 @@ function axisReasons(clusters: number, gated: boolean): Readonly<Record<string, 
     pendingDecisions: pending,
     userRejected: pending,
     askUserQuestionCustomRate: pending,
-    coverageGate: sample,
-    safetyCheck: sample,
+    // `coverageGate` and `safetyCheck` are deliberately absent. The spec calls
+    // them 採点しないが必ず出す -- never scored, always displayed -- so they must
+    // not inherit the scored axes' cluster minimum. They did, and the result was
+    // a run that reported `gate passed` and `composite 58.28 (B)` while the two
+    // axes whose job is to say what the corpus was reported `not_applicable`
+    // with `too-few-clusters`. A coverage gate that disappears when coverage is
+    // thin is the failure this project exists to stop, and it was shipping.
   }
 }
 
@@ -670,6 +675,94 @@ export function assemble(inputs: AssembleInputs): Assembled {
         }
       : axis
 
+  /**
+   * The two axes the spec never scores and always shows.
+   *
+   * `score` is null here for a third reason the payload schema does not yet
+   * name: not "measured zero" and not "could not be produced", but "this axis
+   * is not scored by design". Until the schema carries that distinction, the
+   * reason is written into `detail` rather than left to a reader to infer from
+   * a null.
+   *
+   * Both report `available` whenever the corpus was read at all. Their whole
+   * job is to say what was read, so gating them on having read enough is
+   * circular: the run where you most need to know the coverage is the run where
+   * the coverage is poor.
+   */
+  const coverageGateAxis: Axis = {
+    availability: 'available',
+    basis: WINDOW_BASIS,
+    // Every line got a verdict here, because reading the line IS the evidence
+    // for this axis. The generic builder reported `available: 0` against 58,624
+    // not_applicable -- an axis about coverage claiming it saw no evidence in a
+    // corpus it had read end to end.
+    lineStates: {
+      available: linesRead - counts.linesParseFailed,
+      not_applicable: 0,
+      parse_failed: counts.linesParseFailed,
+    },
+    metric: null,
+    score: null,
+    confidenceInterval: null,
+    belowMinDenominator: false,
+    unavailableReasons: [],
+    omittedTerms: [],
+    detail: {
+      notScoredByDesign: 1,
+      filesRead: inventory.files.length,
+      filesUnreadable: counts.filesUnreadable,
+      filesWithoutRows: counts.filesWithoutRows,
+      linesRead,
+      linesParseFailed: counts.linesParseFailed,
+      // The figure that decides whether a non-recursive walk happened. A share
+      // near zero on a machine that uses subagents is the shape of that miss,
+      // and it is the one number here that cannot be recovered after the fact.
+      subLineRatioE4: linesRead > 0 ? Math.round((counts.subLines / linesRead) * 10_000) : 0,
+      toolVersionDistinct: Object.keys(counts.toolVersions).length,
+      activeDays: window.window.activeDays,
+      activeDaysInWindow: window.window.activeDaysInWindow,
+      undatedRows: inputs.undatedRows,
+      gatePassed: verdict.reasons.length === 0 ? 1 : 0,
+    },
+  }
+
+  const safetyCheckAxis: Axis = {
+    availability: 'available',
+    // Read from configuration files, not from the window's rows, so the window
+    // basis would be a false claim about where these numbers came from.
+    basis: COUNT_BASIS,
+    // Read from configuration, not from transcripts, so no line carries
+    // evidence for it either way. Saying `available: linesRead` would claim the
+    // transcripts established something they never touched.
+    lineStates: { available: 0, not_applicable: linesRead - counts.linesParseFailed, parse_failed: counts.linesParseFailed },
+    metric: null,
+    score: null,
+    confidenceInterval: null,
+    belowMinDenominator: false,
+    unavailableReasons: [],
+    omittedTerms: [],
+    detail: {
+      notScoredByDesign: 1,
+      // The spec's permission triple, reported whole. No ranking: the spec is
+      // explicit that these are not ordered by severity.
+      allow: permissions.allow,
+      deny: permissions.deny,
+      ask: permissions.ask,
+      unrestrictedExec: permissions.unrestrictedExec,
+      cliWildcard: permissions.cliWildcard,
+      scriptPathFixed: permissions.scriptPathFixed,
+      // How many settings scopes contributed anything. A triple read from one
+      // scope and a triple read from four are different measurements, and the
+      // totals alone cannot tell them apart.
+      scopesWithEntries: permissions.scopesWithEntries.length,
+      skillsDefined: skills.total,
+      hooksDefined: hooks.total,
+      hookEvents: hooks.events.length,
+      mcpServers: mcp.servers,
+      mcpConfigured: mcp.configured,
+    },
+  }
+
   const axes = Object.fromEntries(
     AXIS_KEYS.map((k) => [
       k,
@@ -684,7 +777,11 @@ export function assemble(inputs: AssembleInputs): Assembled {
                 ? verificationAxis
                 : k === 'recurrencePrevention'
                   ? recurrenceAxis
-                  : axisFor(k),
+                  : k === 'coverageGate'
+                    ? coverageGateAxis
+                    : k === 'safetyCheck'
+                      ? safetyCheckAxis
+                      : axisFor(k),
       ),
     ]),
   ) as Axes

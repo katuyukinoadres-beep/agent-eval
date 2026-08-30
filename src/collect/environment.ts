@@ -43,6 +43,15 @@ const isInterpreter = (t: string): boolean =>
   (INTERPRETERS as readonly string[]).includes(t.toLowerCase())
 
 /**
+ * Tool names that, granted bare, hand over arbitrary command execution.
+ *
+ * Only shells belong here. `Edit` and `Write` granted bare are wide, but they
+ * are not code execution, and putting them in this set would move the one
+ * number a reader is most likely to act on for the wrong reason.
+ */
+const SHELL_TOOLS = new Set(['Bash', 'BashOutput'])
+
+/**
  * Classifies one allow entry.
  *
  * Only `allow`. A wildcard under `deny` is the opposite of a risk, and a
@@ -50,10 +59,23 @@ const isInterpreter = (t: string): boolean =>
  * the more carefully it was locked down.
  */
 export function classifyPermission(entry: string): PermissionClass {
-  const bash = /^Bash\((.*)\)$/.exec(entry.trim())
-  // Non-Bash entries name a tool, not a command line: Edit, Write, WebSearch,
-  // Skill, an MCP method. None of them executes arbitrary code.
-  if (bash === null) return entry.trim().endsWith('*') ? 'cliWildcard' : 'exact'
+  const trimmed = entry.trim()
+  // A bare `Bash`, with no parenthesised command at all, allows every shell
+  // command there is. It is the widest grant the file can express, and it fell
+  // through to `exact` -- the narrowest class -- because the pattern below
+  // requires parentheses and the fallback only looks for a trailing `*`.
+  //
+  // No such entry exists on the development machine (the only bare entries are
+  // `Edit` and `Write`), which is exactly why this needs a test rather than a
+  // measurement: the bug is invisible here and would appear, silently and in
+  // the reassuring direction, on the first machine that grants it.
+  if (SHELL_TOOLS.has(trimmed)) return 'unrestrictedExec'
+  const bash = /^Bash\((.*)\)$/.exec(trimmed)
+  // Other bare entries name a tool, not a command line: Edit, Write, WebSearch,
+  // Skill, an MCP method. None of them executes arbitrary code, so they stay
+  // `exact` -- widening them would inflate the one count a reader is most
+  // likely to act on.
+  if (bash === null) return trimmed.endsWith('*') ? 'cliWildcard' : 'exact'
 
   const inner = (bash[1] ?? '').trim()
   if (inner === '' || inner === '*') return 'unrestrictedExec'

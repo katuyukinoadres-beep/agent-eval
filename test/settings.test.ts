@@ -94,7 +94,7 @@ describe('precedence', () => {
   })
 
   it('lists enterprise first, because managed policy overrides the rest', () => {
-    expect([...SETTINGS_SCOPES]).toEqual(['enterprise', 'local', 'project', 'user'])
+    expect([...SETTINGS_SCOPES]).toEqual(['enterprise', 'local', 'project', 'user', 'userLocal'])
   })
 })
 
@@ -126,9 +126,14 @@ describe('paths', () => {
     // test pass on the machine it was written on and nowhere else.
     const slash = (s: string): string => s.split('\\').join('/')
     const got = settingsPaths('/w', '/h', 'linux')
-    expect(got.map((p) => p.scope)).toEqual(['enterprise', 'local', 'project', 'user'])
+    expect(got.map((p) => p.scope)).toEqual(['enterprise', 'local', 'project', 'user', 'userLocal'])
     expect(slash(got[1]?.path ?? '')).toBe('/w/.claude/settings.local.json')
     expect(slash(got[2]?.path ?? '')).toBe('/w/.claude/settings.json')
     expect(slash(got[3]?.path ?? '')).toBe('/h/.claude/settings.json')
+    // The user-scope local file. Leaving it out read 16 allow entries on the
+    // development machine while 32 more sat in the file beside it, and nothing
+    // failed: the totals were self-consistent and the scope list truthfully
+    // named the four it had read.
+    expect(slash(got[4]?.path ?? '')).toBe('/h/.claude/settings.local.json')
   })
 })

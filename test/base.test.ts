@@ -94,12 +94,28 @@ describe('axes', () => {
     }
   })
 
-  it('is not_applicable throughout, which is what this machine produces', () => {
+  it('carries no score anywhere, which is what this machine produces', () => {
     // 11 session clusters against a minimum denominator of 20. A base fixture
     // showing scores would describe a machine that does not exist.
     for (const axis of Object.values(BASE_PAYLOAD.axes)) {
-      expect(axis.availability).toBe('not_applicable')
       expect(axis.score).toBeNull()
+    }
+  })
+
+  it('shows the two axes that are never scored and always available', () => {
+    // Everything else is not_applicable. These two are not, and the fixture has
+    // to show it: a reference payload that illustrates a state the code can no
+    // longer produce teaches the reader the wrong shape.
+    const alwaysShown = ['coverageGate', 'safetyCheck'] as const
+    for (const key of alwaysShown) {
+      expect(BASE_PAYLOAD.axes[key].availability, key).toBe('available')
+      expect(BASE_PAYLOAD.axes[key].unavailableReasons, key).toEqual([])
+    }
+    // The positive control: everything outside that pair is still unavailable,
+    // so this is not passing because the fixture went uniformly available.
+    for (const [key, axis] of Object.entries(BASE_PAYLOAD.axes)) {
+      if ((alwaysShown as readonly string[]).includes(key)) continue
+      expect(axis.availability, key).toBe('not_applicable')
     }
   })
 })

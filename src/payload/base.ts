@@ -64,7 +64,28 @@ const ALL_NOT_APPLICABLE: Axis = {
   omittedTerms: [],
 }
 
-const axes = Object.fromEntries(AXIS_KEYS.map((k) => [k, ALL_NOT_APPLICABLE])) as Axes
+/**
+ * The reference payload's axes.
+ *
+ * All `not_applicable` except the two the spec never scores and always shows.
+ * Those two used to be `not_applicable` here as well, which made the reference
+ * illustrate a state the code can no longer produce -- a fixture that teaches
+ * the reader the wrong shape is worse than no fixture.
+ */
+const NOT_SCORED_BY_DESIGN: Axis = {
+  ...ALL_NOT_APPLICABLE,
+  availability: 'available',
+  unavailableReasons: [],
+  belowMinDenominator: false,
+  detail: { notScoredByDesign: 1 },
+}
+
+const axes = Object.fromEntries(
+  AXIS_KEYS.map((k) => [
+    k,
+    k === 'coverageGate' || k === 'safetyCheck' ? NOT_SCORED_BY_DESIGN : ALL_NOT_APPLICABLE,
+  ]),
+) as Axes
 
 const PROJECT_BYTES = [855_638_016, 2_400_000, 1_000_000] as const
 const TOTAL_BYTES = PROJECT_BYTES.reduce((a, b) => a + b, 0)

@@ -263,7 +263,13 @@ describe('no axis carries a score', () => {
     // `insufficient-assets` — "fewer than 3 assets defined", an axis-5
     // threshold v2 abolished, advising a fix that would not change the outcome.
     expect(payload.axes.artifactUptake.unavailableReasons).toEqual(['no-artifacts'])
-    expect(payload.axes.coverageGate.unavailableReasons).toEqual(['too-few-clusters'])
+    // The coverage gate is the opposite case, and it used to be here: it is
+    // never scored and always shown, so it must not inherit a scored axis's
+    // cluster shortfall. It did, and a run reported `gate passed` beside a
+    // coverage axis claiming it had too small a sample to say what it read.
+    expect(payload.axes.coverageGate.availability).toBe('available')
+    expect(payload.axes.coverageGate.unavailableReasons).toEqual([])
+    expect(payload.axes.safetyCheck.unavailableReasons).toEqual([])
   })
 
   it('claims no shortfall it did not measure', () => {
