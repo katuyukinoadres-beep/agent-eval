@@ -833,6 +833,23 @@ export function assemble(inputs: AssembleInputs): Assembled {
     subLineRatio: linesRead > 0 ? round4(counts.subLines / linesRead) : 0,
     toolVersions: counts.toolVersions,
     toolVersionDistinct: Object.keys(counts.toolVersions).length,
+    // Cut by version as well as by day. A version boundary is the one change in
+    // the corpus that is definitely not the user's doing, which is what makes it
+    // the honest place to look when the agent "feels worse lately".
+    versionSlices: Object.entries(counts.versionSlices).map(([version, v]) => ({
+      version,
+      rows: v.rows,
+      failures: v.failures,
+      toolUse: v.toolUse,
+      // The same floor the axes use. Below it the rate is not reported at all:
+      // this machine's oldest version has four tool calls and two failures, and
+      // rendering 0.5000 beside 0.0201 invites a conclusion the evidence cannot
+      // carry.
+      failuresPerToolUseE4:
+        v.toolUse >= MIN_DENOMINATOR ? Math.round((v.failures / v.toolUse) * 10_000) : null,
+      firstDay: v.firstDay,
+      lastDay: v.lastDay,
+    })),
     originFieldCoverage: makeMetric({
       numerator: counts.originBearingUserRows,
       // V-2 makes this field required, so it cannot be null. A machine with no

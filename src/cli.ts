@@ -208,6 +208,23 @@ function summarise(result: ReturnType<typeof runScan>): string {
           : [`           🚨 ${m.basisMismatch.length} count(s) declare a period their basis does not match`]),
       ]
     })(),
+    '',
+    // The block that answers "has my agent got worse lately".
+    //
+    // A version boundary is the one change in the corpus that is definitely not
+    // the user's own doing, so it is the honest place to look first. It is not
+    // proof: the work changes over time too, and a version that happened to
+    // cover a hard fortnight will look worse for reasons that have nothing to
+    // do with the version. The line says rate, span and sample size together so
+    // that reading is available rather than hidden.
+    'by version',
+    ...m.versionSlices.map((v) => {
+      const rate = v.failuresPerToolUseE4 === null ? '     —' : (v.failuresPerToolUseE4 / 10_000).toFixed(4)
+      const span = v.firstDay === null ? '' : ` ${v.firstDay}..${v.lastDay ?? v.firstDay}`
+      const why = v.failuresPerToolUseE4 === null ? `  (${v.toolUse} calls — under the floor, no rate)` : ''
+      return `           ${v.version.padEnd(10)} ${rate}  ${String(v.rows).padStart(6)} rows${span}${why}`
+    }),
+    '',
     `evidence   ${m.externalLog.activeDays} days (${m.externalLog.activeDaysMethod})`,
     `record     ${m.externalLog.recordRate === null ? 'no day to divide by' : `${m.externalLog.recordRate.numerator}/${m.externalLog.recordRate.denominator}`}`,
     '',

@@ -44,6 +44,7 @@ const counts = {
   stopHookSummaryRows: 12, hookErrorsNonEmpty: 1,
   tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
   toolVersions: { '2.1.233': 1_000 },
+  versionSlices: { '2.1.233': { rows: 1_000, failures: 0, toolUse: 0, firstDay: null, lastDay: null } },
   sessionIds: ['a', 'b'],
   // Per-axis clusters are counted from here, not from sessionIds: a cluster is
   // a session with a non-zero denominator for that axis, and the axes do not

@@ -119,6 +119,14 @@ export const BASE_PAYLOAD = {
     subLineRatio: SUB_LINE_RATIO,
     toolVersions: TOOL_VERSIONS,
     toolVersionDistinct: Object.keys(TOOL_VERSIONS).length,
+    // One slice under the denominator floor on purpose. A reference payload
+    // where every rate is rendered would teach the reader that a rate always
+    // appears, and the whole point of the floor is that it sometimes must not.
+    versionSlices: [
+      { version: '2.1.112', rows: 4_132, failures: 3, toolUse: 41, failuresPerToolUseE4: null, firstDay: '2026-06-02', lastDay: '2026-06-09' },
+      { version: '2.1.233', rows: 25_000, failures: 118, toolUse: 6_240, failuresPerToolUseE4: 189, firstDay: '2026-06-10', lastDay: '2026-07-28' },
+      { version: '2.1.234', rows: 100_000, failures: 502, toolUse: 24_900, failuresPerToolUseE4: 202, firstDay: '2026-07-28', lastDay: '2026-08-19' },
+    ],
     originFieldCoverage: makeMetric({
       numerator: 195,
       denominator: 5_814,

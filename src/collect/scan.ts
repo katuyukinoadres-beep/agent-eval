@@ -112,6 +112,41 @@ export const FORBIDDEN_SUBFIELDS = [
   'stderr',
 ] as const
 
+/**
+ * One Claude Code version's slice of the corpus.
+ *
+ * The tool already knew which version wrote every row; it just threw the
+ * information away after counting rows. Cutting the same counters by version
+ * instead of only by day is what turns "my agent got worse lately" from a
+ * feeling into a number, because a version boundary is the one change that is
+ * definitely not the user's doing.
+ *
+ * `failures` and `toolUse` are the raw terms, never a rate. A rate computed
+ * here would not be axis 2's W -- that has a different denominator (task
+ * bundles) and an attribution table applied -- and two quantities with the same
+ * name and different denominators is the exact failure this project measured at
+ * 1.96x.
+ */
+export interface VersionSlice {
+  /** Rows this version wrote. The same number `toolVersions` reports. */
+  readonly rows: number
+  /** Failures charged to the environment, after the attribution table. */
+  readonly failures: number
+  /** Filtered tool_use blocks: the denominator this slice's rate may use. */
+  readonly toolUse: number
+  /** When this version was in use. Null when none of its rows carried a date. */
+  readonly firstDay: string | null
+  readonly lastDay: string | null
+}
+
+interface MutVersionSlice {
+  rows: number
+  failures: number
+  toolUse: number
+  firstDay: string | null
+  lastDay: string | null
+}
+
 export interface ScanCounts {
   readonly linesRead: number
   readonly linesParseFailed: number
@@ -333,6 +368,8 @@ export interface ScanCounts {
   }
 
   readonly toolVersions: Readonly<Record<string, number>>
+  /** The same corpus cut by the version that wrote it. See `VersionSlice`. */
+  readonly versionSlices: Readonly<Record<string, VersionSlice>>
   /**
    * Session clusters, folded to the parent session.
    *
@@ -839,7 +876,7 @@ function reduceLine(
   m: Mut,
   skills: Set<string>,
   mcp: Set<string>,
-  versions: Map<string, number>,
+  versions: Map<string, MutVersionSlice>,
   sessions: Set<string>,
   dates: DateSets,
   edits: EditTally,
@@ -923,7 +960,16 @@ function reduceLine(
   }
 
   const version = row['version']
-  if (typeof version === 'string') versions.set(version, (versions.get(version) ?? 0) + 1)
+  let slice: MutVersionSlice | null = null
+  if (typeof version === 'string') {
+    slice = versions.get(version) ?? { rows: 0, failures: 0, toolUse: 0, firstDay: null, lastDay: null }
+    slice.rows += 1
+    if (day !== null) {
+      if (slice.firstDay === null || day < slice.firstDay) slice.firstDay = day
+      if (slice.lastDay === null || day > slice.lastDay) slice.lastDay = day
+    }
+    versions.set(version, slice)
+  }
 
   // The cluster is the file's session, folded from the path. The row's own id
   // is compared against it rather than trusted, because a divergence would move
@@ -1202,6 +1248,9 @@ function reduceLine(
           if (IN_AXIS2_NUMERATOR[attributed]) {
             w.failures += 1
             st.failures += 1
+            // Charged through the same table as axis 2, so the slice cannot
+            // drift from the axis by counting denials the axis excludes.
+            if (slice !== null) slice.failures += 1
           } else {
             // Everything the table takes out of axis 2: denials of every kind,
             // the network, and the stale reads axis 3 scores instead.
@@ -1264,7 +1313,10 @@ function reduceLine(
       // Axis 2's availability is defined on filtered tool_use. The network is
       // not the environment under test, so it does not count towards having
       // enough evidence to judge one.
-      if (typeof toolName !== 'string' || !isExternalTool(toolName)) d.toolUseFiltered += 1
+      if (typeof toolName !== 'string' || !isExternalTool(toolName)) {
+        d.toolUseFiltered += 1
+        if (slice !== null) slice.toolUse += 1
+      }
       if (typeof id === 'string' && typeof toolName === 'string') {
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
       }
@@ -1397,7 +1449,7 @@ export function scan(
   }
   const skills = new Set<string>()
   const mcp = new Set<string>()
-  const versions = new Map<string, number>()
+  const versions = new Map<string, MutVersionSlice>()
   const sessions = new Set<string>()
   const dates: DateSets = { all: new Set(), userRow: new Set(), humanTurn: new Set(), humanTurnUtc: new Set() }
   const edits: EditTally = new Map()
@@ -1827,7 +1879,12 @@ export function scan(
       cacheRead: total((c) => c.cacheRead),
       cacheCreation: total((c) => c.cacheCreation),
     },
-    toolVersions: Object.fromEntries([...versions.entries()].sort()),
+    toolVersions: Object.fromEntries([...versions.entries()].map(([v, s]) => [v, s.rows]).sort()),
+    versionSlices: Object.fromEntries(
+      [...versions.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([v, s]) => [v, { rows: s.rows, failures: s.failures, toolUse: s.toolUse, firstDay: s.firstDay, lastDay: s.lastDay }]),
+    ),
     sessionIds: [...sessions].sort(),
     sessionIdMismatchRows: m.sessionIdMismatchRows,
     dates: [...dates.all].sort(),

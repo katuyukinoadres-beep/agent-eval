@@ -157,6 +157,18 @@ export type UnavailableReason =
   | 'definition-pending'
   | 'environment-gated'
 
+/** One version's slice of the corpus. Raw terms, and a rate only when earned. */
+export interface VersionSliceOut {
+  readonly version: string
+  readonly rows: number
+  readonly failures: number
+  readonly toolUse: number
+  /** Null when `toolUse` is under the floor. Never a small-sample rate. */
+  readonly failuresPerToolUseE4: number | null
+  readonly firstDay: string | null
+  readonly lastDay: string | null
+}
+
 export const AXIS_KEYS = [
   // first wave — scored
   'firstPassLanding',
@@ -378,6 +390,15 @@ export interface ScanManifest {
   readonly subLineRatio: number
   readonly toolVersions: Readonly<Record<string, number>>
   readonly toolVersionDistinct: number
+  /**
+   * The corpus cut by the version that wrote it.
+   *
+   * The one dimension along which a change is definitely not the user's doing.
+   * `failuresPerToolUse` is null below the denominator floor rather than being
+   * rendered small: four tool calls produced 0.5000 on the development machine,
+   * a number that reads as catastrophic and means nothing.
+   */
+  readonly versionSlices: readonly VersionSliceOut[]
   /** Share of user rows carrying `origin`; low values mean human counts undercount. */
   readonly originFieldCoverage: Metric
   /**
