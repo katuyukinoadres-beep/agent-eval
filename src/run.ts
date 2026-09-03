@@ -241,7 +241,23 @@ export function run(options: RunOptions): RunResult {
 
   const git = gitCommitDates(options.repos)
   const log = readClosingLog(options.closingLogPath)
-  const scopes = readScopes(options.cwd, options.home, options.os)
+  /**
+   * Every working directory the transcripts were recorded in, plus the one the
+   * process happens to be in.
+   *
+   * Skills, hooks and settings live under a project directory. Reading them
+   * from `process.cwd()` alone reported whatever the shell was sitting in:
+   * running from this tool's own checkout gave `skillsDefined: 0` while the
+   * project next to it had 27, and `hooksDefined: 0` while it had 5. The
+   * environment did not change between those two runs -- only the shell's
+   * location did, and a number that moves for that reason is not a measurement.
+   *
+   * The process cwd stays in the list because a first run, before any
+   * transcript exists, has nothing else to go on.
+   */
+  const workingDirs = [options.cwd, ...counts.cwds.filter((d) => d.toLowerCase() !== options.cwd.toLowerCase())]
+
+  const scopes = workingDirs.flatMap((d) => readScopes(d, options.home, options.os))
   const cleanup = findCleanupPeriod(settingsPaths(options.cwd, options.home, options.os))
 
   const window = assembleWindow({
@@ -325,9 +341,9 @@ export function run(options: RunOptions): RunResult {
     permissions: tallyPermissions(scopes),
     // Both directories skills can live in, so the denominator covers the same
     // ground as a numerator collected across every project on the machine.
-    skills: countSkills([join(options.cwd, '.claude'), join(options.home, '.claude')]),
+    skills: countSkills([...workingDirs.map((d) => join(d, '.claude')), join(options.home, '.claude')]),
     hooks: countHooks(scopes),
-    mcp: countMcpServers(mcpSourcePaths(options.cwd, options.home)),
+    mcp: countMcpServers(workingDirs.flatMap((d) => mcpSourcePaths(d, options.home))),
     os: options.os,
     shell: 'unknown',
     agentTools: ['claude-code'],

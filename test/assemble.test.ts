@@ -43,6 +43,7 @@ const counts = {
   editedFilesDistinct: 30, editedFilesRepeated: 9,
   stopHookSummaryRows: 12, hookErrorsNonEmpty: 1,
   tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
+  cwds: [],
   toolVersions: { '2.1.233': 1_000 },
   versionSlices: { '2.1.233': { rows: 1_000, failures: 0, toolUse: 0, firstDay: null, lastDay: null } },
   sessionIds: ['a', 'b'],

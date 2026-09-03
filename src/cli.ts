@@ -209,6 +209,42 @@ function summarise(result: ReturnType<typeof runScan>): string {
       ]
     })(),
     '',
+    // The block that needs no minimum at all, and so is the first thing most
+    // readers will get anything from.
+    //
+    // Every other number here waits on scale: five active days for the gate,
+    // twenty clusters for a score, two windows for a comparison. These are
+    // inventory facts about the machine, available on the first run of a
+    // week-old install, and they are the only figures in this output a reader
+    // can act on without the tool asserting a cause. "Twenty-five skills never
+    // fired" is a fact; "your agent is slow because of them" would not be.
+    'assets',
+    ...(() => {
+      const line = (label: string, used: number, total: number, verb: string): string => {
+        const idle = total - used
+        // The idle count is the point, so it is not left to subtraction. A
+        // reader scanning for what to do next should not have to do arithmetic.
+        const tail = total === 0 ? 'none defined' : idle === 0 ? `all ${verb}` : `${idle} never ${verb}`
+        return `           ${label.padEnd(8)} ${used}/${total} ${verb}${' '.repeat(Math.max(1, 12 - String(`${used}/${total} ${verb}`).length))} — ${tail}`
+      }
+      const sk = payload.metrics.skillFired
+      const mc = payload.metrics.mcpUsed
+      return [
+        sk === null
+          ? '           skills   none defined'
+          : line('skills', sk.numerator, sk.denominator, 'fired'),
+        mc === null
+          ? '           mcp      none connected'
+          : line('mcp', mc.numerator, mc.denominator, 'called'),
+        `           hooks    ${payload.environment.hooksDefined} defined`,
+        // Said once, here, rather than left for the guide to catch. A skill that
+        // has not fired is not proven useless -- it may be for a case that has
+        // not come up -- and a reader who deletes on this number alone will
+        // eventually delete something they needed.
+        '           (never fired is not the same as useless — see docs/GUIDE.md)',
+      ]
+    })(),
+    '',
     // The block that answers "has my agent got worse lately".
     //
     // A version boundary is the one change in the corpus that is definitely not

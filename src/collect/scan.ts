@@ -55,6 +55,18 @@ export const READ_KEYS = [
   'attributionMcpServer',
   'toolDenialKind',
   'hookErrors',
+  // The working directory the session ran in. Argued for, because it is a
+  // filesystem path and every other path in this file is banned.
+  //
+  // It is read to find where the machine's skills, hooks and settings actually
+  // live. Without it those were read from `process.cwd()`, so the counts moved
+  // with the shell's location: 0 skills from one directory and 27 from another,
+  // on an unchanged machine.
+  //
+  // It never leaves the process. The value is used to build local filesystem
+  // paths and is dropped; what reaches the payload is counts. `test/assets.test.ts`
+  // fixes that, because a comment saying so is worth nothing on its own.
+  'cwd',
   // P5 — the conversation tree. Reading order instead puts 4.19% of rows in
   // the wrong bundle.
   'uuid',
@@ -368,6 +380,16 @@ export interface ScanCounts {
   }
 
   readonly toolVersions: Readonly<Record<string, number>>
+  /**
+   * Distinct working directories seen in the transcripts.
+   *
+   * Skills, hooks and settings live under a project directory, so reading them
+   * from the process's own cwd reports whatever the user happened to be sitting
+   * in. Running from the tool's own checkout gave `skillsDefined: 0` while the
+   * project beside it had 27 -- a headline number that moved with the shell's
+   * location, which is not a property of the environment being measured.
+   */
+  readonly cwds: readonly string[]
   /** The same corpus cut by the version that wrote it. See `VersionSlice`. */
   readonly versionSlices: Readonly<Record<string, VersionSlice>>
   /**
@@ -658,7 +680,21 @@ interface AllTime {
   orphanBundles: number
 }
 
-interface Mut extends AllTime {
+interface MutCwds {
+  /**
+   * Working directories the transcripts were recorded in.
+   *
+   * Keyed case-insensitively, because Windows writes the same directory with
+   * either drive-letter case and this machine has both: lowercase on 55,346
+   * rows and uppercase on 15,366. Counting them separately would report two
+   * projects where there is one, and read the same skills twice. The value
+   * keeps the first spelling seen, so what comes out is a real path rather
+   * than a lowercased reconstruction.
+   */
+  readonly cwds: Map<string, string>
+}
+
+interface Mut extends AllTime, MutCwds {
   /** Per-day counters, and the `undated` bucket for rows with no timestamp. */
   readonly byDay: Map<string, DayCounts>
   /** The bucket for a day, created on first use. Null is the undated bucket. */
@@ -957,6 +993,12 @@ function reduceLine(
     d.environmentNoiseRows += 1
     if (kind === 'main') bundles.assign(rowUuid, rowParent, false)
     return
+  }
+
+  const cwd = row['cwd']
+  if (typeof cwd === 'string' && cwd !== '') {
+    const key = cwd.toLowerCase()
+    if (!m.cwds.has(key)) m.cwds.set(key, cwd)
   }
 
   const version = row['version']
@@ -1421,6 +1463,7 @@ export function scan(
     sessionIdMismatchRows: 0, taskBundles: 0, listingChars: 0, listingTruncated: false,
     intervals: 0, verifiedIntervals: 0,
     selfRepaired: 0, humanRescued: 0, unresolved: 0, repairedNotCounted: 0, rootBundles: 0, orphanBundles: 0,
+    cwds: new Map<string, string>(),
     byDay,
     on(day: string | null): DayCounts {
       const key = day ?? UNDATED
@@ -1879,6 +1922,7 @@ export function scan(
       cacheRead: total((c) => c.cacheRead),
       cacheCreation: total((c) => c.cacheCreation),
     },
+    cwds: [...m.cwds.values()].sort(),
     toolVersions: Object.fromEntries([...versions.entries()].map(([v, s]) => [v, s.rows]).sort()),
     versionSlices: Object.fromEntries(
       [...versions.entries()]

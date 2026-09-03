@@ -163,6 +163,15 @@ describe('what the manual promises about behaviour', () => {
     }
   })
 
+  it('warns that an unfired skill is not proven useless', () => {
+    // The one place this manual is allowed to tell the reader what to do, so it
+    // is also the place a reader can be led into deleting something they need.
+    // The three reasons a skill has not fired must stay on the page.
+    expect(GUIDE).toContain('発火していない = 不要」ではありません')
+    expect(GUIDE).toContain('まだその場面が来ていない')
+    expect(GUIDE).toContain('一括削除')
+  })
+
   it('documents the version block, which is the first thing that works', () => {
     // The one feature that produces something useful on day one, for an
     // environment of any size. A manual that omits it sends the reader looking
