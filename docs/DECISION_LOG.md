@@ -216,7 +216,7 @@ cleanupPeriodDays                  = null（4スコープ全てに不在）
 
 ### プロジェクト名からリポジトリパスは復元しない
 
-`C--Users-katuy-Yama-Agent` は `C:\Users\katuy\Yama-Agent` にも `C:\Users\katuy\Yama\Agent` にも復号でき、名前の中に区別材料が無い。デコーダは大半で当たり、外れたときは**「コミットの無いリポジトリ」に見える** — 静かなゼロ。git 日はリポジトリを明示的に渡されたときだけ数え、`activeDaysMethod` がそれを言う。
+`C--Users-x-My-Project` は `C:\Users\x\My-Project` にも `C:\Users\x\My\Project` にも復号でき、名前の中に区別材料が無い。デコーダは大半で当たり、外れたときは**「コミットの無いリポジトリ」に見える** — 静かなゼロ。git 日はリポジトリを明示的に渡されたときだけ数え、`activeDaysMethod` がそれを言う。
 
 ### 行数のドリフト
 
@@ -300,7 +300,7 @@ axes       0/11 available   （11 × too-few-clusters, 9 × definition-pending,
 validation passed (0 violations, 1 flags: W-1 origin 3.2%)
 ```
 
-出力は **11,334 バイト**。`katuy` / `Yama-Agent` / `anki-new` / `emit-service-key` / ドライブレター、いずれも **0 件**。
+出力は **11,334 バイト**。`<user>` / `<repo>` / `anki-new` / `emit-service-key` / ドライブレター、いずれも **0 件**。
 
 ### 点は1つも出していない
 
@@ -545,7 +545,7 @@ uptake は (a)∨(b)∨(c) なので、**(b)(c) のみを満たすパスが 1.0 
 
 ```
 [Bash] 'Permission for this action was denied by the Claude Code aut...'
-[Bash] 'Permission to use Bash with command cd /c/Users/katuy/...'
+[Bash] 'Permission to use Bash with command cd <repo>'
 ```
 
 こちらの正規表現は `[Pp]ermission denied` を見ていた。**この環境の最頻の失敗を丸ごと取りこぼしていた。**
