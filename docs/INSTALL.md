@@ -10,10 +10,16 @@
 
 | | |
 |---|---|
-| Node.js | **20 以上**（開発機での動作確認は 24.13.1） |
+| **対応エージェント** | **Claude Code のみ** |
+| Node.js | **20 以上**（CI は 20 と 24 の両方、Linux と Windows で緑） |
 | Claude Code | 使用履歴。`~/.claude/projects/` にログがあること |
 | OS | Windows / macOS / Linux |
 | ネットワーク | **不要。** インストール後は一切通信しません |
+
+> **Claude Code 専用です。** Cursor / Copilot / Codex などは読みません。理由は
+> [docs/OTHER_AGENTS.md](OTHER_AGENTS.md) に実測付きで書いてあります（たとえば
+> Copilot CLI のローカルログは 3 ファイル計 1,800 バイトで、会話もツール呼び出しも
+> 入っていません。対応の予定ではなく、**読む対象が存在しない**という話です）。
 
 ログがあるかどうかの確認:
 
@@ -76,21 +82,29 @@ agent-eval scan --summary
 出てくるものの例（数字は環境ごとに違います）:
 
 ```
-scanned    329 files, 48093 lines, 0 unparsed
-window     11 human-turn days, 11 user-row days, observed
-           10/11 in window (2026-07-08..2026-08-23), boundary +05:30
-           scored over the window: 4/4 axes
+scanned    590 files, 79210 lines, 0 unparsed
+window     16 human-turn days, 16 user-row days, observed
+           10/16 in window (2026-08-17..2026-09-02), boundary +05:30
+
+by version
+           2.1.233    0.0177   18626 rows 2026-08-16..2026-08-20
+           2.1.235    0.0201   36305 rows 2026-08-18..2026-08-30
+           2.1.251    0.0152    7328 rows 2026-08-30..2026-09-03
+
 gate       passed
-axes       4/11 available
-composite  56.9 (B) over 4 axes
-validation passed (0 violations, 1 flags)
+axes       6/11 available
+composite  52.65 (C) over 4 axes
+validation passed (0 violations, 2 flags)
 ```
 
 読み方は [docs/GUIDE.md](GUIDE.md) にあります。ここで見るのは 3 点だけです。
 
 1. `scanned` の **files / lines がゼロでない**こと
-2. `gate` が `passed` であること（`gated` の場合は §5）
+2. `gate` が `passed` であること（それ以外の場合は §5）
 3. `validation` に **violations がゼロ**であること（flags は警告なので出ていて構いません）
+
+**`by version` の行が、このツールで最初に役に立つ部分です。** 点数と違って
+初回から出ますし、下限を超えた版だけが並びます。
 
 ---
 

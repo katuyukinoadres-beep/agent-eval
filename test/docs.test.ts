@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { MIN_ACTIVE_DAYS, PARSE_FAILURE_GATE } from '@/score/gate.js'
 import { MIN_OUTCOME_AXES, TIERS } from '@/score/composite.js'
+import { MIN_DENOMINATOR } from '@/score/minimum.js'
 import { VERSION } from '@/version.js'
 
 /**
@@ -160,6 +161,29 @@ describe('what the manual promises about behaviour', () => {
     for (const doc of [README, INSTALL, GUIDE]) {
       expect(doc).not.toMatch(/npm i(nstall)? -g agent-eval(?!-)/)
     }
+  })
+
+  it('documents the version block, which is the first thing that works', () => {
+    // The one feature that produces something useful on day one, for an
+    // environment of any size. A manual that omits it sends the reader looking
+    // at a composite that needs weeks of history first.
+    expect(GUIDE).toContain('by version')
+    expect(INSTALL).toContain('by version')
+    // And the confounder is stated, not buried. A version boundary that happens
+    // to cover a hard fortnight looks like a regression, and a reader who is not
+    // told that will act on it.
+    expect(GUIDE).toContain('あなたの仕事も変わっています')
+  })
+
+  it('explains why the floor withholds a rate rather than showing a small one', () => {
+    expect(GUIDE).toContain(`下限（${MIN_DENOMINATOR}件）`)
+  })
+
+  it('says the tool reads Claude Code and nothing else', () => {
+    // Stated in both manuals, because a reader who installs it expecting Cursor
+    // support gets a silent zero rather than an error.
+    expect(INSTALL).toContain('Claude Code のみ')
+    expect(README).toContain('Claude Code だけ')
   })
 
   it('declares the access a scoped package needs to be public', () => {
