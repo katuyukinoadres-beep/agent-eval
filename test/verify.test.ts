@@ -64,6 +64,7 @@ const counts = {
   environmentNoiseRows: 0, editedPaths: {}, lastMention: () => null, lastMentionIn: () => null, referenceTokens: 0,
   errorRepeats: { errors: 3, distinctSignatures: 2, rIn: 0.33, byFamily: { timeout: 3 } },
   metabolism: {
+    skillListing: '',
     skillsListed: [], listingChars: 0, listingTruncated: false,
     skillFirings: {}, hookFirings: {}, mcpFirings: {}, effectiveInputPerCall: [], peakInputPerBundle: [], effectiveInputPerBundle: [], inputPerBundleWithoutCache: [],
   },

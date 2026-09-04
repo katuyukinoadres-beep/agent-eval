@@ -1,6 +1,6 @@
+import { descriptionChars, deadWeight } from '@/score/metabolism.js'
 import { describe, expect, it } from 'vitest'
 import {
-  DEAD_WEIGHT_THRESHOLD,
   METABOLISM_OMISSION_LEANINGS,
   TRAPEZOID_CEILING_TOKENS,
   TRAPEZOID_FLOOR_TOKENS,
@@ -33,6 +33,7 @@ const base: MetabolismInputs = {
   mcpServersDefined: 0,
   hooksDefined: 0,
   listingTruncated: false,
+  skillListing: '',
 }
 
 const at = (over: Partial<MetabolismInputs>): MetabolismInputs => ({ ...base, ...over })
@@ -175,8 +176,89 @@ describe('what it does not compute', () => {
     expect(metabolism({ ...base, listingTruncated: false }).omitted).not.toContain('listing-truncated')
   })
 
-  it('keeps the dead-weight threshold visible even though it is unused', () => {
-    expect(DEAD_WEIGHT_THRESHOLD).toBe(0.3)
+})
+
+describe('the axis the ratio unblocked', () => {
+  it('is not scorable while a deduction is missing, and is once it is not', () => {
+    // Both directions in one place. Axis 5 is a deduction form, so a dropped
+    // term makes it not_applicable however good the number looks -- dropping a
+    // deduction can only raise a result. While Wd was unbuilt this held back
+    // all 12.5 of the axis's weight on every machine, for a reason that had
+    // nothing to do with the machine being measured.
+    const withoutListing = metabolism({ ...base, skillListing: '' })
+    expect(withoutListing.scorable).toBe(false)
+    expect(withoutListing.omitted).toContain('dead-weight-descriptions')
+
+    const withListing = metabolism({ ...base, skillListing: '- alpha: something' + String.fromCharCode(10) })
+    expect(withListing.scorable).toBe(true)
+    expect(withListing.omitted).not.toContain('dead-weight-descriptions')
+  })
+
+  it('subtracts the ratio, so the deduction is under a point', () => {
+    // v1's alternative took 10 points off past a threshold, which would step
+    // the total by 10 the first time a rarely-used skill fired. This axis is
+    // compared against the window before it, so a cliff is the wrong shape.
+    const none = metabolism({ ...base, skillListing: '' })
+    const heavy = metabolism({ ...base, skillListing: '- unfired: a description nobody triggered' + String.fromCharCode(10) })
+    const gap = (none.score ?? 0) - (heavy.score ?? 0)
+    // The gap exists...
+    expect(gap).toBeGreaterThan(0)
+    // ...and is smaller than a single point.
+    expect(gap).toBeLessThan(1)
+  })
+})
+
+describe('the dead-weight ratio', () => {
+  // Two entries, one of them wrapped onto a second line. The wrap is the whole
+  // point: this machine's real listing puts 934 of 8,256 characters on
+  // continuation lines -- 11% -- and every one of them belongs to a skill that
+  // never fired. Charging only the first line of each entry understates the
+  // deduction, which is the direction that flatters the score.
+  const listing = [
+    '- alpha: fires often and is short',
+    '- omega: never fires and has a long description that',
+    'continues onto a second line without a bullet',
+  ].join(String.fromCharCode(10))
+
+  it('folds a wrapped line into the entry above it', () => {
+    const { perSkill } = descriptionChars(listing)
+    expect(Object.keys(perSkill).sort()).toEqual(['alpha', 'omega'])
+    // omega's count must exceed its own first line, which is what proves the
+    // continuation was charged to it rather than dropped.
+    expect(perSkill['omega']).toBeGreaterThan('- omega: never fires and has a long description that'.length)
+  })
+
+  it('charges the unfired skill and not the fired one', () => {
+    const d = deadWeight(listing, (n) => n === 'alpha')
+    expect(d).not.toBeNull()
+    expect(d?.unfiredChars).toBe(descriptionChars(listing).perSkill['omega'])
+    expect(d?.wd).toBeCloseTo((d?.unfiredChars ?? 0) / listing.length, 10)
+  })
+
+  it('moves when the firing set moves', () => {
+    // The positive control. A ratio that came out the same however the firing
+    // predicate answered would be measuring the listing's length alone.
+    const none = deadWeight(listing, () => false)?.wd ?? 0
+    const some = deadWeight(listing, (n) => n === 'alpha')?.wd ?? 0
+    const all = deadWeight(listing, () => true)?.wd ?? 0
+    expect(all).toBe(0)
+    expect(some).toBeGreaterThan(0)
+    expect(none).toBeGreaterThan(some)
+  })
+
+  it('divides by the whole listing, not by the sum of the entries', () => {
+    // A preamble is context the listing costs. Dividing by the sum of the parts
+    // would drive the ratio towards 1 by construction on any listing that has
+    // one.
+    const withPreamble = `Available skills:
+
+${listing}`
+    expect(deadWeight(withPreamble, () => false)?.total).toBe(withPreamble.length)
+    expect(deadWeight(withPreamble, () => false)?.wd).toBeLessThan(1)
+  })
+
+  it('has none to report when there is no listing', () => {
+    expect(deadWeight('', () => false)).toBeNull()
   })
 })
 

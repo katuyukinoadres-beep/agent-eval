@@ -80,6 +80,7 @@ const counts = {
   signatureKeysPerDay: {},
   macsPerDay: {},
   metabolism: {
+    skillListing: '',
     skillsListed: ['a', 'b'], listingChars: 100, listingTruncated: false,
     skillFirings: { a: 9 }, hookFirings: {}, mcpFirings: {},
     effectiveInputPerCall: [30_000, 30_000], peakInputPerBundle: [], effectiveInputPerBundle: [], inputPerBundleWithoutCache: [],

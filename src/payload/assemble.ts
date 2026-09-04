@@ -433,6 +433,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
     effectiveInputPerBundle: counts.metabolism.effectiveInputPerBundle,
     inputPerBundleWithoutCache: counts.metabolism.inputPerBundleWithoutCache,
     skillsListed: counts.metabolism.skillsListed,
+    // Corpus-wide, like the listing itself: the asset set is a property of the
+    // machine, not of the window. Only the firings below are windowed.
+    skillListing: counts.metabolism.skillListing,
     skillFirings: windowedCounts.metabolism.skillFirings,
     hookFirings: windowedCounts.metabolism.hookFirings,
     mcpFirings: windowedCounts.metabolism.mcpFirings,
@@ -442,18 +445,19 @@ export function assemble(inputs: AssembleInputs): Assembled {
   })
 
   const metabolismAxis: Axis = {
-    // Deduction-style with two deductions dropped, so not_applicable however
-    // good the number looks. Dropping a deduction can only raise a result, and
-    // the result would be the same name for a different quantity.
-    availability: 'not_applicable',
+    // Scorable once every deduction is computed. Wd was the missing one, and
+    // while it was missing this axis was `not_applicable` on every environment
+    // rather than only on small ones -- withholding all 12.5 of its weight from
+    // the composite for a reason that had nothing to do with the machine being
+    // measured. Dropping a deduction can only raise a result, so v2 §12.5(b)
+    // refuses to renormalise around one and the axis stays out entirely.
+    availability: met.scorable && met.score !== null ? 'available' : 'not_applicable',
     // The firings are windowed; the asset set they divide by is machine-wide
     // and declared as such. Recorded rather than scored either way.
     basis: WINDOW_BASIS,
     lineStates: lineStatesFor(met.score !== null),
     metric: null,
-    // Recorded, not scored. A later window needs the raw figures, and a
-    // snapshot that omitted them would lose them for good.
-    score: null,
+    score: met.scorable && met.score !== null ? Math.round(met.score * 100) / 100 : null,
     confidenceInterval: null,
     // Measured values, not clamped ones. Passing `Math.max(measured, MIN)` and
     // then testing `< MIN` is a condition that cannot fail: it reported every
@@ -467,7 +471,7 @@ export function assemble(inputs: AssembleInputs): Assembled {
       denominator: met.assets,
       numerator: met.firedAssets,
     }).meetsMinimum,
-    unavailableReasons: ['definition-pending'],
+    unavailableReasons: met.scorable && met.score !== null ? [] : ['definition-pending'],
     omittedTerms: met.omitted.map(
       (term): OmittedTerm => ({ term, cause: 'not-implemented', leans: METABOLISM_OMISSION_LEANINGS[term] }),
     ),
@@ -486,6 +490,13 @@ export function assemble(inputs: AssembleInputs): Assembled {
       assets: met.assets,
       firedAssets: met.firedAssets,
       utilisationE4: Math.round((met.u ?? 0) * 10_000),
+      // Wd's numerator and denominator, so the ratio can be recomputed rather
+      // than trusted. It is a ratio subtracted from a 0-100 score, so it moves
+      // the result by under a point -- deliberately, because v1's alternative
+      // stepped the total by 10 the first time a rarely-used skill fired.
+      deadWeightE4: Math.round((met.wd ?? 0) * 10_000),
+      deadWeightChars: met.deadWeightChars ?? 0,
+      listingChars: met.listingChars ?? 0,
       // What the score would have been, kept where it cannot be mistaken for
       // one: outside `score`, which stays null.
       unscoredE2: Math.round((met.score ?? 0) * 100),

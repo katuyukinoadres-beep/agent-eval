@@ -506,6 +506,14 @@ interface MutSessionTally {
 export interface MetabolismCounts {
   /** Skill names that appeared in a skill_listing. */
   readonly skillsListed: readonly string[]
+  /**
+   * The largest listing's text, kept for the dead-weight ratio.
+   *
+   * The one string in `ScanCounts` that is not a count. It stays inside the
+   * process: axis 5 turns it into two integers and a ratio, and nothing carries
+   * it to a payload or a snapshot.
+   */
+  readonly skillListing: string
   /** Largest skill_listing seen, in characters. The denominator of the dead-weight ratio. */
   readonly listingChars: number
   /** True when a listing hit the 20,001-character cap, so the upper side is unmeasurable. */
@@ -785,6 +793,8 @@ interface MutManualEdits {
 
 interface MutMetabolism {
   skillsListed: Set<string>
+  /** The largest listing seen, kept whole so its descriptions can be measured. */
+  largestListing: string
   skillFirings: Map<string, number>
   hookFirings: Map<string, number>
   mcpFirings: Map<string, number>
@@ -1043,7 +1053,10 @@ function reduceLine(
       }
       const content = attachment['content']
       if (typeof content === 'string') {
-        if (content.length > m.listingChars) m.listingChars = content.length
+        if (content.length > m.listingChars) {
+          m.listingChars = content.length
+          met.largestListing = content
+        }
         // The cap the other machine's listing sat exactly on. Past it the
         // upper side of the dead-weight ratio cannot be measured at all.
         if (content.length >= LISTING_CAP) m.listingTruncated = true
@@ -1598,6 +1611,7 @@ export function scan(
   const manual: MutManualEdits = { editedNames: new Set(), staleRecoveredPaths: new Set() }
   const met: MutMetabolism = {
     skillsListed: new Set(),
+    largestListing: '',
     skillFirings: new Map(),
     hookFirings: new Map(),
     mcpFirings: new Map(),
@@ -1807,6 +1821,7 @@ export function scan(
     toolActivityRows: total((c) => c.toolActivityRows),
     metabolism: {
       skillsListed: [...met.skillsListed].sort(),
+      skillListing: met.largestListing,
       listingChars: m.listingChars,
       listingTruncated: m.listingTruncated,
       skillFirings: Object.fromEntries([...met.skillFirings.entries()].sort()),

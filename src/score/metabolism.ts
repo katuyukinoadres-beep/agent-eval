@@ -37,8 +37,71 @@ export const FIRING_WEIGHTS = [
 ] as const
 
 /** Above this share of listing text sitting unfired, ten points go. */
-export const DEAD_WEIGHT_THRESHOLD = 0.3
-export const DEAD_WEIGHT_PENALTY = 10
+/**
+ * How a skill's line begins in a `skill_listing`: `- <name>: <description>`.
+ *
+ * Anything not matching is a continuation of the description above it. This
+ * machine's largest listing is 17 skills over 19 lines, and the two wrapped
+ * lines carry 934 characters -- 11% of the listing, all of it belonging to
+ * skills that never fired. Charging only the first line of each entry
+ * understates the dead weight, which is the direction that flatters the score.
+ *
+ * v1 also defined a cliff form of this deduction: 10 points off once the ratio
+ * passed 0.3. v2 supersedes it with the ratio below, and the cliff's constants
+ * lived here unread for the whole of the first build with a test asserting one
+ * of them equalled 0.3 -- an assertion that could not fail. They are gone
+ * rather than left to look like a decision.
+ */
+const LISTING_ENTRY = /^- ([A-Za-z0-9_.:-]+): /
+
+/**
+ * Characters of description per skill, folding wrapped lines into their entry.
+ *
+ * Returns the per-skill counts and the listing's own total. The total is the
+ * whole string, not the sum of the entries: a preamble or a trailing blank line
+ * belongs to the context the listing costs, and dividing by the sum of the
+ * parts would make the ratio close to 1 by construction.
+ */
+export function descriptionChars(listing: string): {
+  readonly perSkill: Readonly<Record<string, number>>
+  readonly total: number
+} {
+  const perSkill: Record<string, number> = {}
+  let current: string | null = null
+  for (const line of listing.split(/\r?\n/)) {
+    const head = LISTING_ENTRY.exec(line)
+    if (head !== null) {
+      current = head[1] ?? null
+      if (current !== null) perSkill[current] = (perSkill[current] ?? 0) + line.length
+    } else if (current !== null) {
+      perSkill[current] = (perSkill[current] ?? 0) + line.length
+    }
+  }
+  return { perSkill, total: listing.length }
+}
+
+/**
+ * The dead-weight ratio: description characters of skills that never fired,
+ * over the listing's total size.
+ *
+ * v2 §3.5: `Wd = 未発火スキルの description 文字数合計 / skill_listing の総文字数`,
+ * subtracted from a 0-100 score. It is a ratio, so its effect is under one
+ * point -- small on purpose. The alternative v1 form took 10 points off at a
+ * threshold, which would make a score jump by 10 when one rarely-used skill
+ * fires for the first time, and this product exists to compare a window against
+ * the one before it.
+ */
+export function deadWeight(
+  listing: string,
+  fired: (name: string) => boolean,
+): { readonly wd: number; readonly unfiredChars: number; readonly total: number } | null {
+  if (listing === '') return null
+  const { perSkill, total } = descriptionChars(listing)
+  if (total === 0) return null
+  let unfiredChars = 0
+  for (const [name, chars] of Object.entries(perSkill)) if (!fired(name)) unfiredChars += chars
+  return { wd: unfiredChars / total, unfiredChars, total }
+}
 
 /**
  * `static-defects` is gone: v2 §3.5 removes D from this axis entirely and moves
@@ -140,6 +203,15 @@ export interface MetabolismInputs {
    */
   readonly hooksDefined: number
   readonly listingTruncated: boolean
+  /**
+   * The largest `skill_listing` content seen, kept whole.
+   *
+   * Wd's denominator is the listing's own size and its numerator is the share
+   * belonging to skills that never fired, so the text has to survive as far as
+   * here. Nothing derived from it leaves the process except two integers and
+   * the ratio; `test/privacy.test.ts` fixes that.
+   */
+  readonly skillListing: string
 }
 
 /**
@@ -157,6 +229,11 @@ export interface MetabolismInputs {
 export const SCORABLE_WITHOUT_OMISSIONS = true
 
 export interface Metabolism {
+  /** The dead-weight ratio, or null when no listing was seen. */
+  readonly wd: number | null
+  /** Its numerator and denominator, so a reader can recompute it. */
+  readonly deadWeightChars: number | null
+  readonly listingChars: number | null
   /** Median effective input tokens per call, or null when nothing carried usage. */
   readonly fc: number | null
   readonly trapezoidScore: number | null
@@ -224,12 +301,29 @@ export function metabolism(inputs: MetabolismInputs): Metabolism {
   const u = assets === 0 ? null : weightSum / assets
   const firedAssets = [...firings.values()].filter((n) => n > 0).length
 
-  const score =
+  // Wd, the last term this axis was missing. Its absence is why the axis was
+  // `not_applicable` on every environment rather than only on small ones: a
+  // deduction-form axis with a dropped term may not be renormalised (v2
+  // §12.5(b)), so one unbuilt term withheld the whole 12.5 weight.
+  const dw = deadWeight(inputs.skillListing, (name) => (inputs.skillFirings[name] ?? 0) > 0)
+
+  const omitted: MetabolismOmission[] = []
+  if (dw === null) omitted.push('dead-weight-descriptions')
+
+  // v2 §3.5: score = trapezoid * (0.5 + 0.5U) - Wd, clipped to 0-100.
+  //
+  // Wd is a ratio in [0,1] subtracted from a 0-100 score, so it moves the
+  // result by under a point. That is deliberate. v1's alternative took 10
+  // points off once the ratio passed 0.3, which would step the total by 10 the
+  // first time a rarely-used skill fires -- and this axis exists to be compared
+  // against the window before it.
+  const beforeDeduction =
     trapezoidScore === null
       ? null
       : Math.max(0, Math.min(100, u === null ? trapezoidScore : trapezoidScore * (0.5 + 0.5 * u)))
+  const score =
+    beforeDeduction === null ? null : Math.max(0, Math.min(100, beforeDeduction - (dw?.wd ?? 0)))
 
-  const omitted: MetabolismOmission[] = ['dead-weight-descriptions']
   // A truncated listing understates the asset set, so U runs high with nothing
   // to show it. Recorded as an omission rather than left as a flag nobody read.
   if (inputs.listingTruncated) omitted.push('listing-truncated')
@@ -245,9 +339,12 @@ export function metabolism(inputs: MetabolismInputs): Metabolism {
     score,
     saturated: fc !== null && fc > TRAPEZOID_CEILING_TOKENS,
     omitted,
-    // Wd is a deduction and it is not computed. Dropping a deduction can only
-    // raise the result, and v2 §12.5(b) refuses a deduction-form axis with any
-    // dropped term rather than renormalising it.
-    scorable: false,
+    wd: dw?.wd ?? null,
+    deadWeightChars: dw?.unfiredChars ?? null,
+    listingChars: dw?.total ?? null,
+    // Scorable once every deduction is computed. A deduction-form axis with a
+    // dropped term stays `not_applicable`: dropping a deduction can only raise
+    // the result, and v2 §12.5(b) refuses renormalising it.
+    scorable: omitted.length === 0,
   }
 }

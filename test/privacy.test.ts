@@ -95,6 +95,26 @@ describe('the only command the tool runs', () => {
     expect(spawners).toEqual(['src/collect/git.ts', 'src/snapshot/stateDir.ts'])
   })
 
+  it('keeps the skill listing text inside the process', () => {
+    // `skillListing` is the one string in ScanCounts that is not a count. It
+    // holds every skill's description, which is user-written prose about their
+    // own work, and axis 5 reduces it to two integers and a ratio.
+    //
+    // Asserted against the source rather than against a payload, because a
+    // payload assertion would pass on any machine with no skills -- an absence
+    // that proves nothing. The positive control is the second half: the
+    // collector and the axis do name it, so the search can find it.
+    const mentions = (dir: string): string[] =>
+      filesUnder(join(repo, 'src', dir), '.ts')
+        .filter((f) => readFileSync(f, 'utf8').includes('skillListing'))
+        .map((f) => f.slice(repo.length + 1).replaceAll(String.fromCharCode(92), '/'))
+
+    expect(mentions('payload').filter((f) => !f.endsWith('assemble.ts'))).toEqual([])
+    expect(mentions('snapshot')).toEqual([])
+    expect(mentions('collect')).toContain('src/collect/scan.ts')
+    expect(mentions('score')).toContain('src/score/metabolism.ts')
+  })
+
   it('names both of those commands in the privacy document', () => {
     const doc = readFileSync(join(repo, 'docs', 'PRIVACY.md'), 'utf8')
     expect(doc).toContain('log --format=%cd --date=short')
