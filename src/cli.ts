@@ -294,6 +294,10 @@ function summarise(result: ReturnType<typeof runScan>): string {
       skills: payload.metrics.skillFired,
       mcp: payload.metrics.mcpUsed,
       pendingDecisions: Number(payload.axes.pendingDecisions.detail?.['pending'] ?? 0),
+      rewrites: {
+        deep: Number(payload.axes.firstPassLanding.detail?.['deepRewrites'] ?? 0),
+        max: Number(payload.axes.firstPassLanding.detail?.['depthMax'] ?? 0),
+      },
       versions: payload.scanManifest.versionSlices,
     }),
   ].join('\n')
@@ -328,6 +332,8 @@ export interface NextStepsInput {
   readonly mcp: { readonly numerator: number; readonly denominator: number } | null
   /** Questions asked that never received an answer. */
   readonly pendingDecisions: number
+  /** Artifacts rewritten many times over, and the deepest one's count. */
+  readonly rewrites: { readonly deep: number; readonly max: number } | null
   readonly versions: readonly { readonly version: string; readonly failuresPerToolUseE4: number | null }[]
 }
 
@@ -363,6 +369,19 @@ export function nextSteps(input: NextStepsInput): readonly string[] {
     // ended -- but it is a decision the machine is still waiting on.
     const n = input.pendingDecisions
     steps.push(`           ${n} question${n === 1 ? '' : 's'} asked and never answered`)
+  }
+
+  const rw = input.rewrites
+  if (rw !== null && rw.deep > 0) {
+    // v1 §4 is explicit that this list changes behaviour more than the score
+    // does: an artifact rewritten many times is usually one whose shape was
+    // never agreed before the writing started.
+    //
+    // The count and the deepest figure, never the path. This output is meant to
+    // be pasteable into an issue, and a path carries the OS username and the
+    // project's name.
+    steps.push(`           ${rw.deep} artifact${rw.deep === 1 ? '' : 's'} rewritten 5+ times (deepest ${rw.max})`)
+    steps.push('             -> agree the shape before the writing starts, not after')
   }
 
   const mc = input.mcp

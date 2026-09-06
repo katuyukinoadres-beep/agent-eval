@@ -41,7 +41,7 @@ import type { ScanCounts } from '../collect/scan.js'
 import type { AssembledWindow } from '../collect/window.js'
 import type { McpCount, PermissionTally, SkillCount, HookCount } from '../collect/environment.js'
 import { gate, type GateVerdict } from '../score/gate.js'
-import { MIN_DENOMINATOR, MIN_NUMERATOR, meetsMinimum } from '../score/minimum.js'
+import { MIN_CLUSTERS, MIN_DENOMINATOR, MIN_NUMERATOR, meetsMinimum } from '../score/minimum.js'
 import { wastedMotion, OMITTED_TERM_LEANINGS, type OmittedTermName } from '../score/wastedMotion.js'
 import { composite, type AxisInput, type OmittedTerm, type SuppressedReason } from '../score/composite.js'
 import { METABOLISM_OMISSION_LEANINGS, metabolism } from '../score/metabolism.js'
@@ -826,6 +826,67 @@ export function assemble(inputs: AssembleInputs): Assembled {
     // as a measurement.
   })
 
+  /**
+   * Axis 1's depth terms, from the write tally the scan already keeps.
+   *
+   * `PathTally.writes` is depth(p): how many times one artifact was written
+   * before it was left alone. v2 §3.1 wants the distribution rather than a
+   * rate, and v1 §4 is explicit that the list of most-rewritten artifacts
+   * changes behaviour more than the score does.
+   *
+   * The score is not produced. Two of the four terms the formula needs are not
+   * built -- the induced-rewrite ratio and the patch-size indicator -- and v1
+   * only licences dropping a term for `I`, against a stated minimum. Reporting
+   * a number off half the formula would be the same name for a different
+   * quantity, which is the failure this project keeps finding in its own work.
+   */
+  const depths = Object.values(windowedCounts.editedPaths)
+    .map((t) => t.writes)
+    .sort((a, b) => a - b)
+  const at = (q: number): number => (depths.length === 0 ? 0 : (depths[Math.max(0, Math.ceil(q * depths.length) - 1)] ?? 0))
+  const editPaths = depths.length
+  const editCalls = depths.reduce((a, b) => a + b, 0)
+  const deepPaths = depths.filter((d) => d >= 2).length
+  const rewriteTotal = depths.reduce((a, d) => a + Math.max(0, d - 1), 0)
+
+  const landingAxis: Axis = {
+    // The spec's own condition, evaluated rather than assumed: deepPaths >= 5
+    // and editPaths >= 200 and clusters >= 20. Two terms of the score are
+    // missing regardless, so this stays not_applicable until they are built --
+    // but the counts below are reported either way, because they need no
+    // minimum and they are what a reader can act on.
+    availability: 'not_applicable',
+    basis: WINDOW_BASIS,
+    lineStates: lineStatesFor(false),
+    metric: null,
+    score: null,
+    confidenceInterval: null,
+    belowMinDenominator: !(deepPaths >= 5 && editPaths >= 200 && clusters >= MIN_CLUSTERS),
+    // Both reasons when both hold. Two of the score's four terms are unbuilt --
+    // a fact about this repository -- and this corpus is also short of the
+    // spec's cluster minimum, which is a fact about the machine. Reporting only
+    // one would tell the reader that fixing the other would help.
+    unavailableReasons:
+      clusters >= MIN_CLUSTERS ? ['definition-pending'] : ['too-few-clusters', 'definition-pending'],
+    omittedTerms: [
+      { term: 'axis1-induced-rewrites', cause: 'not-implemented', leans: 'unknown' },
+      { term: 'axis1-patch-size', cause: 'not-implemented', leans: 'unknown' },
+    ],
+    detail: {
+      editPaths,
+      editCalls,
+      deepPaths,
+      rewriteTotal,
+      depthMedian: at(0.5),
+      depthP90: at(0.9),
+      depthMax: depths[depths.length - 1] ?? 0,
+      // Artifacts rewritten five times or more. Reported separately from
+      // `deepPaths` (two or more) because two writes is ordinary and five is a
+      // shape that was never agreed before the writing started.
+      deepRewrites: depths.filter((d) => d >= 5).length,
+    },
+  }
+
   const axes = Object.fromEntries(
     AXIS_KEYS.map((k) => [
       k,
@@ -840,7 +901,9 @@ export function assemble(inputs: AssembleInputs): Assembled {
                 ? verificationAxis
                 : k === 'recurrencePrevention'
                   ? recurrenceAxis
-                  : k === 'pendingDecisions'
+                  : k === 'firstPassLanding'
+                    ? landingAxis
+                    : k === 'pendingDecisions'
                     ? pendingDecisionsAxis
                     : k === 'userRejected'
                       ? userRejectedAxis

@@ -260,6 +260,9 @@ describe('no axis carries a score', () => {
   it('says why an unbuilt axis has nothing, and separates the two reasons', () => {
     // `too-few-clusters` is measured. `definition-pending` is not about this
     // environment at all — it is about a formula the repository does not have.
+    // Axis 1 carries both, because both are true of it: two of its four score
+    // terms are unbuilt, and this corpus is short of the cluster minimum. Only
+    // one of those would suggest that fixing the other would help.
     const { payload } = assemble(inputs)
     expect(payload.axes.firstPassLanding.unavailableReasons).toContain('too-few-clusters')
     expect(payload.axes.firstPassLanding.unavailableReasons).toContain('definition-pending')

@@ -15,7 +15,7 @@ import { nextSteps, type NextStepsInput } from '@/cli.js'
  * machine ran them, and each spawn took eight seconds to scan 83,000 lines.
  */
 
-const base: NextStepsInput = { storeOpened: true, skills: null, mcp: null, versions: [], pendingDecisions: 0 }
+const base: NextStepsInput = { storeOpened: true, skills: null, mcp: null, versions: [], pendingDecisions: 0, rewrites: null }
 const block = (input: Partial<NextStepsInput>): string => nextSteps({ ...base, ...input }).join('\n')
 
 describe('the history warning', () => {
@@ -114,6 +114,29 @@ describe('what the block may never contain', () => {
 describe('when there is nothing to do', () => {
   it('prints no block at all, rather than a reassuring line', () => {
     expect(nextSteps({ ...base, skills: { numerator: 5, denominator: 5 } })).toEqual([])
+  })
+})
+
+describe('the rewrite line', () => {
+  it('reports the count and the deepest, never a path', () => {
+    // This output is meant to be pasteable into an issue, and a path carries
+    // the OS username and the project's name. The spec asks for names; the
+    // summary is the wrong surface for them.
+    const out = block({ rewrites: { deep: 29, max: 29 } })
+    expect(out).toContain('29 artifacts rewritten 5+ times (deepest 29)')
+    // No path shape of any kind: no separators, no home directory, no drive.
+    expect(out).not.toContain('Users')
+    expect(out).not.toContain(String.fromCharCode(92))
+    expect(out).not.toMatch(/[A-Za-z]:/)
+  })
+
+  it('says nothing when nothing was rewritten that often', () => {
+    expect(block({ rewrites: { deep: 0, max: 3 } })).not.toContain('rewritten')
+    expect(block({ rewrites: null })).not.toContain('rewritten')
+  })
+
+  it('agrees in number', () => {
+    expect(block({ rewrites: { deep: 1, max: 7 } })).toContain('1 artifact rewritten')
   })
 })
 
