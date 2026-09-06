@@ -774,6 +774,58 @@ export function assemble(inputs: AssembleInputs): Assembled {
     },
   }
 
+  /**
+   * The three human-side axes. None of them is scored, and that is the spec's
+   * decision rather than this environment's size: v2 §2.3 marks H2 counts-only
+   * outright, and H3 renders a rate only above a floor the spec never gives.
+   *
+   * They are shown because v2 §8.1 settles that the human-side dashboard met
+   * its condition and must not be withheld. What they carry is inventory: an
+   * unanswered question is a decision the machine is still waiting on.
+   */
+  const dec = counts.decisions
+
+  const humanAxis = (detail: Record<string, number>): Axis => ({
+    availability: 'available',
+    // Corpus-wide, not windowed. A question asked on one day and answered on
+    // another belongs to neither day's bucket, so windowing would make "still
+    // pending" a function of where the window happened to cut.
+    basis: COUNT_BASIS,
+    lineStates: lineStatesFor(false),
+    metric: null,
+    score: null,
+    confidenceInterval: null,
+    belowMinDenominator: false,
+    unavailableReasons: [],
+    omittedTerms: [],
+    detail: { notScoredByDesign: 1, ...detail },
+  })
+
+  const pendingDecisionsAxis = humanAxis({
+    asked: dec.asked,
+    answered: dec.answered,
+    pending: Math.max(0, dec.asked - dec.answered),
+  })
+
+  const userRejectedAxis = humanAxis({
+    userRejected: counts.denialKinds['user-rejected'] ?? 0,
+    // The whole denial set beside it. 71.3% of denials on the development
+    // machine are `automode-blocked` and `automode-unavailable`, which the
+    // spec's union does not name at all -- reporting only `user-rejected`
+    // would describe a quarter of the picture as if it were the picture.
+    denialsAll: Object.values(counts.denialKinds).reduce((a, b) => a + b, 0),
+    denialKindsDistinct: Object.keys(counts.denialKinds).length,
+  })
+
+  const askUserQuestionAxis = humanAxis({
+    answers: dec.answers,
+    offMenu: dec.offMenu,
+    // No rate field at all. v2 §8.2 gates one on a floor for `asked` that it
+    // never states, and inventing the floor would be inventing the finding. A
+    // field parked at a constant zero would be worse than its absence: it reads
+    // as a measurement.
+  })
+
   const axes = Object.fromEntries(
     AXIS_KEYS.map((k) => [
       k,
@@ -788,7 +840,13 @@ export function assemble(inputs: AssembleInputs): Assembled {
                 ? verificationAxis
                 : k === 'recurrencePrevention'
                   ? recurrenceAxis
-                  : k === 'coverageGate'
+                  : k === 'pendingDecisions'
+                    ? pendingDecisionsAxis
+                    : k === 'userRejected'
+                      ? userRejectedAxis
+                      : k === 'askUserQuestionCustomRate'
+                        ? askUserQuestionAxis
+                        : k === 'coverageGate'
                     ? coverageGateAxis
                     : k === 'safetyCheck'
                       ? safetyCheckAxis

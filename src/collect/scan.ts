@@ -159,6 +159,39 @@ interface MutVersionSlice {
   lastDay: string | null
 }
 
+/**
+ * The human-side counters: questions asked, answered, and answered off-menu.
+ *
+ * v2 §2.3 names `toolUseResult.{questions, answers}` for H1 and H3. Finding it
+ * took two passes, and the first one was wrong in a way worth recording: a scan
+ * restricted to rows whose text contains `AskUserQuestion` reports zero results,
+ * because the *answer* row never names the tool -- it refers to the call by
+ * `tool_use_id`. The detector's pattern was right and its scope was wrong, and
+ * the positive control did not catch it, because Bash was matching in the same
+ * pass. Measured properly: 16 asked, 15 answered, 2 of those off-menu.
+ *
+ * None of these is scored. H2 is counts-only by the spec, H3 renders a rate
+ * only above a floor the spec never gives, and H1's own denominator here is a
+ * dozen. What they are for is the inventory: an unanswered question is a
+ * decision the machine is still waiting on, and that is worth a line.
+ */
+export interface DecisionCounts {
+  /** AskUserQuestion calls issued. */
+  readonly asked: number
+  /** Of those, the ones whose result carried answers. */
+  readonly answered: number
+  /** Individual answers, which exceed `answered` when a call asked several. */
+  readonly answers: number
+  /**
+   * Answers matching none of the offered option labels.
+   *
+   * The spec calls this 選択肢外回答. It is a fact about the questions rather
+   * than about the person: an answer nobody could pick from the menu means the
+   * menu missed the case.
+   */
+  readonly offMenu: number
+}
+
 export interface ScanCounts {
   readonly linesRead: number
   readonly linesParseFailed: number
@@ -365,6 +398,7 @@ export interface ScanCounts {
    * it does not recognise reports a different number without saying so.
    */
   readonly denialKinds: Readonly<Record<string, number>>
+  readonly decisions: DecisionCounts
 
   readonly editedFilesDistinct: number
   readonly editedFilesRepeated: number
@@ -688,6 +722,19 @@ interface AllTime {
   orphanBundles: number
 }
 
+interface MutDecisions {
+  /**
+   * Corpus-wide rather than per day, because an episode spans days: a question
+   * asked on Monday and answered on Thursday belongs to neither day's bucket,
+   * and bucketing it would make "still pending" a function of where the window
+   * happened to cut.
+   */
+  readonly askedIds: Set<string>
+  readonly answeredIds: Set<string>
+  answers: number
+  offMenu: number
+}
+
 interface MutCwds {
   /**
    * Working directories the transcripts were recorded in.
@@ -702,7 +749,7 @@ interface MutCwds {
   readonly cwds: Map<string, string>
 }
 
-interface Mut extends AllTime, MutCwds {
+interface Mut extends AllTime, MutCwds, MutDecisions {
   /** Per-day counters, and the `undated` bucket for rows with no timestamp. */
   readonly byDay: Map<string, DayCounts>
   /** The bucket for a day, created on first use. Null is the undated bucket. */
@@ -1250,6 +1297,34 @@ function reduceLine(
     if (!isObj(block)) continue
     if (block['type'] === 'tool_result') {
       d.toolResultTotal += 1
+
+      // The answer to an AskUserQuestion. It has to be found here, joined by
+      // id, because the answer row never names the tool: a scan restricted to
+      // rows whose text contains `AskUserQuestion` reports the field dead
+      // across 1,182 files while 15 of them carry it. That was this scanner's
+      // first reading of it, and the pattern was right -- the scope was wrong.
+      const askId = block['tool_use_id']
+      if (typeof askId === 'string' && m.askedIds.has(askId) && !m.answeredIds.has(askId)) {
+        const res = row['toolUseResult']
+        if (isObj(res) && Array.isArray(res['questions']) && isObj(res['answers'])) {
+          m.answeredIds.add(askId)
+          // Every option label this call offered. An answer matching none of
+          // them is one the menu had no room for -- a fact about the question
+          // rather than about the person answering it.
+          const offered = new Set<string>()
+          for (const q of res['questions']) {
+            if (!isObj(q) || !Array.isArray(q['options'])) continue
+            for (const o of q['options']) {
+              if (isObj(o) && typeof o['label'] === 'string') offered.add(o['label'])
+              else if (typeof o === 'string') offered.add(o)
+            }
+          }
+          for (const value of Object.values(res['answers'] as Record<string, unknown>)) {
+            m.answers += 1
+            if (typeof value !== 'string' || !offered.has(value)) m.offMenu += 1
+          }
+        }
+      }
       if ('is_error' in block) {
         d.toolResultWithIsErrorKey += 1
         const okId = block['tool_use_id']
@@ -1372,6 +1447,7 @@ function reduceLine(
         d.toolUseFiltered += 1
         if (slice !== null) slice.toolUse += 1
       }
+      if (toolName === 'AskUserQuestion' && typeof id === 'string') m.askedIds.add(id)
       if (typeof id === 'string' && typeof toolName === 'string') {
         toolOf.set(id, { name: toolName, target: targetOf(toolName, block['input']) })
       }
@@ -1477,6 +1553,10 @@ export function scan(
     intervals: 0, verifiedIntervals: 0,
     selfRepaired: 0, humanRescued: 0, unresolved: 0, repairedNotCounted: 0, rootBundles: 0, orphanBundles: 0,
     cwds: new Map<string, string>(),
+    askedIds: new Set<string>(),
+    answeredIds: new Set<string>(),
+    answers: 0,
+    offMenu: 0,
     byDay,
     on(day: string | null): DayCounts {
       const key = day ?? UNDATED
@@ -1927,6 +2007,12 @@ export function scan(
     denialRows: total((c) => c.denialRows),
     denialUserRejected: total((c) => c.denialUserRejected),
     denialKinds: Object.fromEntries([...mergedDenialKinds().entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
+    decisions: {
+      asked: m.askedIds.size,
+      answered: m.answeredIds.size,
+      answers: m.answers,
+      offMenu: m.offMenu,
+    },
     editedFilesDistinct: edits.size,
     editedFilesRepeated: repeated,
     stopHookSummaryRows: total((c) => c.stopHookSummaryRows),

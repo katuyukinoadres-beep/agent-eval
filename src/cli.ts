@@ -293,6 +293,7 @@ function summarise(result: ReturnType<typeof runScan>): string {
       storeOpened: result.stateDir !== null,
       skills: payload.metrics.skillFired,
       mcp: payload.metrics.mcpUsed,
+      pendingDecisions: Number(payload.axes.pendingDecisions.detail?.['pending'] ?? 0),
       versions: payload.scanManifest.versionSlices,
     }),
   ].join('\n')
@@ -316,10 +317,17 @@ function summarise(result: ReturnType<typeof runScan>): string {
  * saying so.
  */
 export interface NextStepsInput {
-  /** Whether a store was opened this run. The only irreversible item hangs off it. */
+  /**
+   * Whether this run opened a store.
+   *
+   * Not "whether history exists": without `--store` the store is never opened,
+   * so this run cannot tell. The line it drives says what is true either way.
+   */
   readonly storeOpened: boolean
   readonly skills: { readonly numerator: number; readonly denominator: number } | null
   readonly mcp: { readonly numerator: number; readonly denominator: number } | null
+  /** Questions asked that never received an answer. */
+  readonly pendingDecisions: number
   readonly versions: readonly { readonly version: string; readonly failuresPerToolUseE4: number | null }[]
 }
 
@@ -331,9 +339,13 @@ export function nextSteps(input: NextStepsInput): readonly string[] {
   // this was built on -- so a window that was not stored cannot be recovered,
   // and the comparison this tool exists for needs two of them.
   if (!input.storeOpened) {
-    steps.push('           * no history yet — nothing here can be compared to anything')
-    steps.push('             run with --store, today. Logs are pruned: a window you did not')
-    steps.push('             store is gone, and the first comparison needs two of them.')
+    // Worded for what this run actually knows. Without --store the store is
+    // never opened, so whether history exists is unknown here -- and a machine
+    // that has been storing daily would be told "no history yet", which is
+    // false. What is true either way is that this run added nothing.
+    steps.push('           * this run stored nothing — add --store to keep it')
+    steps.push('             logs are pruned, so a window you did not store is gone, and the')
+    steps.push('             comparison this tool exists for needs two of them.')
   }
 
   const sk = input.skills
@@ -343,6 +355,14 @@ export function nextSteps(input: NextStepsInput): readonly string[] {
     // has not come, or because its trigger is written badly, and this tool
     // cannot tell either from a dead one.
     steps.push('             -> read them before removing any: docs/GUIDE.md 2.5')
+  }
+
+  if (input.pendingDecisions > 0) {
+    // An inventory fact, like the others: a question was asked and no answer
+    // followed it. Not a judgement about why -- the session may simply have
+    // ended -- but it is a decision the machine is still waiting on.
+    const n = input.pendingDecisions
+    steps.push(`           ${n} question${n === 1 ? '' : 's'} asked and never answered`)
   }
 
   const mc = input.mcp

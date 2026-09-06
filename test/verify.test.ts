@@ -43,6 +43,7 @@ const counts = {
   stopHookSummaryRows: 2, hookErrorsNonEmpty: 1, sessionIdMismatchRows: 0,
   tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
   cwds: [],
+  decisions: { asked: 0, answered: 0, answers: 0, offMenu: 0 },
   toolVersions: { '2.1.233': 100 },
   versionSlices: { '2.1.233': { rows: 100, failures: 0, toolUse: 0, firstDay: null, lastDay: null } },
   sessionIds: ['s1'],

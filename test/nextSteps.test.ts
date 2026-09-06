@@ -15,16 +15,16 @@ import { nextSteps, type NextStepsInput } from '@/cli.js'
  * machine ran them, and each spawn took eight seconds to scan 83,000 lines.
  */
 
-const base: NextStepsInput = { storeOpened: true, skills: null, mcp: null, versions: [] }
+const base: NextStepsInput = { storeOpened: true, skills: null, mcp: null, versions: [], pendingDecisions: 0 }
 const block = (input: Partial<NextStepsInput>): string => nextSteps({ ...base, ...input }).join('\n')
 
 describe('the history warning', () => {
-  it('appears when no store was opened, and not when one was', () => {
+  it('appears when this run opened no store, and not when it did', () => {
     // Both directions. This is the only item that gets worse while the reader
     // waits: raw logs are pruned, so a window that was not stored cannot be
     // recovered, and the first comparison needs two of them.
-    expect(block({ storeOpened: false })).toContain('no history yet')
-    expect(block({ storeOpened: true })).not.toContain('no history yet')
+    expect(block({ storeOpened: false })).toContain('this run stored nothing')
+    expect(block({ storeOpened: true })).not.toContain('this run stored nothing')
   })
 
   it('names the flag that fixes it', () => {
@@ -113,6 +113,26 @@ describe('what the block may never contain', () => {
 
 describe('when there is nothing to do', () => {
   it('prints no block at all, rather than a reassuring line', () => {
-    expect(nextSteps({ storeOpened: true, skills: { numerator: 5, denominator: 5 }, mcp: null, versions: [] })).toEqual([])
+    expect(nextSteps({ ...base, skills: { numerator: 5, denominator: 5 } })).toEqual([])
+  })
+})
+
+describe('the pending-decision line', () => {
+  it('counts questions that never got an answer', () => {
+    expect(block({ pendingDecisions: 1 })).toContain('1 question asked and never answered')
+    expect(block({ pendingDecisions: 3 })).toContain('3 questions asked and never answered')
+  })
+
+  it('says nothing when everything was answered', () => {
+    // The positive control for the pair above.
+    expect(block({ pendingDecisions: 0 })).not.toContain('never answered')
+  })
+
+  it('does not say why it went unanswered', () => {
+    // The session may simply have ended. This is an inventory fact about what
+    // the machine is still waiting on, not a judgement about the person.
+    const out = block({ pendingDecisions: 2 })
+    expect(out).not.toContain('ignored')
+    expect(out).not.toContain('forgot')
   })
 })

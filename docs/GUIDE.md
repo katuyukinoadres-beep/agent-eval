@@ -165,8 +165,8 @@ axes       6/11 available
 
 `gate` が `passed` 以外なら、**環境ごと採点対象外**です（理由がそのまま並びます）。
 
-**`6/11 available` なのに 4 行しか並んでいないのは正常です。** available な 6 つのうち
-2 つ（`coverageGate` と `safetyCheck`）は**設計上、点を付けない軸**だからです。何を読んだか、
+**`10/11 available` なのに 5 行しか並んでいないのは正常です。** available な 10 のうち
+5 つ（`coverageGate` `safetyCheck` と人間側 3 軸）は**設計上、点を付けない軸**だからです。何を読んだか、
 どんな権限設定かを報告するのが仕事で、順位を付けません。JSON 側では `detail` に中身が
 入っていて、`notScoredByDesign: 1` が「点が無いのは測れなかったからではない」ことを示します。
 
@@ -274,6 +274,28 @@ assets
 
 `axes` の `safetyCheck` にも近い数字が入っています（`skillsDefined` / `hooksDefined` /
 権限の内訳）。こちらも採点されませんが、必ず出ます。
+
+---
+
+## 7.5 人間側の 3 軸 — こちらは採点しません
+
+```
+pendingDecisions           asked 16 / answered 15 / pending 1
+userRejected               userRejected 8 / denialsAll 273
+askUserQuestionCustomRate  answers 15 / offMenu 2
+```
+
+**点は付きません。** 環境が小さいからではなく、**仕様がそう決めている**からです。
+JSON では `notScoredByDesign: 1` が付いていて、「測れなかった」と区別できます。
+
+| 軸 | 読み方 |
+|---|---|
+| `pendingDecisions` | 聞いたまま答えが返っていない質問の数。**待ち状態の意思決定**です |
+| `userRejected` | 拒否された操作。`denialsAll` を併記しているのは、開発機では拒否 273 件のうち user-rejected は 8 件（3%）で、**それだけ出すと全体像の 3% を全体像として見せる**ことになるからです |
+| `askUserQuestionCustomRate` | 選択肢のどれにも当てはまらない答えが返った回数。**質問した側の問題**で、選択肢が実情を捉えていなかったということです |
+
+**率は出していません。** 仕様が「この件数以上なら率を出す」という下限を定めていないので、
+こちらで決めると根拠のない閾値になります。分子と分母だけ出して、判断は読む人に渡します。
 
 ---
 
