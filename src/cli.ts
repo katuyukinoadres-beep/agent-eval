@@ -289,7 +289,91 @@ function summarise(result: ReturnType<typeof runScan>): string {
     `validation ${validation.ok ? 'passed' : 'REFUSED'} (${validation.violations.length} violations, ${validation.flags.length} flags)`,
     ...validation.violations.map((v: Violation) => `           ${v.rule} ${v.path}: ${v.detail}`),
     ...validation.flags.map((f: Flag) => `           ${f.flag} ${f.path}: ${f.detail}`),
+    ...nextSteps({
+      storeOpened: result.stateDir !== null,
+      skills: payload.metrics.skillFired,
+      mcp: payload.metrics.mcpUsed,
+      versions: payload.scanManifest.versionSlices,
+    }),
   ].join('\n')
+}
+
+/**
+ * What to do next, derived only from counts.
+ *
+ * The scores deliberately refuse to name a cause: the spec's rule is "this
+ * symptom has N mechanisms, here is what distinguishes them", and a tool that
+ * guessed which one applied would be inventing the finding. That rule is right,
+ * and it also leaves a reader holding a number with nothing to do about it.
+ *
+ * These lines are the way out that does not break it. Every one follows from an
+ * inventory fact rather than from a score -- how many assets exist, how many
+ * fired, whether a store was opened. None of them says why anything is
+ * happening. "Twenty-five skills have never fired" is a fact about the machine;
+ * "your agent is slow because of them" would be a guess, and is not here.
+ *
+ * Nothing is printed when there is nothing to do, rather than a reassuring line
+ * saying so.
+ */
+export interface NextStepsInput {
+  /** Whether a store was opened this run. The only irreversible item hangs off it. */
+  readonly storeOpened: boolean
+  readonly skills: { readonly numerator: number; readonly denominator: number } | null
+  readonly mcp: { readonly numerator: number; readonly denominator: number } | null
+  readonly versions: readonly { readonly version: string; readonly failuresPerToolUseE4: number | null }[]
+}
+
+export function nextSteps(input: NextStepsInput): readonly string[] {
+  const steps: string[] = []
+
+  // First, because it is the only item that gets worse while you wait. Raw logs
+  // are pruned by the client -- 5.8% of 121 active days survived on the machine
+  // this was built on -- so a window that was not stored cannot be recovered,
+  // and the comparison this tool exists for needs two of them.
+  if (!input.storeOpened) {
+    steps.push('           * no history yet — nothing here can be compared to anything')
+    steps.push('             run with --store, today. Logs are pruned: a window you did not')
+    steps.push('             store is gone, and the first comparison needs two of them.')
+  }
+
+  const sk = input.skills
+  if (sk !== null && sk.denominator - sk.numerator > 0) {
+    steps.push(`           ${sk.denominator - sk.numerator} of ${sk.denominator} skills have never fired`)
+    // Deliberately not "delete them". A skill can be idle because its moment
+    // has not come, or because its trigger is written badly, and this tool
+    // cannot tell either from a dead one.
+    steps.push('             -> read them before removing any: docs/GUIDE.md 2.5')
+  }
+
+  const mc = input.mcp
+  if (mc !== null && mc.denominator - mc.numerator > 0) {
+    steps.push(
+      `           ${mc.denominator - mc.numerator} of ${mc.denominator} MCP servers have never been called`,
+    )
+  }
+
+  // Only when a version boundary actually separates two rated slices. Below the
+  // floor there is no rate, and with one rated version there is nothing to
+  // compare against.
+  const rated = input.versions.filter((v) => v.failuresPerToolUseE4 !== null)
+  if (rated.length >= 2) {
+    const rate = (v: (typeof rated)[number]): number => v.failuresPerToolUseE4 ?? 0
+    const worst = rated.reduce((a, b) => (rate(a) > rate(b) ? a : b))
+    const best = rated.reduce((a, b) => (rate(a) < rate(b) ? a : b))
+    const spread = rate(worst) - rate(best)
+    // A hundredth of a failure per call is noise between versions doing the
+    // same work. Naming one as worst at that distance manufactures a finding
+    // out of rounding.
+    if (spread >= 100) {
+      steps.push(
+        `           ${worst.version} fails ${(spread / 10_000).toFixed(4)}/call more often than ${best.version}`,
+      )
+      steps.push('             -> your work changed over that span too. Compare versions with')
+      steps.push('                similar call counts before concluding anything.')
+    }
+  }
+
+  return steps.length === 0 ? [] : ['', 'next', ...steps]
 }
 
 export function run(argv: readonly string[]): { readonly code: number; readonly out: string } {
