@@ -1,6 +1,6 @@
 {
   "name": "@katuyukinoadres-beep/agent-eval",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scores an AI agent environment from its own Claude Code logs. Analysis stays on the machine.",
   "keywords": [
     "claude-code",

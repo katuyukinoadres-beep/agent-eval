@@ -11,4 +11,4 @@
  * `test/version.test.ts` asserts this equals `package.json`, so the two cannot
  * diverge without the suite failing.
  */
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
